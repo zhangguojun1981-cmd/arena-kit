@@ -2470,7 +2470,9 @@
 
         init() {
             this.injectStyles();
-            this.createFab();
+            // ArenaKit: no floating ball on desktop. The native right-side dock
+            // opens the panel via window.__AK_MANAGER_TOGGLE__ (see lib.rs arena_command).
+            if (!window.__ARENAKIT__) this.createFab();
             this.createPanel();
             this.createEditModal();
             this.createConfirmModal();
@@ -5457,6 +5459,8 @@
         const scanner = new Scanner(dm);
         const ui = new UI(dm, scanner);
         ui.init();
+        // ArenaKit: expose a toggle the native right-side dock can call.
+        window.__AK_MANAGER_TOGGLE__ = () => { try { ui.toggle(); } catch (e) { console.warn('[ArenaKit] manager toggle', e); } };
         scanner.onMutation = () => ui.checkPageContext();
         scanner.onScanComplete = () => {
             if (ui.isOpen) {

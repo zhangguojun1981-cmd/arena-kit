@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ArenaKit Dock</title>
+  <link rel="stylesheet" href="dock.css" />
+</head>
+<body>
+  <!-- ArenaKit native side dock. Lives in its OWN webview (not injected into
+       arena.ai), docked to the right of the arena.ai webview. Decoupled from
+       the page DOM, so arena redesigns never break it. -->
+  <header class="ak-head">
+    <span class="ak-logo">AK</span>
+    <span class="ak-title">ArenaKit</span>
+  </header>
+
+  <!-- Module: server-side model (from the trace forensics pipeline) -->
+  <section class="ak-mod" data-open="true">
+    <div class="ak-mod-head"><span>服务端模型</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <div id="ak-model" class="ak-big">—</div>
+      <div id="ak-model-sub" class="ak-sub">发一条消息后自动识别</div>
+    </div>
+  </section>
+
+  <!-- Module: daily-free-credit gauge -->
+  <section class="ak-mod" data-open="true">
+    <div class="ak-mod-head"><span>额度</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <div class="ak-row"><span id="ak-credit" class="ak-big">—</span><span id="ak-reset" class="ak-sub"></span></div>
+      <div class="ak-bar"><div id="ak-bar-fill"></div></div>
+    </div>
+  </section>
+
+  <!-- Module: enhancement toggles + panels -->
+  <section class="ak-mod" data-open="true">
+    <div class="ak-mod-head"><span>功能模块</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <button class="ak-btn" data-action="manager">模型筛选 / 管理面板</button>
+      <label class="ak-switch"><input type="checkbox" id="ak-unlock-opus" checked /> 解锁 Opus 全系</label>
+      <label class="ak-switch"><input type="checkbox" id="ak-unlock-hidden" /> 解锁隐藏 / 盲测模型</label>
+      <label class="ak-switch"><input type="checkbox" id="ak-plus" checked /> 排行榜性价比列</label>
+    </div>
+  </section>
+
+  <!-- Module: system-prompt injection (ENI) -->
+  <section class="ak-mod">
+    <div class="ak-mod-head"><span>提示词注入</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <label class="ak-switch"><input type="checkbox" id="ak-eni-on" /> 每新对话注入系统提示词</label>
+      <textarea id="ak-eni-text" class="ak-textarea" placeholder="在此输入系统提示词…"></textarea>
+      <button class="ak-btn ak-btn-sm" data-action="save-eni">保存提示词</button>
+    </div>
+  </section>
+
+  <footer class="ak-foot"><span id="ak-status">就绪</span></footer>
+  <script type="module" src="dock.js"></script>
+</body>
+</html>

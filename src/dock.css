@@ -1,0 +1,93 @@
+:root {
+  --ak-bg: #1b1c20;
+  --ak-card: #26272d;
+  --ak-line: #34363d;
+  --ak-fg: #e8e8ea;
+  --ak-sub: #9aa0aa;
+  --ak-accent: #6366f1;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ak-bg);
+  color: var(--ak-fg);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-y: auto;
+}
+.ak-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ak-line);
+  position: sticky;
+  top: 0;
+  background: var(--ak-bg);
+}
+.ak-logo {
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  background: var(--ak-accent);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 12px;
+}
+.ak-title { font-weight: 600; }
+
+.ak-mod { border-bottom: 1px solid var(--ak-line); }
+.ak-mod-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-weight: 600;
+  user-select: none;
+}
+.ak-chev { color: var(--ak-sub); transition: transform 0.15s; }
+.ak-mod[data-open="true"] .ak-chev { transform: rotate(0deg); }
+.ak-mod:not([data-open="true"]) .ak-chev { transform: rotate(-90deg); }
+.ak-mod-body { padding: 0 14px 12px; }
+.ak-mod:not([data-open="true"]) .ak-mod-body { display: none; }
+
+.ak-big { font-size: 16px; font-weight: 600; }
+.ak-sub { color: var(--ak-sub); font-size: 12px; }
+.ak-row { display: flex; justify-content: space-between; align-items: baseline; }
+
+.ak-bar {
+  height: 6px; border-radius: 3px; background: #333;
+  overflow: hidden; margin-top: 8px;
+}
+#ak-bar-fill {
+  height: 100%; width: 0; transition: width 0.4s; background: #22c55e;
+}
+#ak-bar-fill[data-band="warning"] { background: #eab308; }
+#ak-bar-fill[data-band="danger"] { background: #ef4444; }
+
+.ak-btn {
+  display: block; width: 100%;
+  margin: 6px 0; padding: 8px 10px;
+  border: 1px solid var(--ak-line); border-radius: 8px;
+  background: var(--ak-card); color: var(--ak-fg);
+  cursor: pointer; font-size: 13px; text-align: left;
+}
+.ak-btn:hover { border-color: var(--ak-accent); }
+.ak-btn-sm { width: auto; padding: 6px 12px; }
+
+.ak-switch {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 0; cursor: pointer;
+}
+.ak-switch input { accent-color: var(--ak-accent); }
+
+.ak-textarea {
+  width: 100%; min-height: 70px; margin: 6px 0;
+  padding: 8px; border-radius: 8px;
+  border: 1px solid var(--ak-line);
+  background: var(--ak-card); color: var(--ak-fg);
+  font: 12px/1.4 monospace; resize: vertical;
+}
+.ak-foot {
+  padding: 8px 14px; color: var(--ak-sub); font-size: 12px;
+  border-top: 1px solid var(--ak-line);
+  position: sticky; bottom: 0; background: var(--ak-bg);
+}

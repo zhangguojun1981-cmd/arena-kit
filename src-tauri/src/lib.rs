@@ -7,7 +7,7 @@ pub mod pulse;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl};
 
 // ── injected scripts (bundled at compile time) ───────────────────────────
 // MAIN-world, must run before arena.ai's own JS.
@@ -189,16 +189,60 @@ async fn proxy_get(url: String) -> Result<Value, String> {
     Ok(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
 }
 
+/// Eval arbitrary JS inside the arena.ai page webview. Called by the native
+/// dock (dock.js) to toggle the manager panel, set unlock/plus/eni config, etc.
+#[tauri::command]
+async fn arena_command(app: tauri::AppHandle, js: String) -> Result<(), String> {
+    let wv = app
+        .get_webview("arena")
+        .ok_or_else(|| "arena webview 未找到".to_string())?;
+    wv.eval(&js).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let init = build_init_script();
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
-        .invoke_handler(tauri::generate_handler![fetch_trace, proxy_get])
+        .invoke_handler(tauri::generate_handler![fetch_trace, proxy_get, arena_command])
         .setup(move |app| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.eval(&init);
-            }
+            // Split-view window: arena.ai webview on the left, ArenaKit native
+            // dock webview on the right. The dock lives in its own webview (not
+            // injected into the page), so arena redesigns can't break it.
+            let width = 1360.0_f64;
+            let height = 900.0_f64;
+            let dock_w = 320.0_f64;
+
+            let window = tauri::window::WindowBuilder::new(app, "main")
+                .title("ArenaKit")
+                .inner_size(width, height)
+                .build()?;
+
+            // Left: arena.ai. The init script is injected before page load AND
+            // on every navigation (Tauri re-runs initialization scripts per
+            // navigation), mirroring the Android WebViewClient re-injection.
+            let _arena = window.add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "arena",
+                    WebviewUrl::External("https://arena.ai".parse().unwrap()),
+                )
+                .initialization_script(&init)
+                .auto_resize(),
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(width - dock_w, height),
+            )?;
+
+            // Right: the native dock (bundled frontend, dock.html).
+            let _dock = window.add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "dock",
+                    WebviewUrl::App("dock.html".into()),
+                )
+                .auto_resize(),
+                LogicalPosition::new(width - dock_w, 0.0),
+                LogicalSize::new(dock_w, height),
+            )?;
+
             Ok(())
         })
         .run(tauri::generate_context!())

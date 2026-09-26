@@ -10,14 +10,16 @@ ArenaKit = 网页套壳(A) + 取证 HUD(B) + 提示词注入。整合了以下�
 
 | 能力 | 来源 | 类别 |
 |---|---|---|
-| 模型筛选/分类/排序、70 厂商识别、分组、云同步 | Arena-Manager | A 前端注入 |
-| 解锁 Claude Opus 全系 + 150+ 隐藏/盲测模型 | Model-Unlocker | A 前端注入 |
-| 排行榜"性价比"列、价格、模型年龄、模态图标 | Arena.ai-Plus | A 前端注入 |
-| 个人投票胜负统计 | personal-leaderboard | A 前端注入 |
-| 每新对话自动注入系统提示词 | Arena-Ai (ENI) | 提示词注入 |
-| **截获运行令牌 → 拉 trace → 显示服务端真实模型名** | arena-trace-inspector / -android | B 原生取证 |
-| **额度百分比 + 三色进度条 + 重置倒计时** | arena-trace-android (pulse) | B 原生取证 |
-| 自动抽卡/探针、清理探测残留、会话历史 | arena-trace-inspector(待移植) | B 原生取证 |
+| 模型筛选/分类/排序、70 厂商识别、分组、云同步 | [Arena-Manager](https://github.com/JimAchievo/Arena-Manager) | A 前端注入 |
+| 解锁 Claude Opus 全系 + 150+ 隐藏/盲测模型 | [Model-Unlocker](https://github.com/theraker526/Arena-AI-Model-Unlocker-Extension) | A 前端注入 |
+| 排行榜"性价比"列、价格、模型年龄、模态图标 | [Arena.ai-Plus](https://github.com/chen-dahan/Arena.ai-Plus) | A 前端注入 |
+| 个人投票胜负统计 | [personal-leaderboard](https://github.com/wrapss/lmarena-personal-leaderboard) | A 前端注入 |
+| 每新对话自动注入系统提示词 | [Arena-Ai (ENI)](https://github.com/peyton2065/Arena-Ai) | 提示词注入 |
+| **截获运行令牌 → 拉 trace → 显示服务端真实模型名** | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector) / [-android](https://github.com/AI-modelsAPI/arena-trace-android) | B 原生取证 |
+| **额度百分比 + 三色进度条 + 重置倒计时** | [arena-trace-android](https://github.com/AI-modelsAPI/arena-trace-android) (pulse) | B 原生取证 |
+| 自动抽卡/探针、清理探测残留、会话历史 | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector)(待移植) | B 原生取证 |
+
+完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 
 ## 技术栈
 

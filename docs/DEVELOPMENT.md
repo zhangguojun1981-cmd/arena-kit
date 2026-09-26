@@ -72,6 +72,15 @@
 
 ## 2. 模块移植表(来源 → 目标 → 注意)
 
+上游仓库链接(接手对照原始实现):
+- Arena-Manager — https://github.com/JimAchievo/Arena-Manager
+- Model-Unlocker — https://github.com/theraker526/Arena-AI-Model-Unlocker-Extension
+- Arena.ai-Plus — https://github.com/chen-dahan/Arena.ai-Plus
+- personal-leaderboard — https://github.com/wrapss/lmarena-personal-leaderboard
+- Arena-Ai (ENI) — https://github.com/peyton2065/Arena-Ai
+- inspector(取证核心,私有) — https://github.com/AI-modelsAPI/arena-trace-inspector
+- android(取证核心,私有) — https://github.com/AI-modelsAPI/arena-trace-android
+
 | 目标文件 | 来源 | 语言 | 移植要点 |
 |---|---|---|---|
 | `injected/snoop.js` | inspector `snoop.js` | JS→JS | 几乎原样。`postMessage` 目标改为 Tauri IPC 桥(`window.__ARENAKIT__.onToken`)。**sessionFromUrl 正则必须与 trace.rs 的 streamSession 保持 lockstep** |

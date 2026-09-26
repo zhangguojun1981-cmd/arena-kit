@@ -4,19 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.ati.arenakit",
   "build": {
-    "frontendDist": "../src",
-    "devUrl": "https://arena.ai"
+    "frontendDist": "../src"
   },
   "app": {
-    "windows": [
-      {
-        "title": "ArenaKit",
-        "url": "https://arena.ai",
-        "width": 1280,
-        "height": 860,
-        "resizable": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
