@@ -1,0 +1,56 @@
+#arenakit-hud {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  font: 13px/1.4 -apple-system, system-ui, sans-serif;
+}
+.ak-ball {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #4f46e5;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  cursor: move;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.ak-card {
+  margin-top: 8px;
+  min-width: 220px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(20, 20, 24, 0.92);
+  color: #eee;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.ak-row {
+  display: flex;
+  justify-content: space-between;
+  margin: 4px 0;
+}
+.ak-label {
+  color: #9aa0aa;
+}
+.ak-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: #333;
+  overflow: hidden;
+  margin-top: 6px;
+}
+#ak-bar-fill {
+  height: 100%;
+  width: 0;
+  transition: width 0.4s;
+  background: #22c55e;
+}
+#ak-bar-fill[data-band='warning'] {
+  background: #eab308;
+}
+#ak-bar-fill[data-band='danger'] {
+  background: #ef4444;
+}

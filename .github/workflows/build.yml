@@ -1,0 +1,63 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Rust core unit tests (trace/pulse logic) — fast gate, runs everywhere.
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cargo test (core logic)
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  # macOS .dmg — real bundle artifact.
+  macos-dmg:
+    needs: rust-test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Build dmg
+        run: cargo tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arenakit-macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+
+  # Android .apk — mirrors arena-trace-android's signing approach
+  # (keystore in secrets; unsigned debug apk when secrets absent).
+  android-apk:
+    needs: rust-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK
+        run: sdkmanager "ndk;26.1.10909125"
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Android init + build
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+        run: |
+          cargo tauri android init || true
+          cargo tauri android build --apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arenakit-android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk

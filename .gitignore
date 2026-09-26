@@ -1,0 +1,20 @@
+# Rust / Tauri
+/src-tauri/target
+/src-tauri/gen
+Cargo.lock
+
+# Node (if a bundler is added later)
+node_modules
+dist
+
+# Tauri signing / secrets
+*.keystore
+*.jks
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# Upstream source snapshots are NOT vendored here (see vendor/UPSTREAM.md)
+/vendor/upstream-src
