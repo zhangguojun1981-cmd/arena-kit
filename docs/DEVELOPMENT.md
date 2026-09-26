@@ -40,19 +40,21 @@
 - 仓库结构、文档、复用核心 JS(`injected/*.js` 从上游拷贝并标注来源)、Tauri 配置骨架、CI 骨架。
 - 验收:`git` 可推送;文档自洽;注入脚本已就位。**尚不保证可编译运行**(Rust 命令为占位/TODO)。
 
-### M1 — 桌面套壳可跑(A 的最小闭环)
+### M1 — 桌面套壳可跑(A 的最小闭环)✅ 代码就位
 - `cargo tauri dev` 打开 arena.ai,登录态正常。
 - 注入 `manager.js`(筛选助手)生效:能看到筛选面板、`Ctrl+Shift+M` 打开。
-- 验收:真机截图,面板出现,能隐藏/排序模型。
+- 实现:`lib.rs` `build_init_script` 组装注入管线,`setup` 时 `win.eval` 注入;`gm-shim.js` 提供 `GM_*` 垫片。
+- 验收:真机截图,面板出现,能隐藏/排序模型。**待真机跑 `cargo tauri dev` 截图确认。**
 
-### M2 — 前端增强全量注入
+### M2 — 前端增强全量注入 ✅ 代码就位
 - 追加 `unlock.js`(解锁隐藏模型)、`plus.js`、`leaderboard.js`、`eni.js`(提示词注入,带设置面板)。
-- 验收:Direct 模式能选出 Claude Opus;排行榜出现性价比列;新对话带上系统提示词(在 trace 里能看到 prompt 前缀)。
+- 实现:全部纳入 `build_init_script`;`proxy_get`(白名单原生 GET)绕页面 CORS 供取 Logo/价格/Gist。
+- 验收:Direct 模式能选出 Claude Opus;排行榜出现性价比列;新对话带上系统提示词(在 trace 里能看到 prompt 前缀)。**待真机确认。**
 
-### M3 — 取证核心移植到 Rust(B 的核心)
+### M3 — 取证核心移植到 Rust(B 的核心)✅ 逻辑完成+测试
 - 把 `core.js` / `ArenaProtocol.kt` 的 `validate_token` / `extract_models` / SSE 解析移植成 `src-tauri/src/trace.rs`,附单元测试(对齐扩展版 `core.test.mjs` 与安卓 `ArenaProtocolTest.kt` 的用例)。
-- `snoop.js` 截令牌 → IPC → `trace.rs` 拉 trace → HUD 显示真实模型名。
-- 验收:发一条消息,HUD 在数秒内显示服务端模型名;单测全绿。
+- `snoop.js` 截令牌 → `__ARENAKIT__.onToken` → `fetch_trace` 命令 → Trigger.dev 8×3s 轮询 → `extract_models` → `emit('arenakit://models')`。
+- 状态:10 单测全绿(validate/extract/dedup/fatal-status);实况轮询已接线。**待真机发消息确认 HUD 显示模型名。**
 
 ### M4 — 额度 HUD(pulse)
 - 移植 `pulse.rs`:60s 轮询额度,三色进度条,切账号即刷,429 退避。
