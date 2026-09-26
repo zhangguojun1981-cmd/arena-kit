@@ -117,6 +117,17 @@ pub fn is_fatal_trace_status(status: u16) -> bool {
     matches!(status, 401 | 403 | 429)
 }
 
+/// Human label for a fatal trace status, mirrors core.js traceStatusLabel.
+pub fn trace_status_label(status: u16) -> String {
+    match status {
+        401 => "令牌被拒绝或已过期".into(),
+        403 => "该令牌无权读取 trace".into(),
+        404 => "运行 trace 不存在".into(),
+        429 => "接口限流，已停止查询".into(),
+        _ => format!("trace 返回 HTTP {}", status),
+    }
+}
+
 const MODEL_SPANS: [&str; 4] = [
     "ai.streamText.doStream",
     "ai.generateText.doGenerate",

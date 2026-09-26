@@ -23,6 +23,11 @@
   }
   function emit(token, sessionId) {
     if (typeof token !== 'string' || token.length > 16384 || token.split('.').length !== 3) return;
+    // ArenaKit: hand the token to the Rust bridge if present, else fall back to
+    // the original postMessage channel (keeps this file usable as a plain userscript).
+    if (window.__ARENAKIT__ && typeof window.__ARENAKIT__.onToken === 'function') {
+      try { window.__ARENAKIT__.onToken({sessionId, token}); return; } catch {}
+    }
     window.postMessage({source: 'ati-snoop', sessionId, token}, 'https://arena.ai');
   }
   function takeTokens(obj, sessionId) {
