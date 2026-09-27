@@ -81,6 +81,7 @@
 - 验收:探针能跑完设定轮数、命中即停/命中全部才停、命中改名「前缀+模型-序号」;清理只归档算式标题且不碰当前对话;会话探针在当前对话内识别本轮模型;回复流异常在轮次列表出现徽标,正常显示「无异常信号」。**待真机确认。**
 
 ### M6 — Android 出包 ✅ CI 就位
+- 图标:`python3 scripts/make-icons.py` 用纯 Python 从矢量数据渲染 `src-tauri/icons/`(icon.png 1024 / 128@2x / 128 / 32 / icon.icns / icon.svg),图形与参考安卓项目的启动图标一致(深色渐变底 + 蓝/翠绿 A 形双翼 + 白色扫描线);安卓 API 26+ 用 `src-tauri/android/.../mipmap-anydpi-v26` 的自适应图标(矢量 `ak_launcher_*`),旧设备回退到 `tauri icon` 生成的 PNG。
 - `src-tauri/android/` 是覆盖到生成项目 `gen/android/` 上的安卓源码(CI 在 `android init` 之后 `cp -R` 过去):`MainActivity.kt` 保留 edge-to-edge 但按系统栏 / 刘海 / 输入法 insets 给内容加 padding,网页顶部正好与状态栏底部平齐、底部在导航栏之上、键盘弹出时页面收缩(参考项目 targetSdk 34 的原生表现;Tauri 模板 targetSdk 37,Android 15+ 强制 edge-to-edge 不可关闭)。状态栏 / 导航栏底色跟随系统深浅色。
 - `cargo tauri android build --apk --target aarch64` 出 release arm64 apk(优化 + strip,debug 包带符号约 190 MB),CI 再用 `zipalign` + `apksigner` 以仓库内固定的调试密钥 `.github/android/debug.keystore`(PKCS12,别名 `arenakitdebug`,密码 `android`)签名——每次构建签名一致,可覆盖安装。这不是商店密钥;正式发布时换成 secrets 里的密钥。
 - **dock 内嵌模式**:mobile Tauri 一窗一 webview(`Window::add_child` 仅桌面),所以安卓不建第二个 webview,而是 `node scripts/bundle-dock.mjs` 把 `src/dock.js` + `src/lib/*` + `src/embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`(已提交,CI `--check` 防过期),Rust 在 `#[cfg(mobile)]` 下 `include_str!` 并追加到 init 脚本末尾;页面加载后挂载悬浮 AK 按钮 + 底部抽屉(shadow DOM,样式互不干扰)。改了 `src/` 记得重新跑 bundler(测试 `embed-bundle.test.mjs` 会提示)。

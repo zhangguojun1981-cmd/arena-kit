@@ -32,3 +32,18 @@ test('build.yml applies the overlay after android init and before the build', ()
   const build = yml.indexOf('cargo tauri android build');
   assert.ok(init > 0 && overlay > init && build > overlay, 'init → overlay → build');
 });
+
+test('adaptive launcher icon overlay is complete (API 26+ uses it instead of the generated PNGs)', () => {
+  const res = resolve(root, 'src-tauri/android/app/src/main/res');
+  for (const name of ['ic_launcher', 'ic_launcher_round']) {
+    const xml = readFileSync(resolve(res, `mipmap-anydpi-v26/${name}.xml`), 'utf8');
+    for (const ref of xml.matchAll(/@drawable\/([a-z_]+)/g)) {
+      assert.ok(existsSync(resolve(res, `drawable/${ref[1]}.xml`)), `${name} → drawable/${ref[1]}.xml`);
+      assert.ok(ref[1].startsWith('ak_'), 'ak_ prefix avoids clashing with the template/tauri-icon ic_launcher_* drawables');
+    }
+  }
+  // desktop icon set is the rendered artwork, not the old flat placeholder
+  const png = readFileSync(resolve(root, 'src-tauri/icons/icon.png'));
+  assert.ok(png.length > 20_000, 'icon.png is a real rendering (the placeholder was 2.5 KB)');
+  assert.equal(readFileSync(resolve(root, 'src-tauri/icons/icon.icns')).subarray(0, 4).toString(), 'icns');
+});
