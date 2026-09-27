@@ -50,6 +50,12 @@ const WATCHDOG_JS: &str = include_str!("../../injected/watchdog.js");
 // to the in-app link tab instead of replacing the conversation (links.rs is the
 // navigation-level safety net behind it).
 const LINKS_JS: &str = include_str!("../../injected/links.js");
+// Multi-account: RFC 6238 TOTP lib (generated from src/lib/totp.js) and the
+// session snapshot / restore / login helper that uses it. Both run on every
+// page of this webview — accounts.google.com included — so a 2-step login can
+// be filled where no IPC exists.
+const TOTP_JS: &str = include_str!("../../injected/totp.gen.js");
+const ACCOUNT_JS: &str = include_str!("../../injected/account.js");
 // document_idle UI scripts.
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
 const PLUS_JS: &str = include_str!("../../injected/plus.js");
@@ -115,8 +121,12 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     guarded(&mut s, "probe", PROBE_JS);
     guarded(&mut s, "watchdog", WATCHDOG_JS);
     guarded(&mut s, "links", LINKS_JS);
-    // defer UI scripts until the DOM is ready.
-    s.push_str("(function(){var run=function(){\n");
+    guarded(&mut s, "totp", TOTP_JS);
+    guarded(&mut s, "account", ACCOUNT_JS);
+    // defer UI scripts until the DOM is ready — and only on arena itself: the
+    // same webview also shows sign-in pages (accounts.google.com …) where the
+    // pill / dock must not appear.
+    s.push_str("(function(){if(!/(^|\\.)(arena\\.ai|lmarena\\.ai)$/.test(location.hostname||''))return;var run=function(){\n");
     guarded(&mut s, "manager", MANAGER_JS);
     guarded(&mut s, "plus", PLUS_JS);
     guarded(&mut s, "leaderboard", LEADERBOARD_JS);
@@ -126,6 +136,96 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     s.push_str("};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run);}else{run();}})();\n");
     s
 }
+
+// ── login helper (multi-account) ─────────────────────────────────────────
+/// Credentials of a login the dock started (email / password / TOTP secret of
+/// one saved account). Memory only, for at most LOGIN_TTL_SECS, and pushed into
+/// the arena webview on every finished page load of arena.ai or a sign-in
+/// host — that is how injected/account.js receives them on
+/// accounts.google.com, where the page has no IPC (capabilities are
+/// arena.ai-only). Cleared by the page (`login_clear`) once the session cookie
+/// is back, by the dock, or by the TTL.
+const LOGIN_TTL_SECS: u64 = 10 * 60;
+
+#[derive(Default)]
+pub struct LoginState {
+    pending: Mutex<Option<(Value, std::time::Instant)>>,
+}
+
+impl LoginState {
+    fn set(&self, creds: Value) {
+        if let Ok(mut g) = self.pending.lock() {
+            *g = Some((creds, std::time::Instant::now()));
+        }
+    }
+    fn clear(&self) {
+        if let Ok(mut g) = self.pending.lock() {
+            *g = None;
+        }
+    }
+    /// The pending credentials, dropping them once the TTL has passed.
+    fn current(&self) -> Option<Value> {
+        let mut g = self.pending.lock().ok()?;
+        if let Some((_, at)) = g.as_ref() {
+            if at.elapsed().as_secs() > LOGIN_TTL_SECS {
+                *g = None;
+            }
+        }
+        g.as_ref().map(|(v, _)| v.clone())
+    }
+}
+
+/// JS that hands the credentials to injected/account.js (`__AK_LOGIN_APPLY__`).
+fn login_push_js(creds: &Value) -> String {
+    format!(
+        "window.__AK_LOGIN_APPLY__&&window.__AK_LOGIN_APPLY__({});",
+        creds
+    )
+}
+
+/// Only arena itself and the sign-in hosts links.rs keeps in place may receive
+/// the pending login — never an arbitrary third-party page.
+fn login_host_ok(url: &tauri::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    links::is_arena_host(host) || links::is_auth_flow(host, url.path())
+}
+
+/// What to eval into the webview after a page load finished (None = nothing).
+fn login_pending_js(state: &LoginState, url: &tauri::Url) -> Option<String> {
+    let creds = state.current()?;
+    if !login_host_ok(url) {
+        return None;
+    }
+    Some(login_push_js(&creds))
+}
+
+/// Dock (or the embedded dock inside the arena page): start a login for one
+/// saved account. `creds` = {accountId, email, password, totp, provider, startedAt}.
+#[tauri::command]
+fn login_set(state: tauri::State<'_, LoginState>, creds: Value) -> Result<(), String> {
+    if !creds.is_object() {
+        return Err("登录信息无效".into());
+    }
+    if creds.to_string().len() > 16 * 1024 {
+        return Err("登录信息过大".into());
+    }
+    state.set(creds);
+    Ok(())
+}
+
+/// Page (session cookie is back) or dock: forget the pending login.
+#[tauri::command]
+fn login_clear(state: tauri::State<'_, LoginState>) -> Result<(), String> {
+    state.clear();
+    Ok(())
+}
+
+/// Safari-equivalent UA for the macOS webview. WKWebView's bare default
+/// ("… AppleWebKit/605.1.15 (KHTML, like Gecko)") is what Google's sign-in
+/// rejects as an embedded browser (403 disallowed_useragent); Android does the
+/// same fix natively in MainActivity.kt (drops "; wv" / "Version/4.0").
+#[cfg(desktop)]
+const DESKTOP_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15";
 
 // ── trace pipeline ───────────────────────────────────────────────────────
 
@@ -616,13 +716,16 @@ pub fn run() {
             store_keys,
             proxy_get,
             open_tab,
-            arena_command
+            arena_command,
+            login_set,
+            login_clear
         ])
         .setup(move |app| {
             // Persistent store + trace state, available to every command.
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(data_dir.join("arenakit-store.json")));
             app.manage(TraceState::default());
+            app.manage(LoginState::default());
 
             // Desktop: split-view window. `arena.ai` webview on the left,
             // ArenaKit native dock webview on the right. The dock lives in
@@ -647,15 +750,28 @@ pub fn run() {
                 // per navigation), mirroring the Android WebViewClient
                 // re-injection.
                 let nav_app = app.handle().clone();
+                let load_app = app.handle().clone();
                 let _arena = window.add_child(
                     tauri::webview::WebviewBuilder::new(
                         "arena",
                         WebviewUrl::External("https://arena.ai".parse().unwrap()),
                     )
                     .initialization_script(&init)
+                    .user_agent(DESKTOP_USER_AGENT)
                     // Links to other sites open in a separate window, never
                     // over the conversation (links.rs).
                     .on_navigation(move |url| route_navigation(&nav_app, url))
+                    // Pending account login → hand the credentials to the page
+                    // (arena.ai or a sign-in host) once it finished loading.
+                    .on_page_load(move |wv, payload| {
+                        if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                            return;
+                        }
+                        let state = load_app.state::<LoginState>();
+                        if let Some(js) = login_pending_js(&state, payload.url()) {
+                            let _ = wv.eval(&js);
+                        }
+                    })
                     .auto_resize(),
                     LogicalPosition::new(0.0, 0.0),
                     LogicalSize::new(width - dock_w, height),
@@ -686,6 +802,7 @@ pub fn run() {
             {
                 let init = build_init_script(Some(DOCK_EMBED_JS), "mobile");
                 let nav_app = app.handle().clone();
+                let load_app = app.handle().clone();
                 let _arena = tauri::WebviewWindowBuilder::new(
                     app,
                     "arena",
@@ -695,6 +812,17 @@ pub fn run() {
                 // Links to other sites open in the native link tab layer
                 // (MainActivity overlay), never over the conversation.
                 .on_navigation(move |url| route_navigation(&nav_app, url))
+                // Pending account login → credentials to the page after load
+                // (the embedded dock died with the previous page, Rust remembers).
+                .on_page_load(move |wv, payload| {
+                    if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                        return;
+                    }
+                    let state = load_app.state::<LoginState>();
+                    if let Some(js) = login_pending_js(&state, payload.url()) {
+                        let _ = wv.eval(&js);
+                    }
+                })
                 .build()?;
             }
 
@@ -715,11 +843,47 @@ mod tests {
         assert!(s.starts_with("window.__ARENAKIT_PLATFORM__=\"desktop\";\ntry{\n"));
         assert!(build_init_script(None, "mobile").starts_with("window.__ARENAKIT_PLATFORM__=\"mobile\";\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "manager", "plus", "leaderboard"] {
+        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "totp", "account", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));
         assert!(!s.contains("dock-embedded init failed"));
+        // the TOTP lib is defined before the account script that uses it, and
+        // both run at document_start (before the deferred UI block)
+        let totp = s.find("[ArenaKit] totp init failed").unwrap();
+        let account = s.find("[ArenaKit] account init failed").unwrap();
+        let deferred = s.find("var run=function(){").unwrap();
+        assert!(totp < account && account < deferred);
+        // UI scripts / the embedded dock only mount on arena hosts
+        assert!(s.contains("(arena\\.ai|lmarena\\.ai)$/.test(location.hostname||''))return;"));
+        assert!(s.find("lmarena\\.ai)$/.test(location.hostname").unwrap() < deferred);
+    }
+
+    #[test]
+    fn login_state_ttl_hosts_and_js() {
+        let st = LoginState::default();
+        let arena: tauri::Url = "https://arena.ai/".parse().unwrap();
+        let google: tauri::Url = "https://accounts.google.com/v3/signin/identifier?x=1".parse().unwrap();
+        let other: tauri::Url = "https://example.com/login".parse().unwrap();
+        assert!(login_pending_js(&st, &arena).is_none(), "nothing pending");
+        st.set(json!({"accountId": "a1", "email": "a@b.c", "totp": "JBSWY3DPEHPK3PXP"}));
+        let js = login_pending_js(&st, &arena).unwrap();
+        assert!(js.starts_with("window.__AK_LOGIN_APPLY__&&window.__AK_LOGIN_APPLY__({"));
+        assert!(js.contains("\"email\":\"a@b.c\""));
+        assert!(login_pending_js(&st, &google).is_some(), "sign-in host gets it");
+        assert!(login_pending_js(&st, &other).is_none(), "third-party page never gets it");
+        // still pending after a non-matching host
+        assert!(st.current().is_some());
+        st.clear();
+        assert!(login_pending_js(&st, &arena).is_none());
+        // expired entries are dropped on read
+        if let Ok(mut g) = st.pending.lock() {
+            *g = Some((json!({}), std::time::Instant::now() - std::time::Duration::from_secs(LOGIN_TTL_SECS + 1)));
+        }
+        assert!(st.current().is_none());
+        assert!(login_host_ok(&"https://appleid.apple.com/auth/authorize".parse().unwrap()));
+        assert!(login_host_ok(&"https://xyz.supabase.co/auth/v1/authorize".parse().unwrap()));
+        assert!(!login_host_ok(&"https://arena.ai.evil.com/".parse().unwrap()));
     }
 
     #[test]

@@ -23,6 +23,8 @@
     "allow-store-get",
     "allow-store-set",
     "allow-store-keys",
-    "allow-open-tab"
+    "allow-open-tab",
+    "allow-login-set",
+    "allow-login-clear"
   ]
 }

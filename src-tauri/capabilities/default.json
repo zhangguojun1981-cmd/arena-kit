@@ -12,6 +12,8 @@
     "allow-proxy-get",
     "allow-store-get",
     "allow-store-set",
-    "allow-store-keys"
+    "allow-store-keys",
+    "allow-login-set",
+    "allow-login-clear"
   ]
 }

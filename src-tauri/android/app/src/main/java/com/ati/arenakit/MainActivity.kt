@@ -82,6 +82,13 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     pageView = webView
+    // Google's sign-in refuses embedded WebViews by user agent (403
+    // disallowed_useragent). Drop the "; wv" token and the "Version/4.0" marker
+    // — the rest (Android version, device, Chrome/xx) stays truthful. The
+    // desktop build does the equivalent with a Safari UA (lib.rs).
+    webView.settings.userAgentString = webView.settings.userAgentString
+      .replace("; wv", "")
+      .replace(Regex("\\bVersion/\\d+(\\.\\d+)*\\s*"), "")
     linkTab = LinkTab(this) { open ->
       webView.evaluateJavascript("window.__ARENAKIT_LINKS__&&window.__ARENAKIT_LINKS__.setOpen($open)", null)
     }

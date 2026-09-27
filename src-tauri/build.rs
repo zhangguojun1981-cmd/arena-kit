@@ -14,6 +14,8 @@ fn main() {
             "store_set",
             "store_keys",
             "open_tab",
+            "login_set",
+            "login_clear",
         ])),
     )
     .expect("failed to run tauri-build");
