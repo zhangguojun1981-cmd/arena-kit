@@ -243,6 +243,56 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   assert.equal(doc.body.children.length, 1);
 });
 
+test('desktop input: Esc closes the open layer, ⌘R / F5 fire refresh, ⌘[ ⌘] page history, right-click on the pill opens the quick menu', () => {
+  const { doc, shadow } = fakeDom();
+  const store = new Map();
+  const winListeners = {};
+  const hist = [];
+  const win = {
+    document: doc, innerWidth: 1280, innerHeight: 860,
+    localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+    addEventListener: (t, fn) => { (winListeners[t] ||= []).push(fn); },
+    history: { back() { hist.push('back'); }, forward() { hist.push('forward'); } },
+  };
+  assert.equal(mount(win), true);
+  const api = win.__ARENAKIT_EMBED__;
+  const actions = [];
+  api.onAction((n, a) => actions.push(a ? n + ':' + a : n));
+  assert.ok(winListeners.keydown && winListeners.keydown.length === 1, 'one capture keydown hook on the window');
+  const key = (init) => { const e = { prevented: false, preventDefault() { e.prevented = true; }, stopPropagation() {}, target: null, ...init }; winListeners.keydown.forEach((fn) => fn(e)); return e; };
+  api.open();
+  assert.equal(key({ key: 'Escape' }).prevented, true, 'Esc closes the sheet');
+  assert.equal(api.isOpen(), false);
+  assert.equal(key({ key: 'Escape' }).prevented, false, 'nothing open → Esc is left to the page');
+  assert.equal(key({ key: 'r', metaKey: true }).prevented, true, '⌘R');
+  assert.equal(key({ key: 'R', ctrlKey: true }).prevented, true, 'Ctrl+R');
+  assert.equal(key({ key: 'F5' }).prevented, true, 'F5');
+  assert.equal(key({ key: 'r', metaKey: true, shiftKey: true }).prevented, false, '⌘⇧R is not ours');
+  assert.equal(actions.filter((a) => a === 'refresh').length, 3);
+  key({ key: '[', metaKey: true });
+  key({ key: ']', ctrlKey: true });
+  assert.deepEqual(hist, ['back', 'forward']);
+  key({ key: '[', metaKey: true, target: { isContentEditable: true, tagName: 'DIV' } });
+  key({ key: ']', metaKey: true, target: { tagName: 'TEXTAREA' } });
+  assert.deepEqual(hist, ['back', 'forward'], 'history shortcuts stay out of editors');
+  // right-click on the pill = long press → quick menu; Esc closes it first.
+  api.setMenuProvider(() => [{ id: 'probe', label: '探针' }, { id: 'reload', label: '刷新' }]);
+  const pill = shadow.querySelector('.ak-pill');
+  const ctx = { prevented: false, preventDefault() { ctx.prevented = true; } };
+  pill.listeners.contextmenu.forEach((fn) => fn(ctx));
+  assert.equal(ctx.prevented, true, 'no browser context menu on the pill');
+  const menu = shadow.querySelector('.ak-menu');
+  assert.equal(menu.dataset.show, 'true');
+  assert.ok(menu.innerHTML.includes('data-menu="probe"') && menu.innerHTML.includes('data-menu="reload"'));
+  assert.equal(actions.at(-1), 'longpress');
+  assert.equal(key({ key: 'Escape' }).prevented, true);
+  assert.equal(menu.dataset.show, 'false');
+  pill.listeners.contextmenu.forEach((fn) => fn(ctx));
+  assert.equal(menu.dataset.show, 'true');
+  pill.listeners.contextmenu.forEach((fn) => fn(ctx));
+  assert.equal(menu.dataset.show, 'false', 'second right-click toggles the menu off');
+});
+
 test('the whole bundle boots the dock inside a page without a Tauri runtime', async () => {
   const { doc, byId } = fakeDom();
   const store = new Map();
@@ -264,6 +314,29 @@ test('the whole bundle boots the dock inside a page without a Tauri runtime', as
   assert.equal(byId['ak-status'].textContent, '浏览器预览模式(无 Tauri 运行时)');
   assert.ok(byId['ak-history-list'].innerHTML.includes('暂无记录'));
   assert.equal(byId['ak-unlock-opus'].checked, true); // DEFAULT_PREFS applied through the shadow root
+  // no platform stamp (Android / preview): the 桌面布局 row stays hidden
+  assert.equal(byId['ak-layout-row'].hidden, true);
+});
+
+test('embedded dock on desktop (platform stamp): 桌面布局 row is shown and the hints talk keyboard, not touch', async () => {
+  const { doc, byId } = fakeDom();
+  const store = new Map();
+  const sandbox = {
+    __ARENAKIT_PLATFORM__: 'desktop',
+    document: doc, innerWidth: 1280, innerHeight: 860,
+    localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k), key: (i) => [...store.keys()][i], get length() { return store.size; } },
+    navigator: { clipboard: { writeText: async () => {} } },
+    location: { pathname: '/agent', href: 'https://arena.ai/agent', assign() {} },
+    console, setTimeout, clearTimeout, clearInterval, URL, JSON, Math, Date, Promise, Map, Set, Number, String, Object, Array, Error,
+    setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; },
+  };
+  sandbox.window = sandbox; sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(read('src/embed/dock-embedded.gen.js'), sandbox, { filename: 'dock-embedded.gen.js' });
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(byId['ak-layout-row'].hidden, false);
+  assert.ok(byId['ak-layout-note'].textContent.includes('⌘R'), 'running layout (pill) explained');
+  assert.ok(byId['ak-refresh-note'].textContent.includes('F5'), 'touch-only hint replaced by the shortcuts');
 });
 
 /* Runtime-mode boot with a Tauri stand-in (like src/embed/preview.html):

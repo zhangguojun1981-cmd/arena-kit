@@ -163,7 +163,7 @@
           <button class="ak-btn ak-btn-sm" data-action="nav-reload">刷新</button>
         </div>
         <label class="ak-switch" id="ak-pill-refresh-row"><span class="ak-switch-text">悬浮窗显示刷新按钮</span><input type="checkbox" id="ak-pill-refresh" checked /><i class="ak-switch-track"></i></label>
-        <div class="ak-note ak-embed-only">在对话底部按住页面向上滑动也会刷新；刷新时顶部显示进度条。</div>
+        <div class="ak-note ak-embed-only" id="ak-refresh-note">在对话底部按住页面向上滑动也会刷新；刷新时顶部显示进度条。</div>
       </div>
       <hr class="ak-divider" />
       <div class="ak-group">
@@ -213,6 +213,13 @@
             <button type="button" data-theme-pick="light" aria-pressed="false">亮色</button>
             <button type="button" data-theme-pick="dark" aria-pressed="false">暗色</button>
           </div>
+        </label>
+        <label class="ak-field ak-desktop-only" id="ak-layout-row" hidden><span>桌面布局</span>
+          <div class="ak-seg" id="ak-layout" role="group" aria-label="桌面布局">
+            <button type="button" data-layout-pick="pill" aria-pressed="true">悬浮胶囊（同安卓）</button>
+            <button type="button" data-layout-pick="dock" aria-pressed="false">右侧面板</button>
+          </div>
+          <div class="ak-note" id="ak-layout-note">胶囊贴在页面边缘，单击开面板、右键 / 长按快捷菜单；切换后重启 ArenaKit 生效。</div>
         </label>
         <label class="ak-switch"><span class="ak-switch-text">截获会话流<small>识别模型的前提；关闭后不再上报运行令牌</small></span><input type="checkbox" id="ak-capture-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">额度轮询<small>每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新</small></span><input type="checkbox" id="ak-pulse-on" checked /><i class="ak-switch-track"></i></label>

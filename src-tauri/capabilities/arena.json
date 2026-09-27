@@ -1,14 +1,22 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "arena-page",
-  "description": "Scripts injected into the REMOTE arena.ai page (injected/*.js via bridge.js). Deliberately narrow: hand over run tokens, relay page events to the dock, allowlisted proxy GETs and the JSON store. No window/webview/event APIs and no arena_command (the page must never eval into itself via Rust).",
-  "windows": ["main"],
-  "webviews": ["arena"],
+  "description": "Scripts injected into the REMOTE arena.ai page (injected/*.js via bridge.js) and, in the desktop \"pill\" layout, the dock embedded in that page. Deliberately narrow: hand over run tokens, relay page events to the dock, allowlisted proxy GETs, the JSON store and the Rust event stream the embedded dock subscribes to (arenakit://trace, arenakit://page). No window/webview APIs and no arena_command (the page must never eval into itself via Rust).",
+  "windows": [
+    "main"
+  ],
+  "webviews": [
+    "arena"
+  ],
   "local": false,
   "remote": {
-    "urls": ["https://arena.ai/*"]
+    "urls": [
+      "https://arena.ai/*"
+    ]
   },
   "permissions": [
+    "core:event:allow-unlisten",
+    "core:event:allow-listen",
     "allow-on-token",
     "allow-page-event",
     "allow-proxy-get",

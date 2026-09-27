@@ -33,6 +33,10 @@ import { initialState as watchdogInitialState, parseStatus as watchdogParse, dec
 // arena page; otherwise this is the dock webview's own document.
 const EMBED = globalThis.__ARENAKIT_EMBED__ && globalThis.__ARENAKIT_EMBED__.root ? globalThis.__ARENAKIT_EMBED__ : null;
 const root = EMBED ? EMBED.root : document;
+// Desktop = the split-view dock webview (never embedded) or the page-embedded
+// pill layout on macOS/Windows/Linux (Rust stamps __ARENAKIT_PLATFORM__ into
+// the init script). Android is embedded with platform 'mobile'.
+const DESKTOP = !EMBED || globalThis.__ARENAKIT_PLATFORM__ === 'desktop';
 const q = (id) => root.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -187,7 +191,37 @@ function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
   page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
 }
+// 桌面布局: 'pill' (page-embedded status pill + bottom sheet, same as Android,
+// default) | 'dock' (split view with the dock in its own webview on the right).
+// Rust reads prefs.desktopLayout at startup (lib.rs desktop_layout), so a
+// change applies after a restart.
+const LAYOUTS = ['pill', 'dock'];
+// What is actually running (a saved preference applies only after a restart).
+const currentLayout = () => (EMBED ? 'pill' : 'dock');
+function wireLayout() {
+  const row = q('ak-layout-row');
+  if (!row) return;
+  if (!DESKTOP) { row.hidden = true; return; }
+  row.hidden = false;
+  const running = currentLayout();
+  const render = (picked) => {
+    root.querySelectorAll('[data-layout-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layoutPick === picked)));
+    const note = q('ak-layout-note');
+    if (note) note.textContent = picked === running
+      ? (picked === 'pill' ? '胶囊贴在页面边缘：单击开面板、右键 / 长按快捷菜单、拖动自动贴边；⌘R 刷新、Esc 关闭。' : '面板固定在窗口右侧；切到胶囊布局可获得与安卓一致的体验。')
+      : '已保存，重启 ArenaKit 后生效。';
+  };
+  render(LAYOUTS.includes(state.prefs.desktopLayout) ? state.prefs.desktopLayout : running);
+  root.querySelectorAll('[data-layout-pick]').forEach((b) => b.addEventListener('click', () => {
+    const picked = LAYOUTS.includes(b.dataset.layoutPick) ? b.dataset.layoutPick : 'pill';
+    savePrefs({ desktopLayout: picked });
+    render(picked);
+    setStatus(picked === running ? '布局未变' : `桌面布局已设为「${picked === 'pill' ? '悬浮胶囊' : '右侧面板'}」，重启 ArenaKit 后生效`);
+  }));
+}
+
 function wireSettings() {
+  wireLayout();
   for (const [flag, key, id] of FLAG_PREFS) {
     const el = q(id);
     el.checked = state.prefs[key] !== false;
@@ -199,7 +233,9 @@ function wireSettings() {
       if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
     });
   }
-  // 悬浮窗显示刷新按钮 (embedded only; the row is hidden on desktop via CSS)
+  // 悬浮窗显示刷新按钮 (embedded only; the row is hidden in the split-view dock via CSS)
+  const refreshNote = q('ak-refresh-note');
+  if (refreshNote && DESKTOP) refreshNote.textContent = '⌘R / Ctrl+R / F5 也会刷新；刷新时顶部显示进度条。';
   const pillRefresh = q('ak-pill-refresh');
   if (pillRefresh) {
     pillRefresh.checked = state.prefs.pillRefresh !== false;

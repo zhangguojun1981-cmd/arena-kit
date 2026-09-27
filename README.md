@@ -24,10 +24,11 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | **自动清理**:归档算式标题的探针残留(仅归档不删除),并同步删除其本地记录 | arena-trace-android / arena-trace-inspector | B 取证 |
 | **会话探针**:向当前对话发一条探针,识别「这一轮」实际模型 | arena-trace-android (quickSend) | B 取证 |
 | **回复监控**:空回复 / 报错 / 中断 / 停滞自动标记到轮次 | ArenaKit 新增 | B 取证 |
-| **安卓状态胶囊 + 底部面板**(按参考安卓应用 v0.6.4 还原):扁平胶囊 = 额度环(百分比在环内,蓝 / 琥珀 / 红)+ 模型名(切换模型时橙黄)/ 探针·清理进度 + 可选 ⟳;单击开面板、长按快捷菜单(探针 / 会话探针 / 清理 / 刷新 / 面板)、拖动后自动贴边;面板为贴底 Bottom Sheet:模型 + 状态行 + 额度倒计时 + 活动日志 + 对话 / 探针 / 工具 / 更多页签 | arena-trace-android (StatusPillView / ControlPanel) | B 取证 |
+| **状态胶囊 + 底部面板**(安卓与 macOS 同一套,按参考安卓应用 v0.6.4 还原;macOS 默认即此布局,设置里可切回「右侧面板」分栏,重启生效):扁平胶囊 = 额度环(百分比在环内,蓝 / 琥珀 / 红)+ 模型名(切换模型时橙黄)/ 探针·清理进度 + 可选 ⟳;单击开面板、长按快捷菜单(探针 / 会话探针 / 清理 / 刷新 / 面板)、拖动后自动贴边;面板为贴底 Bottom Sheet:模型 + 状态行 + 额度倒计时 + 活动日志 + 对话 / 探针 / 工具 / 更多页签 | arena-trace-android (StatusPillView / ControlPanel) | B 取证 |
 | **刷新**:胶囊 ⟳ / 表头 ⟳ / 工具页 / 快捷菜单 / 对话滚到底后按住上拉,刷新时顶部进度条;**回复出错或空白时自动刷新**(看门狗,可关) | arena-trace-android (requestReload / ReplyWatchdog) | B 取证 |
 | **页面链接标签**:点到其他站点的链接、target=_blank、window.open 在应用内「链接页」打开(安卓原生 WebView 图层:✕ / 标题 / 域名 / ⟳ / 在浏览器中打开 / 复制 / 分享;桌面独立窗口),对话不被替换;登录 / 验证域名留在原地,mailto / tel 交给其他应用 | arena-trace-android (LinkPolicy / LinkTab) | B 取证 |
-| **设置**:主题(跟随系统 / 亮色 / 暗色)、截获会话流 / 额度轮询 / 回复监控 / 悬浮窗刷新按钮 / 自动刷新开关 | arena-trace-android (DayNight) / arena-trace-inspector(监听开关) | 通用 |
+| **设置**:主题(跟随系统 / 亮色 / 暗色)、桌面布局(悬浮胶囊 / 右侧面板,仅桌面)、截获会话流 / 额度轮询 / 回复监控 / 悬浮窗刷新按钮 / 自动刷新开关 | arena-trace-android (DayNight) / arena-trace-inspector(监听开关) | 通用 |
+| **macOS 键鼠**:胶囊右键 = 长按快捷菜单、Esc 逐层关闭(对话框 → 菜单 → 面板)、⌘R / F5 经 dock 刷新(防抖 + 忙碌确认 + 进度条)、⌘[ / ⌘] 页面前进后退、悬停高亮 | ArenaKit 新增(桌面对齐安卓) | 通用 |
 
 完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 

@@ -1,8 +1,9 @@
-/* Embedded dock shell (Android).
+/* Embedded dock shell (Android, and the default "pill" layout on desktop).
  *
- * Mobile Tauri gives us exactly one webview per window, so the dock that
- * desktop renders in its own webview is mounted INSIDE the arena.ai page
- * instead, following the reference app's (arena-trace-android v0.6.x) overlay:
+ * Mobile Tauri gives us exactly one webview per window, so the dock is mounted
+ * INSIDE the arena.ai page, following the reference app's (arena-trace-android
+ * v0.6.x) overlay; desktop runs the very same shell by default (设置 → 桌面布局
+ * switches back to the split view with the dock in its own webview):
  *
  *   status pill   flat 36 dp capsule hugging a screen edge: quota ring (arc =
  *                 remaining %, number inside) + one-line label (model / task
@@ -18,6 +19,9 @@
  *                 ours never touch. The pill fades out while the sheet is open.
  *   extras        2 dp page-load progress bar at the top, in-shadow confirm
  *                 dialog, pull-up-to-refresh at the bottom of the conversation.
+ *   desktop       right-click on the pill = long press, Esc closes dialog →
+ *                 menu → sheet, ⌘/Ctrl+R / F5 reload via the dock, ⌘[ / ⌘]
+ *                 page history, hover styles.
  *
  * scripts/bundle-dock.mjs packs this file, dock.js and src/lib into one classic
  * script (src/embed/dock-embedded.gen.js) that Rust appends to the mobile init
@@ -98,6 +102,10 @@ export const EMBED_CSS = `
   font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
 .ak-pill:active { filter: brightness(.96); }
+@media (hover: hover) {
+  .ak-pill:hover { box-shadow: 0 3px 12px rgba(0,0,0,.2); }
+  .ak-menu button:hover:not([disabled]) { background: var(--ak-surface-low); }
+}
 .ak-pill-ring { position: relative; flex: none; width: ${RING_SIZE}px; height: ${RING_SIZE}px; }
 .ak-pill-ring svg { position: absolute; inset: 0; width: ${RING_SIZE}px; height: ${RING_SIZE}px; overflow: visible; }
 .ak-pill-track { fill: none; stroke: var(--ak-surface-high); stroke-width: ${RING_STROKE}; }
@@ -446,8 +454,33 @@ export function mount(win) {
   wrap.addEventListener('pointerup', end);
   wrap.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; clearTimeout(longTimer); place(true); } });
   pill.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fire('panel'); setOpen(true); } });
-  pill.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Desktop (mouse): right-click = the long-press quick menu.
+  pill.addEventListener('contextmenu', (e) => { e.preventDefault(); clearTimeout(longTimer); drag = null; if (menuOpen()) setMenu(false); else { openMenu(); fire('longpress'); } });
   place(false);
+
+  // ── keyboard (desktop): Esc closes dialog → menu → sheet; ⌘/Ctrl+R / F5
+  // reload through the dock's requestReload (debounce, confirm while busy,
+  // progress bar) — WKWebView has no reload shortcut of its own. Capture
+  // phase so arena's handlers don't see an Esc we consumed.
+  const isEditable = (el) => !!el && (el.isContentEditable || /^(input|textarea|select)$/i.test(el.tagName || ''));
+  onWin('keydown', (e) => {
+    if (!e || e.defaultPrevented) return;
+    if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (api.handleBack()) { e.preventDefault(); e.stopPropagation(); }
+      return;
+    }
+    const mod = e.metaKey || e.ctrlKey;
+    if ((mod && !e.shiftKey && !e.altKey && (e.key === 'r' || e.key === 'R')) || e.key === 'F5') {
+      e.preventDefault(); e.stopPropagation();
+      fire('refresh');
+      return;
+    }
+    // ⌘[ / ⌘] page history (not inside editors, where they may mean indent).
+    if (mod && !e.shiftKey && !e.altKey && (e.key === '[' || e.key === ']') && !isEditable(e.target)) {
+      e.preventDefault();
+      try { if (e.key === '[') win.history.back(); else win.history.forward(); } catch (_) { /* ignore */ }
+    }
+  }, true);
 
   // ── sheet: swipe down on the handle / header closes it ───────────────
   const grabs = [root.querySelector('.ak-sheet-handle'), sheetTop || root.querySelector('.ak-head')].filter(Boolean);

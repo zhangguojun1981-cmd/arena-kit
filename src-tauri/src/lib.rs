@@ -52,10 +52,29 @@ const LINKS_JS: &str = include_str!("../../injected/links.js");
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
 const PLUS_JS: &str = include_str!("../../injected/plus.js");
 const LEADERBOARD_JS: &str = include_str!("../../injected/leaderboard.js");
-// Mobile only: the whole dock (dock.js + lib + embed/shell.js) as one classic
-// script, mounted inside the arena page after DOMContentLoaded.
-#[cfg(mobile)]
+// The whole dock (dock.js + lib + embed/shell.js) as one classic script,
+// mounted inside the arena page after DOMContentLoaded: always on mobile, and
+// the default "pill" layout on desktop (same status pill + bottom sheet UI).
 const DOCK_EMBED_JS: &str = include_str!("../../src/embed/dock-embedded.gen.js");
+
+/// Desktop window layout (设置 → 桌面布局, `prefs.desktopLayout`), read from the
+/// store at startup. `Pill` = one webview, the embedded pill + bottom sheet
+/// (Android parity, default); `Dock` = split view with the dock in its own
+/// webview on the right.
+#[cfg(any(desktop, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopLayout {
+    Pill,
+    Dock,
+}
+
+#[cfg(any(desktop, test))]
+fn desktop_layout(prefs: &Value) -> DesktopLayout {
+    match prefs.get("desktopLayout").and_then(|v| v.as_str()) {
+        Some("dock") => DesktopLayout::Dock,
+        _ => DesktopLayout::Pill,
+    }
+}
 
 /// Trace polling: 8 attempts, 3 s apart (extension background.js parity).
 const TRACE_MAX_ATTEMPTS: u32 = 8;
@@ -78,8 +97,11 @@ fn guarded(out: &mut String, name: &str, src: &str) {
 /// in the MAIN world before page load. UI scripts are deferred to
 /// DOMContentLoaded so they see a ready DOM. `embedded_dock` (mobile) is
 /// appended last in the deferred block, after every page hook it drives.
-fn build_init_script(embedded_dock: Option<&str>) -> String {
+fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     let mut s = String::new();
+    // Lets the (embedded) dock tell desktop from Android: settings rows,
+    // keyboard shortcuts, touch-only hints.
+    s.push_str(&format!("window.__ARENAKIT_PLATFORM__={};\n", json!(platform)));
     // document_start scripts.
     guarded(&mut s, "bridge", BRIDGE_JS);
     guarded(&mut s, "gm-shim", GM_SHIM_JS);
@@ -583,10 +605,6 @@ fn open_tab(app: tauri::AppHandle, url: String) -> Result<bool, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(desktop)]
-    let init = build_init_script(None);
-    #[cfg(mobile)]
-    let init = build_init_script(Some(DOCK_EMBED_JS));
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
@@ -605,12 +623,37 @@ pub fn run() {
             app.manage(store::Store::open(data_dir.join("arenakit-store.json")));
             app.manage(TraceState::default());
 
-            // Desktop: split-view window: arena.ai webview on the left, ArenaKit
-            // native dock webview on the right. The dock lives in its own
-            // webview (not injected into the page), so arena redesigns can't
-            // break it.
+            // Desktop, default "pill" layout: ONE webview — the arena.ai page
+            // with the dock embedded as a status pill + bottom sheet, exactly
+            // like Android (设置 → 桌面布局 switches to the split view below).
             #[cfg(desktop)]
-            {
+            let layout = desktop_layout(&app.state::<store::Store>().get("prefs"));
+            #[cfg(desktop)]
+            if layout == DesktopLayout::Pill {
+                let init = build_init_script(Some(DOCK_EMBED_JS), "desktop");
+                let nav_app = app.handle().clone();
+                let _arena = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "arena",
+                    WebviewUrl::External("https://arena.ai".parse().unwrap()),
+                )
+                .title("ArenaKit")
+                .inner_size(1280.0, 860.0)
+                .min_inner_size(480.0, 600.0)
+                .initialization_script(&init)
+                // Links to other sites open in a separate window, never over
+                // the conversation (links.rs).
+                .on_navigation(move |url| route_navigation(&nav_app, url))
+                .build()?;
+            }
+
+            // Desktop, "dock" layout: split-view window: arena.ai webview on
+            // the left, ArenaKit native dock webview on the right. The dock
+            // lives in its own webview (not injected into the page), so arena
+            // redesigns can't break it.
+            #[cfg(desktop)]
+            if layout == DesktopLayout::Dock {
+                let init = build_init_script(None, "desktop");
                 let width = 1360.0_f64;
                 let height = 900.0_f64;
                 let dock_w = 320.0_f64;
@@ -656,6 +699,7 @@ pub fn run() {
             // part of the init script and mounts itself inside the page.
             #[cfg(mobile)]
             {
+                let init = build_init_script(Some(DOCK_EMBED_JS), "mobile");
                 let nav_app = app.handle().clone();
                 let _arena = tauri::WebviewWindowBuilder::new(
                     app,
@@ -681,9 +725,10 @@ mod tests {
 
     #[test]
     fn init_script_isolates_every_module() {
-        let s = build_init_script(None);
-        // bridge first, every module wrapped, UI scripts deferred.
-        assert!(s.starts_with("try{\n"));
+        let s = build_init_script(None, "desktop");
+        // platform stamp, then bridge first, every module wrapped, UI scripts deferred.
+        assert!(s.starts_with("window.__ARENAKIT_PLATFORM__=\"desktop\";\ntry{\n"));
+        assert!(build_init_script(None, "mobile").starts_with("window.__ARENAKIT_PLATFORM__=\"mobile\";\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
         for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
@@ -694,7 +739,7 @@ mod tests {
 
     #[test]
     fn embedded_dock_is_appended_last_in_the_deferred_block() {
-        let s = build_init_script(Some("/*DOCK*/"));
+        let s = build_init_script(Some("/*DOCK*/"), "mobile");
         let dock = s.find("/*DOCK*/").unwrap();
         assert!(s.find("[ArenaKit] leaderboard init failed").unwrap() < dock);
         // bridge.js has its own DOMContentLoaded hook; the deferred-run trailer is the LAST one.
@@ -706,6 +751,15 @@ mod tests {
         assert!(bundle.contains("__define(\"dock.js\""));
         assert!(bundle.contains("__define(\"embed/shell.js\""));
         assert!(!bundle.contains("\nimport "));
+    }
+
+    #[test]
+    fn desktop_layout_defaults_to_the_pill() {
+        assert_eq!(desktop_layout(&json!({"desktopLayout": "dock"})), DesktopLayout::Dock);
+        assert_eq!(desktop_layout(&json!({"desktopLayout": "pill"})), DesktopLayout::Pill);
+        assert_eq!(desktop_layout(&json!({"desktopLayout": 3})), DesktopLayout::Pill);
+        assert_eq!(desktop_layout(&json!({})), DesktopLayout::Pill);
+        assert_eq!(desktop_layout(&Value::Null), DesktopLayout::Pill);
     }
 
     #[test]
