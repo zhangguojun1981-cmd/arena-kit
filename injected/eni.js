@@ -25,7 +25,8 @@
  * buttons with data-state=open) is skipped on every endpoint, matching the
  * upstream behaviour.
  *
- * A small status badge ("ENI") is appended next to the composer (heuristic
+ * A small status badge ("ENI") is appended next to the composer while the
+ * injection is ON — nothing is shown when it is off, the default (heuristic
  * anchor — contenteditable / textarea / role=textbox). Clicking it opens
  * the dock 更多 tab via the dock's `openDock` page event so the user can
  * edit the prompt there. */
@@ -191,6 +192,7 @@
 
   function injectBadge() {
     if (document.getElementById('ak-eni-badge')) return;
+    if (!on) return; // off (the default) → nothing next to the composer
     const composer = findComposer();
     if (!composer) return;
     const badge = document.createElement('button');

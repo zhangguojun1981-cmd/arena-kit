@@ -172,3 +172,30 @@ test('eni badge click opens the dock 更多 tab (openDock page event)', () => {
   handler({});
   assert.deepEqual(sandbox.__lastDispatch, { name: 'openDock', payload: { tab: 'more' } });
 });
+
+test('eni badge only exists while the injection is ON (nothing next to the composer by default)', () => {
+  const { sandbox } = makeSandbox();
+  const created = [];
+  const composer = sandbox.document.createElement('textarea');
+  composer.parentElement = { appendChild: (el) => created.push(el) };
+  composer.insertAdjacentElement = (_where, el) => { created.push(el); return el; };
+  sandbox.__composer = composer;
+  let live = null;
+  sandbox.document.getElementById = (id) => (id === 'ak-eni-badge' ? live : null);
+  sandbox.document.createTextNode = (t) => ({ nodeValue: t });
+  const origCreate = sandbox.document.createElement;
+  sandbox.document.createElement = (tag) => { const el = origCreate(tag); el.remove = () => { if (live === el) live = null; }; el.appendChild = () => {}; return el; };
+  // off (default) → __AK_ENI_SET__ refreshes: no badge inserted
+  sandbox.__AK_ENI_SET__(false, 'x');
+  assert.equal(created.length, 0);
+  // on → badge inserted after the textarea, labelled ENI
+  sandbox.__AK_ENI_SET__(true, 'system prompt');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].id, 'ak-eni-badge');
+  assert.equal(created[0].dataset.on, 'true');
+  live = created[0];
+  // off again → the existing badge is removed and not re-created
+  sandbox.__AK_ENI_SET__(false, 'system prompt');
+  assert.equal(live, null);
+  assert.equal(created.length, 1);
+});
