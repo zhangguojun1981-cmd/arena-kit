@@ -102,3 +102,16 @@ html, body {
 .ak-calls .ak-call .ak-err { color: #ef4444; }
 .ak-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .ak-btns .ak-btn { margin: 0; }
+.ak-input {
+  width: 100%; margin: 6px 0; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--ak-line); background: var(--ak-card); color: var(--ak-fg); font-size: 12px;
+}
+.ak-list { max-height: 320px; overflow-y: auto; }
+.ak-item { border-top: 1px solid var(--ak-line); padding: 6px 0; font-size: 12px; }
+.ak-item .ak-item-title { font-weight: 600; word-break: break-word; }
+.ak-item .ak-item-title.ak-current { color: #a5b4fc; }
+.ak-item .ak-item-models { color: var(--ak-fg); word-break: break-word; }
+.ak-item .ak-item-actions { display: flex; gap: 6px; margin-top: 4px; }
+.ak-link { background: none; border: none; color: #a5b4fc; cursor: pointer; padding: 0; font-size: 12px; }
+.ak-link:hover { text-decoration: underline; }
+.ak-danger { color: #fca5a5; }

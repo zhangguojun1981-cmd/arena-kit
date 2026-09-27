@@ -49,6 +49,20 @@
     </div>
   </section>
 
+  <!-- Module: local conversation → model history (never leaves the device) -->
+  <section class="ak-mod">
+    <div class="ak-mod-head"><span>会话历史</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <input id="ak-history-q" class="ak-input" type="search" placeholder="搜索标题 / 模型 / 会话 ID" />
+      <div id="ak-history-list" class="ak-list"></div>
+      <div class="ak-btns">
+        <button class="ak-btn ak-btn-sm" data-action="history-export">导出全部</button>
+        <button class="ak-btn ak-btn-sm ak-danger" data-action="history-clear">清空历史</button>
+      </div>
+      <div id="ak-history-sub" class="ak-sub"></div>
+    </div>
+  </section>
+
   <!-- Module: enhancement toggles + panels -->
   <section class="ak-mod" data-open="true">
     <div class="ak-mod-head"><span>功能模块</span><span class="ak-chev">▾</span></div>
