@@ -874,6 +874,24 @@ mod desktop {
             };
             let label = format!("{}{}", sessions::TAB_LABEL_PREFIX, tab);
             println!("SMOKE tab={tab} label={label}");
+            // Geometry: the shell must fill the window, the tab must cover the
+            // stage (below the 44px strip, left of the 340px dock).
+            if let Some(window) = app.get_window("main") {
+                let (w, h) = window_logical_size(&window);
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let show = |name: &str| {
+                    if let Some(wv) = app.get_webview(name) {
+                        if let (Ok(p), Ok(sz)) = (wv.position(), wv.size()) {
+                            let p = p.to_logical::<f64>(scale);
+                            let sz = sz.to_logical::<f64>(scale);
+                            println!("SMOKE bounds {name}: x={} y={} w={} h={}", p.x, p.y, sz.width, sz.height);
+                        }
+                    }
+                };
+                println!("SMOKE window inner={w}x{h} scale={scale}");
+                show("shell");
+                show(&label);
+            }
             let mut ok_url = false;
             let mut ok_state = false;
             for i in 0..40 {
