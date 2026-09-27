@@ -7,9 +7,12 @@
  */
 
 // ── chrome.* shim (extension content-script API → localStorage) ─────────
+// Exposed as window.__AK_CHROME__ and bound to a *script-local* `chrome`
+// variable by the Rust init-script wrapper (see lib.rs `wrap`). The page's own
+// window.chrome is never touched, so arena.ai / reCAPTCHA see a stock WebView.
 (() => {
-  const chrome = (window.chrome = window.chrome || {});
-  if (chrome.storage && chrome.storage.sync && chrome.runtime && chrome.runtime.getURL) return;
+  if (window.__AK_CHROME__) return;
+  const chrome = {};
 
   const listeners = [];
   const areaListeners = { sync: [], local: [] };
@@ -102,6 +105,7 @@
   });
   chrome.runtime.onMessage = chrome.runtime.onMessage || { addListener: noop, removeListener: noop, hasListener: () => false };
   chrome.runtime.getManifest = chrome.runtime.getManifest || (() => ({ name: 'ArenaKit', version: (window.__ARENAKIT_ENV__ || {}).version || '0.0.0' }));
+  window.__AK_CHROME__ = chrome;
 })();
 
 // ── GM_* shim (Tampermonkey API → localStorage / proxy_get) ─────────────

@@ -43,7 +43,7 @@ sources['hud.js'] = classic(join(root, 'src', 'hud.js'));
 
 // Mirror of lib.rs::wrap(name, src) — keep in sync.
 const wrap = (name, src) =>
-  `;(function(){try{if(!(window.__ARENAKIT__&&window.__ARENAKIT__.moduleOn(${JSON.stringify(name)})))return;\n${src}\n}catch(e){console.warn('[ArenaKit] ${name} failed',e);}})();\n`;
+  `;(function(){try{if(!(window.__ARENAKIT__&&window.__ARENAKIT__.moduleOn(${JSON.stringify(name)})))return;var chrome=window.__AK_CHROME__||window.chrome;\n${src}\n}catch(e){console.warn('[ArenaKit] ${name} failed',e);}})();\n`;
 
 console.log('assembled init bundle');
 {

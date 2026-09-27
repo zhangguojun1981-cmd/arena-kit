@@ -44,8 +44,10 @@ const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/53
 /// on and (b) a failure inside it can never break the scripts after it.
 /// `scripts/check-syntax.mjs` mirrors this exact shape — keep them in sync.
 fn wrap(name: &str, src: &str) -> String {
+    // `chrome` is bound per script to the shim (gm-shim.js) so ported extension
+    // content scripts work without touching the page's real window.chrome.
     format!(
-        ";(function(){{try{{if(!(window.__ARENAKIT__&&window.__ARENAKIT__.moduleOn({name:?})))return;\n{src}\n}}catch(e){{console.warn('[ArenaKit] {name} failed',e);}}}})();\n"
+        ";(function(){{try{{if(!(window.__ARENAKIT__&&window.__ARENAKIT__.moduleOn({name:?})))return;var chrome=window.__AK_CHROME__||window.chrome;\n{src}\n}}catch(e){{console.warn('[ArenaKit] {name} failed',e);}}}})();\n"
     )
 }
 
@@ -411,7 +413,7 @@ mod tests {
     #[test]
     fn wrap_shape_matches_check_syntax() {
         let w = wrap("plus", "var x = 1;");
-        assert!(w.starts_with(";(function(){try{if(!(window.__ARENAKIT__&&window.__ARENAKIT__.moduleOn(\"plus\")))return;\n"));
+        assert!(w.starts_with(";(function(){try{if(!(window.__ARENAKIT__&&window.__ARENAKIT__.moduleOn(\"plus\")))return;var chrome=window.__AK_CHROME__||window.chrome;\n"));
         assert!(w.ends_with("\n}catch(e){console.warn('[ArenaKit] plus failed',e);}})();\n"));
     }
 
