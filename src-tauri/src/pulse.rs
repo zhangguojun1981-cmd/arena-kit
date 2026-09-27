@@ -1,7 +1,9 @@
 //! pulse.rs — daily-free-credit polling.
 //! Ported from arena-trace-android `PulseClient.kt` / `PulseTiming.kt`.
-//! STATUS (M0 scaffold): timing helpers implemented + tested; live polling
-//! loop is a documented stub for M4.
+//! STATUS: the live poll runs in the arena webview (injected/pulse.js — a
+//! same-origin GET carries the user's cookies, which a Rust client would not
+//! have) and the countdown/anchoring lives in src/lib/pulse.js. This module
+//! keeps the shared thresholds so Rust-side consumers agree with the dock.
 
 /// Back-off after a 429, honoring Retry-After when present (seconds).
 /// Mirrors PulseTiming: clamp to [1, 300] seconds.
@@ -32,9 +34,8 @@ pub fn credit_band(remaining: f64, total: f64) -> CreditBand {
     }
 }
 
-// TODO(M4): async poll loop — 60s interval, refresh immediately when the
-// arena.ai cookie signature changes (account switch), 429 -> backoff_secs.
-// Reads credits from arena.ai /api/me (the only allowlisted read route).
+// Poll cadence (60 s, 15 s after a cookie change, 429 → Retry-After capped at
+// 10 min) is implemented page-side in injected/pulse.js.
 
 #[cfg(test)]
 mod tests {

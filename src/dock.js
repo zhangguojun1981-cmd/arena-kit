@@ -17,6 +17,7 @@ import { parseTargets, DEFAULT_TARGETS } from './lib/probe-logic.js';
 import { createProbeController } from './lib/probe-runner.js';
 import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/session-probe.js';
 import { createReplyMonitor } from './lib/monitor.js';
+import { createPulseState } from './lib/pulse.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -42,6 +43,7 @@ const state = {
   probe: null,              // createProbeController() — auto probe / cleanup / quick send
   quickBusy: false,         // a session probe is in flight
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
+  pulse: createPulseState(), // daily quota % + anchored reset countdown
 };
 
 function sessionRecord(sessionId) {
@@ -463,6 +465,23 @@ function wireProbe() {
   setProbeRunningUi(false);
 }
 
+// ── module: quota gauge (pulse %) ───────────────────────────────────────
+// injected/pulse.js polls /api/me/pulse inside the arena page (cookies stay
+// there) and posts `pulse` events; the dock anchors the reset countdown
+// (PulseTiming) and re-renders every second.
+function renderPulse() {
+  const v = state.pulse.view();
+  q('ak-credit').textContent = v.percent === null ? '—' : v.percent + '%';
+  q('ak-reset').textContent = v.reset;
+  const fill = q('ak-bar-fill');
+  fill.style.width = (v.percent ?? 0) + '%';
+  fill.dataset.band = v.band;
+  q('ak-pulse-sub').textContent = v.text;
+  q('ak-pulse-sub').classList.toggle('ak-warn', !!v.error);
+}
+onPage('pulse', (ev) => { state.pulse.ingest(ev); renderPulse(); });
+setInterval(renderPulse, 1000);
+
 // ── module: reply monitor (stream anomaly badges) ───────────────────────
 function renderMonitor() {
   const m = state.monitor;
@@ -641,6 +660,9 @@ function wireControls() {
         startProbe();
       } else if (a === 'probe-stop') {
         if (state.probe?.stop()) probeLog('正在停止…');
+      } else if (a === 'pulse-refresh') {
+        dispatchToPage('pulse-refresh', null);
+        setStatus('已请求刷新额度');
       } else if (a === 'quick-send') {
         sessionProbe();
       } else if (a === 'cleanup-start') {
