@@ -463,10 +463,10 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   const pill = shadow.querySelector('.ak-pill');
   const arc = shadow.querySelector('.ak-pill-arc');
 
-  // quota → header right column + ring (arc = 72 %, number inside)
+  // quota → header reset hint + ring (arc = 72 %, number inside). The old
+  // header #ak-hud-percent "–" placeholder was removed; the floating pill is
+  // the only place the percent is shown in the header area.
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 72, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
-  assert.equal(byId['ak-hud-percent'].textContent, '72%');
-  assert.equal(byId['ak-hud-percent'].dataset.band, 'ok');
   assert.match(byId['ak-hud-pulse'].textContent, /后重置$/);
   assert.equal(pct.textContent, '72');
   assert.equal(arc.dataset.band, 'ok');
@@ -501,11 +501,11 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.ok(rows.indexOf('R2') < rows.indexOf('R1'), 'newest turn first');
   assert.ok(rows.includes('已切换'));
 
-  // low quota → danger band on ring + header
+  // low quota → danger band on the pill ring (the dock header has no percent
+  // element any more, the pill carries it)
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 6, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
   assert.equal(arc.dataset.band, 'danger');
   assert.equal(pct.textContent, '6');
-  assert.equal(byId['ak-hud-percent'].dataset.band, 'danger');
 
   // reply anomaly → alert outline
   emit('arenakit://page', { name: 'reply-monitor', payload: { sessionId: 's1', runId: 'run_2', frames: 3, textChars: 0, errorFrames: 0, ended: 'done', durationMs: 1200, at: Date.now() } });

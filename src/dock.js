@@ -936,10 +936,8 @@ function renderPulse() {
   const fill = q('ak-bar-fill');
   fill.style.width = (v.percent ?? 0) + '%';
   fill.dataset.band = v.band;
-  // Header right column (reference panel_quota / panel_quota_reset).
-  const pct = q('ak-hud-percent');
-  pct.textContent = v.percent === null ? '–' : v.percent + '%';
-  pct.dataset.band = v.band;
+  // Header right column: only the reset hint stays (the old #ak-hud-percent
+  // "–" placeholder was removed — quota is shown on the floating pill instead).
   const reset = q('ak-hud-pulse');
   reset.textContent = v.percent === null ? (v.error ? '额度：' + v.error : '额度读取中…') : [v.reset || '', v.error].filter(Boolean).join(' · ') || '剩余额度';
   reset.classList.toggle('ak-warn', !!v.error);

@@ -124,10 +124,6 @@ button, input, select, textarea { font-family: inherit; }
 .ak-hud-model[data-known="false"] { color: var(--ak-sub); }
 .ak-hud-status { margin-top: 2px; font-size: 12px; color: var(--ak-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ak-head-quota { flex: none; text-align: right; min-width: 56px; }
-.ak-hud-percent { font-size: 18px; font-weight: 500; line-height: 1.25; color: var(--ak-on-surface); }
-.ak-hud-percent[data-band="unknown"] { color: var(--ak-sub); }
-.ak-hud-percent[data-band="warning"] { color: var(--ak-warn); }
-.ak-hud-percent[data-band="danger"] { color: var(--ak-danger); }
 .ak-hud-reset { margin-top: 2px; font-size: 11px; color: var(--ak-sub); white-space: nowrap; }
 .ak-hud-reset.ak-warn { color: var(--ak-warn); }
 .ak-head-tools { display: flex; align-items: center; gap: 4px; flex: none; }
