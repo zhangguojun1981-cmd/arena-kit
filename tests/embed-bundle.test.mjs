@@ -154,15 +154,24 @@ test('fitFont shrinks long centre text but never below the floor', () => {
 
 /* Minimal DOM stand-in: every element tolerates any property, querySelector
  * returns fresh elements, dataset/style are plain objects. Enough to drive
- * mount() and the dock boot path in browser-preview (no Tauri) mode. */
+ * mount() and the dock boot path in browser-preview (no Tauri) mode.
+ * `listeners[t]` is the bubble-phase list (back-compat with older tests);
+ * `listenersCapture[t]` is the capture-phase list. Use dispatch() to walk
+ * both lists in the real DOM order and honor stopPropagation(). */
 function fakeDom() {
   const events = [];
   const byId = {};
   const bySel = {};
   const mk = (tag) => {
     const base = {
-      tag, dataset: {}, style: {}, children: [], listeners: {},
-      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); events.push(t); },
+      tag, dataset: {}, style: {}, children: [], listeners: {}, listenersCapture: {},
+      addEventListener(t, fn, opts) {
+        // match the DOM: third arg may be a boolean (useCapture) or an options
+        // object with a `capture` property
+        const capture = opts === true || (!!opts && typeof opts === 'object' && !!opts.capture);
+        (capture ? (this.listenersCapture[t] ||= []) : (this.listeners[t] ||= [])).push(fn);
+        events.push(t + (capture ? '(capture)' : ''));
+      },
       removeEventListener() {},
       querySelector: (sel) => (bySel[sel] ||= mk(sel)), querySelectorAll: () => [], getElementById: (id) => (byId[id] ||= mk(id)),
       getBoundingClientRect: () => ({ left: 10, top: 20, width: 46, height: 46 }),
@@ -179,7 +188,21 @@ function fakeDom() {
     getElementById: () => null, querySelector: () => null, querySelectorAll: () => [],
     addEventListener() {},
   };
-  return { doc, shadow, events, mk, byId };
+  // Dispatch an event through one node's listeners, capture then bubble,
+  // honoring event.stopPropagation(). `target` is ignored (real DOM walks the
+  // composed path); tests reach for a single element at a time.
+  const dispatch = (target, type, ev) => {
+    ev = ev || {};
+    let stopped = false;
+    ev.stopPropagation = ev.stopPropagation || (() => { stopped = true; });
+    ev.preventDefault = ev.preventDefault || (() => { ev._prevented = true; });
+    const cap = (target.listenersCapture && target.listenersCapture[type]) || [];
+    const bub = (target.listeners && target.listeners[type]) || [];
+    for (const fn of cap) { if (stopped) break; fn(ev); }
+    for (const fn of bub) { if (stopped) break; fn(ev); }
+    return ev;
+  };
+  return { doc, shadow, events, mk, byId, dispatch };
 }
 
 test('mount() builds the shadow host once and publishes the embed API', async () => {
@@ -241,6 +264,72 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   // second mount is a no-op (idempotent across re-injection)
   assert.equal(mount(win), false);
   assert.equal(doc.body.children.length, 1);
+});
+
+/* Android tap bug: a `pointerup` on the pill opens the overlay; Blink then
+ * synthesizes a `click` from hit-testing the same touch point — if the
+ * overlay is now under the finger, that click dismisses it and the panel
+ * never stays open. The shell must (a) install a shadow-root capture `click`
+ * listener, (b) arm a ~600 ms guard after every pointer-initiated open, and
+ * (c) consume the synthesized event while the guard is live. */
+test('pill tap opens the panel and survives the synthesized click (Android)', () => {
+  const { doc, shadow } = fakeDom();
+  const win = {
+    document: doc, innerWidth: 360, innerHeight: 640,
+    localStorage: { getItem: () => null, setItem: () => {} },
+    addEventListener: () => {},
+    history: { back() {}, forward() {} },
+  };
+  assert.equal(mount(win), true);
+  const api = win.__ARENAKIT_EMBED__;
+  const wrap = shadow.querySelector('.ak-pill-wrap');
+
+  // The production code registers exactly one shadow-root capture-phase click
+  // listener; without it, no shadow-internal click could be intercepted before
+  // the scrim's bubble handler runs.
+  const captureListeners = shadow.listenersCapture.click || [];
+  assert.equal(captureListeners.length, 1, 'shadow-root capture click listener installed');
+  const capture = captureListeners[0];
+
+  const realNow = Date.now;
+  let mockedNow = realNow();
+  Date.now = () => mockedNow;
+  try {
+    // 1) pill pointerup → opens the panel AND arms the guard
+    wrap.listeners.pointerdown[0]({ pointerId: 11, clientX: 340, clientY: 130, button: 0 });
+    wrap.listeners.pointerup[0]({ pointerId: 11, clientX: 340, clientY: 130 });
+    assert.equal(api.isOpen(), true, 'panel is open');
+
+    // While the guard is live, the capture listener must stopPropagation the
+    // synthesized click — the scrim bubble handler would otherwise close it.
+    const ev = { _sp: 0, _pd: 0 };
+    ev.stopPropagation = () => { ev._sp++; };
+    ev.preventDefault = () => { ev._pd++; };
+    capture(ev);
+    assert.equal(ev._sp, 1, 'synthetic click during guard is stopped');
+    assert.equal(ev._pd, 1, 'synthetic click during guard is prevented');
+    assert.equal(api.isOpen(), true, 'panel stays open');
+
+    // 2) after the guard expires (≈600 ms), the capture listener becomes a
+    // no-op so a real scrim tap is still allowed to close the panel.
+    mockedNow += 10_000;
+    const ev2 = { _sp: 0, _pd: 0 };
+    ev2.stopPropagation = () => { ev2._sp++; };
+    ev2.preventDefault = () => { ev2._pd++; };
+    capture(ev2);
+    assert.equal(ev2._sp, 0, 'after guard, capture listener does nothing');
+    assert.equal(ev2._pd, 0, 'after guard, capture listener does nothing');
+
+    // Close + verify programmatic open does NOT re-arm the guard.
+    api.close();
+    mockedNow += 10_000; // definitely past the previous guard
+    api.open();          // no opts → no guard
+    const ev3 = { _sp: 0, _pd: 0 };
+    ev3.stopPropagation = () => { ev3._sp++; };
+    ev3.preventDefault = () => { ev3._pd++; };
+    capture(ev3);
+    assert.equal(ev3._sp, 0, 'programmatic open does not arm the guard');
+  } finally { Date.now = realNow; }
 });
 
 test('desktop input: Esc closes the open layer, ⌘R / F5 fire refresh, ⌘[ ⌘] page history, right-click on the pill opens the quick menu', () => {

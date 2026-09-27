@@ -18,5 +18,9 @@ dist
 # OS
 .DS_Store
 
+# Python bytecode (make-icons.py writes none, but defensively keep these out)
+__pycache__/
+*.pyc
+
 # Upstream source snapshots are NOT vendored here (see vendor/UPSTREAM.md)
 /vendor/upstream-src

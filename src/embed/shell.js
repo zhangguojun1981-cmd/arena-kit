@@ -292,14 +292,31 @@ export function mount(win) {
   const dialogOpen = () => dialog.dataset.show === 'true';
   const syncScrim = () => { scrim.dataset.show = isOpen() || menuOpen() ? 'true' : 'false'; };
   const syncPillHidden = () => { wrap.dataset.hidden = isOpen() ? 'true' : 'false'; };
+  // After a pointer-initiated open, swallow the synthetic click Blink dispatches
+  // on the same touch point (it would otherwise hit the scrim/sheet under the
+  // finger and immediately close the panel we just opened). Window is ~600 ms
+  // to cover slow pointerup→click on Android WebView.
+  let pointerGuardUntil = 0;
+  const guardWindowMs = 600;
+  const consumeGuard = () => pointerGuardUntil > Date.now();
+  const armGuard = () => { pointerGuardUntil = Date.now() + guardWindowMs; };
+  // Capture-phase click listener inside the shadow root: anything during the
+  // guard is consumed before our scrim/sheet listeners run. This is the only
+  // fix that survives both the scrim and the sheet (sheet children also get a
+  // synthesized click when the touch lands on the new overlay). When the guard
+  // has expired, the listener is a no-op so real scrim taps still close.
+  root.addEventListener('click', (e) => {
+    if (consumeGuard()) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
   const setMenu = (show) => { menu.dataset.show = show ? 'true' : 'false'; if (!show) menu.innerHTML = ''; syncScrim(); };
-  const setOpen = (v) => {
+  const setOpen = (v, opts) => {
     const was = isOpen();
     sheet.dataset.open = v ? 'true' : 'false';
     sheet.style.transform = '';
     if (v) setMenu(false);
     syncPillHidden();
     syncScrim();
+    if (v && (opts && opts.pointer)) armGuard();
     if (was !== !!v) { native({ cmd: 'panel', open: !!v }); fire(v ? 'open' : 'close'); }
   };
 
@@ -370,9 +387,10 @@ export function mount(win) {
   dialog.addEventListener('click', (e) => { if (e.target === dialog) closeDialog(false); });
 
   // ── quick menu (long press) ───────────────────────────────────────────
-  function openMenu() {
+  function openMenu(opts) {
     const items = typeof menuProvider === 'function' ? (menuProvider() || []) : [];
     if (!items.length) return;
+    if (opts && opts.pointer) armGuard();
     menu.innerHTML = items.map((it) => `<button type="button" role="menuitem" data-menu="${String(it.id).replace(/"/g, '')}"${it.danger ? ' data-danger="true"' : ''}${it.disabled ? ' disabled' : ''}>${String(it.label).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</button>`).join('');
     menu.querySelectorAll('[data-menu]').forEach((b) => b.addEventListener('click', () => { const id = b.dataset.menu; setMenu(false); fire('menu', id); }));
     // Anchor next to the pill, on the free side of the screen.
@@ -425,7 +443,7 @@ export function mount(win) {
     longTimer = later(() => {
       if (!drag || drag.moved) return;
       drag.long = true;
-      openMenu();
+      openMenu({ pointer: true });
       fire('longpress');
     }, LONG_PRESS_MS);
   });
@@ -449,7 +467,7 @@ export function mount(win) {
     }
     if (inRefreshZone(e.clientX)) { fire('refresh'); return; }
     fire('panel');
-    setOpen(true);
+    setOpen(true, { pointer: true });
   };
   wrap.addEventListener('pointerup', end);
   wrap.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; clearTimeout(longTimer); place(true); } });
