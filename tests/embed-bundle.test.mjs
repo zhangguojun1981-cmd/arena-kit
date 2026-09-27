@@ -332,6 +332,51 @@ test('pill tap opens the panel and survives the synthesized click (Android)', ()
   } finally { Date.now = realNow; }
 });
 
+/* 悬浮球显示 setting (设置 → 悬浮球显示):
+ *   percent-model (default) | percent | model
+ * The picked mode is stored on the pill's data-mode attribute; CSS hides the
+ * ring or the label accordingly. */
+test('ball-centre mode (设置 → 悬浮球显示) drives pill data-mode and CSS visibility', () => {
+  const { doc, shadow } = fakeDom();
+  const win = {
+    document: doc, innerWidth: 360, innerHeight: 640,
+    localStorage: { getItem: () => null, setItem: () => {} },
+    addEventListener: () => {},
+    history: { back() {}, forward() {} },
+  };
+  assert.equal(mount(win), true);
+  const api = win.__ARENAKIT_EMBED__;
+  const pill = shadow.querySelector('.ak-pill');
+  const ring = shadow.querySelector('.ak-pill-ring');
+  const label = shadow.querySelector('.ak-pill-label');
+
+  // default = percent-model
+  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent-model' });
+  assert.equal(pill.dataset.mode, 'percent-model');
+  // ring + label both visible (the fake-DOM doesn't model CSS hiding; we
+  // verify the data-mode attribute and a representative effect below)
+  assert.ok(ring.children.length > 0 || shadow.querySelector('.ak-pill-arc'), 'arc present');
+
+  // percent → no label
+  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent' });
+  assert.equal(pill.dataset.mode, 'percent');
+
+  // model → no ring (arc dataset still present but the CSS hides the ring)
+  api.setPill({ percent: null, label: 'gpt-5', tone: 'normal', mode: 'model' });
+  assert.equal(pill.dataset.mode, 'model');
+  assert.equal(label.textContent, 'gpt-5');
+
+  // unknown mode falls back to default
+  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'wat' });
+  assert.equal(pill.dataset.mode, 'percent-model');
+
+  // alert on the pill is independent of mode (the blink CSS path is unchanged)
+  api.alert(true);
+  assert.equal(pill.dataset.alert, 'true');
+  api.alert(false);
+  assert.equal(pill.dataset.alert, 'false');
+});
+
 test('desktop input: Esc closes the open layer, ⌘R / F5 fire refresh, ⌘[ ⌘] page history, right-click on the pill opens the quick menu', () => {
   const { doc, shadow } = fakeDom();
   const store = new Map();

@@ -129,10 +129,25 @@ export const EMBED_CSS = `
 .ak-pill[data-refreshing="true"] .ak-pill-refresh svg { animation: ak-spin 1s linear infinite; color: var(--ak-brand); }
 .ak-pill[data-refresh="false"] .ak-pill-div, .ak-pill[data-refresh="false"] .ak-pill-refresh { display: none; }
 .ak-pill[data-refresh="false"] .ak-pill-label { padding-right: 9px; }
-.ak-pill[data-alert="true"] { border-color: var(--ak-danger); animation: ak-blink 1s steps(2, start) infinite; }
+
+/* ── ball-centre display mode (设置 → 悬浮球显示) ────────────────────── */
+.ak-pill[data-mode="percent"] .ak-pill-label,
+.ak-pill[data-mode="percent"] .ak-pill-div { display: none; }
+.ak-pill[data-mode="percent"] { padding: 0; width: ${RING_SIZE + 6}px; justify-content: center; }
+.ak-pill[data-mode="model"] .ak-pill-ring,
+.ak-pill[data-mode="model"] .ak-pill-div { display: none; }
+.ak-pill[data-mode="model"] { padding: 0 12px; }
+.ak-pill[data-mode="model"] .ak-pill-label { margin-left: 0; padding-right: 0; max-width: 240px; font-size: 14px; font-weight: 600; }
+.ak-pill[data-alert="true"] {
+  border-color: var(--ak-danger);
+  box-shadow: 0 0 0 2px var(--ak-danger-soft), 0 0 14px var(--ak-danger);
+  animation: ak-blink 0.8s steps(2, start) infinite;
+}
+.ak-pill[data-alert="true"] .ak-pill-arc { stroke: var(--ak-danger); }
+.ak-pill[data-alert="true"] .ak-pill-pct { color: var(--ak-danger); }
 @keyframes ak-orbit { to { transform: rotate(360deg); } }
 @keyframes ak-spin { to { transform: rotate(360deg); } }
-@keyframes ak-blink { 50% { border-color: var(--ak-pill-stroke); } }
+@keyframes ak-blink { 50% { border-color: var(--ak-pill-stroke); box-shadow: 0 2px 8px rgba(0,0,0,.14); } }
 
 /* page-load progress: 2 dp brand bar at the very top (reference page_progress) */
 .ak-progress { position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 2147483005; pointer-events: none; opacity: 0; transition: opacity .25s; }
@@ -341,6 +356,14 @@ export function mount(win) {
     labelEl.textContent = text;
     labelEl.dataset.tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
     pill.dataset.busy = pillState.busy ? 'true' : 'false';
+    // Display mode drives what shows in the centre of the pill:
+    //   'percent-model' (default): ring + label, both visible
+    //   'percent'                 : ring only, label hidden
+    //   'model'                   : label centred (no ring)
+    // CSS hides whichever element does not belong. The flash / alert states
+    // override the visual but never the data-mode attr.
+    const mode = ['percent-model', 'percent', 'model'].includes(pillState.mode) ? pillState.mode : 'percent-model';
+    pill.dataset.mode = mode;
     pill.setAttribute('aria-label', 'ArenaKit ' + (pct === null ? '' : pct + '% ') + text);
     place(); // the label width changed → keep the right-hand edge on the margin
   }
@@ -611,7 +634,7 @@ export function mount(win) {
     /* Pill display: { percent (0..100 | null), label, tone ('normal'|'routed'|'muted'|'active'), busy }. */
     setPill,
     /* Legacy alias for the old ball API: {percent, top, bottom, isModel, routed}. */
-    setBall: (b = {}) => setPill({ percent: b.percent ?? null, label: [b.top && !/%$/.test(String(b.top)) ? b.top : '', b.bottom].filter(Boolean).join(' '), tone: b.routed ? 'routed' : (b.isModel ? 'normal' : 'muted'), busy: false }),
+    setBall: (b = {}) => setPill({ percent: b.percent ?? null, label: [b.top && !/%$/.test(String(b.top)) ? b.top : '', b.bottom].filter(Boolean).join(' '), tone: b.routed ? 'routed' : (b.isModel ? 'normal' : 'muted'), busy: false, mode: b.mode || 'percent-model' }),
     /* Show / hide the ⟳ zone (设置 → 悬浮窗显示刷新按钮). */
     setRefreshButton,
     /* Page load in progress: spinning ⟳ + top progress bar. */

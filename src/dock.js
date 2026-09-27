@@ -162,6 +162,7 @@ const DEFAULT_PREFS = {
   panelTab: 'chat',         // last selected segmented tab
   pillRefresh: true,        // 悬浮窗显示刷新按钮 (Android status pill ⟳ zone)
   autoRefresh: true,        // 回复出错或空白时自动刷新 (reply watchdog)
+  ballCenter: 'percent-model', // 悬浮球显示: 'percent-model' | 'percent' | 'model'
   capture: true,            // 截获会话流 (extension 监听 toggle): hand run tokens to Rust
   pulseOn: true,            // 额度轮询: periodic /api/me/pulse reads (manual 刷新 always works)
   monitorOn: true,          // 回复监控: reply-stream anomaly detection
@@ -220,8 +221,36 @@ function wireLayout() {
   }));
 }
 
+// 悬浮球显示 (embedded pill only — the desktop dock has no pill, the row is
+// hidden via CSS). Three modes:
+//   'percent-model' (default): ring = quota %, label = current model / task
+//   'percent'                  : ring = quota %, no label
+//   'model'                    : label only, no ring (model name centred)
+// The shell renders the picked mode via setPill({mode}); CSS hides the ring
+// or the label accordingly. The alert blink (reply anomaly) is independent
+// of the mode and always lights the border red.
+const BALL_CENTERS = ['percent-model', 'percent', 'model'];
+function wireBallCenter() {
+  const row = q('ak-ballcenter-row');
+  if (!row) return;
+  if (!EMBED) { row.hidden = true; return; }
+  row.hidden = false;
+  const picked = () => (BALL_CENTERS.includes(state.prefs.ballCenter) ? state.prefs.ballCenter : 'percent-model');
+  const render = (p) => {
+    root.querySelectorAll('[data-ballcenter-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.ballcenterPick === p)));
+  };
+  render(picked());
+  root.querySelectorAll('[data-ballcenter-pick]').forEach((b) => b.addEventListener('click', () => {
+    const p = BALL_CENTERS.includes(b.dataset.ballcenterPick) ? b.dataset.ballcenterPick : 'percent-model';
+    savePrefs({ ballCenter: p });
+    render(p);
+    renderPill();
+  }));
+}
+
 function wireSettings() {
   wireLayout();
+  wireBallCenter();
   for (const [flag, key, id] of FLAG_PREFS) {
     const el = q(id);
     el.checked = state.prefs[key] !== false;
@@ -338,7 +367,13 @@ function renderPill() {
     pending: state.hud.pending,
     newChat: !state.nav.sessionId && /^\/agent\/?$/.test(state.nav.path || ''),
   });
-  EMBED.setPill({ percent: v.percent, label: text, tone, busy: !!state.hud.task && state.hud.task.kind !== 'recovery' });
+  EMBED.setPill({
+    percent: v.percent,
+    label: text,
+    tone,
+    busy: !!state.hud.task && state.hud.task.kind !== 'recovery',
+    mode: BALL_CENTERS.includes(state.prefs.ballCenter) ? state.prefs.ballCenter : 'percent-model',
+  });
 }
 /* Transient pill message ("已发送 ✓" 2.5 s, "探针结束 · 命中 n" 4 s). */
 function flashPill(text, ms = 2500) {
