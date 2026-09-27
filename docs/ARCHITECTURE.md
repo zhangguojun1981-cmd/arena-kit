@@ -2,49 +2,66 @@
 
 ## 一句话
 
-一个 Tauri 2 应用:原生窗口里嵌系统 WebView 打开 `https://arena.ai`,在页面注入增强脚本(筛选/解锁/提示词),同时用 Rust 网络层完成"截令牌→查真实模型→盯额度"的取证,结果画在前端 HUD 上。macOS 与 Android 共用同一套 Rust + JS,仅 WebView 宿主不同。
+一个 Tauri 2 应用:一个原生窗口里并排两个 webview —— 左边是 `https://arena.ai`(用户真实登录态,注入 MAIN world 增强/取证脚本),右边是 **dock**(打包的本地页面,持久不刷新,承载全部原生 UI 与编排逻辑)。Rust 只做薄中继:trace 轮询、JSON store、页面事件转发、dock→页面 eval。macOS 与 Android 共用同一套 Rust + JS,仅 WebView 宿主不同。
 
 ## 分层
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  平台宿主 (Tauri Runtime)                                     │
-│   macOS  → WKWebView          Android → android.webkit.WebView │
-├─────────────────────────────────────────────────────────────┤
-│  WebView: https://arena.ai (用户真实登录态 / Cookie)          │
-│   ├── [MAIN world 注入] snoop.js   截 SSE 里的运行令牌         │
-│   ├── [MAIN world 注入] unlock.js  改 __next_f 数据解锁隐藏模型 │
-│   ├── [MAIN world 注入] eni.js     fetch 钩子注入系统提示词    │
-│   └── [idle 注入]       manager.js 筛选/分类/排序 UI(油猴移植)│
-│         plus.js / leaderboard.js  排行榜列 / 投票统计          │
-├──────────────── IPC (window.__ARENAKIT__ / invoke) ───────────┤
-│  Rust 核心 (src-tauri) —— 两端共用                            │
-│   ├── trace.rs   validate_token → poll Trigger.dev → 抽模型名  │
-│   ├── pulse.rs   60s 轮询额度,切账号即刷,429 退避            │
-│   ├── cookies.rs 从 WebView 读 arena.ai Cookie 供原生请求      │
-│   └── inject.rs  按平台把 injected/*.js 装进 WebView           │
-├─────────────────────────────────────────────────────────────┤
-│  前端 HUD (src/) —— 两端共用 DOM overlay                     │
-│   悬浮球 / 模型名卡片 / 额度进度条 / 探针控制 / 设置面板       │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  平台宿主 (Tauri Runtime)  macOS → WKWebView   Android → System WebView │
+├───────────────────────────────────┬──────────────────────────────────┤
+│  webview "arena": https://arena.ai │  webview "dock": src/dock.html    │
+│   [document_start, MAIN world]     │   服务端模型 + 轮次(turns.js)     │
+│    bridge.js  __ARENAKIT__ 桥      │   回复监控(monitor.js)            │
+│    gm-shim.js GM_* 垫片            │   使用额度 Token/费用(usage.js)   │
+│    snoop.js   截 SSE 运行令牌      │   额度 %(pulse.js 锚定倒计时)     │
+│    monitor.js 回复流帧归约         │   会话历史(history.js)            │
+│    pulse.js   /api/me/pulse 轮询   │   自动探针(probe-logic/runner)    │
+│    unlock.js / eni.js              │   自动清理(runner.cleanup)        │
+│    conversation-rename.js          │   会话探针(session-probe.js)      │
+│    probe.js   ArenaProbe RPC 动作  │   重命名对话(rename.js, rpc.js)   │
+│   [DOMContentLoaded]               │   功能开关 / 提示词注入            │
+│    manager.js plus.js leaderboard  │                                  │
+├───────────────────────────────────┴──────────────────────────────────┤
+│  Rust (src-tauri, 两端共用)                                            │
+│   trace.rs / usage.rs  validate_token → poll Trigger.dev → 模型 + 用量 │
+│   store.rs             arenakit-store.json (prefs/历史/闸门)           │
+│   lib.rs               on_token · page_event → 'arenakit://page'       │
+│                        arena_command(dock→页面 eval)· proxy_get 白名单 │
+│   pulse.rs             阈值常量(轮询在页面侧)                          │
+└──────────────────────────────────────────────────────────────────────┘
 ```
+
+## 编排模型:dock 是大脑,页面是手
+
+探针 / 清理 / 重命名 / 会话探针都是 dock 里的 JS 循环(`src/lib/probe-runner.js`,安卓 `ProbeController` 的移植):每一步通过 `arena_command` 在页面里执行 `window.ArenaProbe.call(action, argsJson, reqId)`,页面完成一个安全的 DOM 动作后用 `__ARENAKIT__.send('probe-result', {reqId, ok, data})` 回话,dock 的 `rpc.js` 按 `reqId` 兑现 Promise(35s 超时)。模型名不从 DOM 猜,而是等 snoop → Rust trace 管线按 `sessionId` 给出。停止是即时的:每个 await 都与取消令牌竞速。
+
+这样页面脚本保持无状态、随时可被 SPA 导航冲掉重新注入,而进度、计数、历史都活在不刷新的 dock 里。
 
 ## 令牌截获数据流(核心取证链)
 
 1. 用户在 arena.ai 发一条消息 → 页面向 `/ai-proxy/realtime/.../sessions/<id>/stream` 发 SSE 请求。
-2. `snoop.js`(MAIN world,`tee()` 分流响应体,不干扰页面)从 SSE 帧里提取 `public-access-token`(Trigger.dev JWT)+ `sessionId`。
-3. 通过 `window.postMessage` → Tauri IPC 把 `{token, sessionId}` 送到 Rust。
-4. Rust `trace.rs`:`validate_token`(校验 pub/iss/aud/exp/单一 run scope/session 匹配)→ 轮询 `https://api.trigger.dev/api/v1/runs/<runId>/events`(8 次 × 3s,带 `Authorization: Bearer <token>`)→ `extract_models` 从 `ai.streamText.doStream` 等 span 的 cube 标签抽出服务端真实模型名。
-5. 结果经 IPC 回前端 HUD 显示。**盲测模型也能看出真实身份。**
+2. `snoop.js`(MAIN world,`tee()` 分流响应体,不干扰页面)从 SSE 帧里提取 `public-access-token`(Trigger.dev JWT)+ `sessionId`;同时把原始帧交给页面内的 `monitor.js`(只归约为数字/标志,会话文本不出页面)。
+3. `__ARENAKIT__.onToken` → Tauri `on_token` 把 `{token, sessionId}` 送到 Rust。
+4. Rust `trace.rs`:`validate_token`(校验 pub/iss/aud/exp/单一 run scope/session 匹配)→ 轮询 `https://api.trigger.dev/api/v1/runs/<runId>/events`(8 次 × 3s,`Authorization: Bearer <token>`)→ `extract_models` 从 `ai.streamText.doStream` 等 span 的 cube 标签抽出服务端真实模型名,`usage.rs` 顺带抽 Token / 费用标签。
+5. 逐阶段 `arenakit://trace` 事件(token/poll/model/error/done)到 dock:轮次追踪器记录「第 N 轮 → 模型」,用量模块累加,会话历史落库,自动重命名(若开启)只在当前对话、trace 完整、每对话一次的前提下触发。**盲测模型也能看出真实身份。**
 
 > 关键:令牌校验/解析/SSE 解析规则来自 `core.js`(扩展版)与 `ArenaProtocol.kt`(安卓版),两者已逐条对齐,移植到 Rust 时必须保持规则一致(见 DEVELOPMENT.md 的移植表)。
 
-## 为什么注入分两个时机 / 两个 world
+## 安全边界
 
-- **MAIN world + `document_start`**:`snoop.js`(要在 Next.js fetch 前挂钩子)、`unlock.js`(要在 `__next_f` push 前接管)、`eni.js`(fetch 拦截)。必须在页面脚本之前、且与页面共享 `window`。
-- **默认时机 + `document_idle`**:`manager.js` 等 UI 脚本,等 DOM 就绪后再挂面板。
+- 页面 webview 的 capability(`capabilities/arena.json`)只开放 `on_token / page_event / store_* / proxy_get`;`arena_command` 只有 dock 能调,远程页面永远不能借 Rust 向自己 eval。
+- 重命名/归档只走 Arena 自带的侧栏菜单与对话框(`conversation-rename.js`),不碰私有接口;归档不是删除。
+- 探针只发送裸算式 `N op N =`,只在全新 `/agent` 且确认 Agent Mode 后发送,**绝不覆盖人工草稿**;清理只归档算式标题、跳过当前打开的对话。
+- 额度轮询是页面内同源 GET,Cookie 不导出;`/api/**` 只读这一条。
+- 回复监控上报的只有计数/标志和 ≤160 字符的服务端错误信息。
 
-Tauri 里用 `WebviewWindowBuilder::initialization_script`(MAIN world 等价,页面加载前执行)承载前者;后者可在前端 `DOMContentLoaded` 后 `eval` 注入,或同样用 init script 内部延迟挂载。
+## 为什么注入分两个时机
+
+- **`document_start`(init script,MAIN world)**:`bridge.js`(其余脚本都依赖它)、`snoop.js`(要在 Next.js fetch 前挂钩子)、`monitor.js`、`pulse.js`、`unlock.js`(要在 `__next_f` push 前接管)、`eni.js`(fetch 拦截)、`conversation-rename.js`、`probe.js`。
+- **`DOMContentLoaded`**:`manager.js` / `plus.js` / `leaderboard.js` 等 UI 脚本,等 DOM 就绪后再挂面板。
+
+两组都由 `lib.rs::build_init_script` 打成一个 `initialization_script`(每次导航前自动重跑,SPA 路由冲不掉),每个模块各自 try/catch 隔离(一个模块顶层抛错不影响其他模块,有 Rust 单测保证)。
 
 ## 平台差异(仅这些不同)
 
@@ -52,8 +69,9 @@ Tauri 里用 `WebviewWindowBuilder::initialization_script`(MAIN world 等价,页
 |---|---|---|
 | WebView 初始化 | Tauri 默认 | 需 `minSdk 26`,启用 `mixedContent`/DOM storage |
 | 注入 MAIN world 脚本 | `initialization_script` | 同,Tauri 2 mobile 支持 |
-| 原生 HTTP 带 Cookie | reqwest + WKHTTPCookieStore 导出 | reqwest + CookieManager 导出 |
-| 悬浮 HUD | 前端 overlay(窗口内) | 前端 overlay;如需系统级悬浮球再加 `SYSTEM_ALERT_WINDOW`(二期) |
+| 需要 Cookie 的请求 | 在页面内同源 fetch(`pulse.js`),无需导出 | 同 |
+| 原生 HTTP(trace) | reqwest,只带 Trigger.dev 公开令牌 | 同 |
+| dock 面板 | 右侧子 webview | 同(窄屏时可改为叠放,二期) |
 | 签名 | Apple 开发者证书(或自签本地用) | keystore(复用 arena-trace-android 的 CI 方案) |
 
 ## 网络与代理注意

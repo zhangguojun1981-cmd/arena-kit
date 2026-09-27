@@ -26,9 +26,12 @@
 **Tauri 2 胜出理由**:唯一同时满足"双端 + 稳定 MAIN world 注入 + 原生 HTTP + 小体积"且**核心逻辑单份 Rust**的方案。已有的 `core.js`(JS)和 `ArenaProtocol.kt`(Kotlin)两版取证逻辑,移植到 Rust 后成为**唯一真相源**,两端共用。
 
 语言分工:
-- **Rust**(`src-tauri/`):取证网络层(trace/pulse)、Cookie 导出、WebView 初始化与脚本注入、IPC 命令。两端共用。
-- **JS/TS**(`injected/` + `src/`):注入 arena.ai 的增强脚本、HUD overlay UI。两端共用。
+- **Rust**(`src-tauri/`):trace 取证网络层、JSON 持久化 store、页面↔dock 事件中继、`arena_command`(dock 向 arena 页面 eval)、白名单 `proxy_get`、WebView 初始化与脚本注入。两端共用。
+- **JS**(`injected/`):注入 arena.ai 的 MAIN world 脚本(桥、截令牌、回复监控、额度轮询、探针 RPC、增强脚本)。
+- **JS**(`src/`):原生 **dock** 面板(独立 webview,ES module,不随 arena 页面刷新)+ `src/lib/*` 纯逻辑库(全部有 node:test 单测)。
 - 平台特定代码极少:仅 WebView 宿主创建与权限声明,由 Tauri 封装。
+
+> 设计要点:**dock 是编排者,arena 页面只做无状态的 DOM 动作**。探针/清理/重命名循环都在 dock 里跑(`src/lib/probe-runner.js`),每一步通过 `arena_command` 调页面的 `window.ArenaProbe.call(...)`,结果经桥以 `probe-result` 页面事件回到 dock。Rust 只做薄中继。
 
 ---
 
@@ -56,13 +59,26 @@
 - `snoop.js` 截令牌 → `__ARENAKIT__.onToken` → `fetch_trace` 命令 → Trigger.dev 8×3s 轮询 → `extract_models` → `emit('arenakit://models')`。
 - 状态:10 单测全绿(validate/extract/dedup/fatal-status);实况轮询已接线。**待真机发消息确认 HUD 显示模型名。**
 
-### M4 — 额度 HUD(pulse)
-- 移植 `pulse.rs`:60s 轮询额度,三色进度条,切账号即刷,429 退避。
-- 验收:HUD 显示额度百分比 + 倒计时;切账号数据刷新。
+### M4 — 额度百分比(pulse)✅ 代码就位
+- `injected/pulse.js` 在 arena 页面内同源 `GET /api/me/pulse`(自带 Cookie,**不导出凭据**):60s 节奏、Cookie 变化(切账号)15s、429 按 `Retry-After` 退避(上限 10 分钟);结果以 `pulse` 页面事件送 dock。
+- `src/lib/pulse.js` 移植安卓 `PulseTiming`:`resetTimeFromRefreshedAt` + `anchorReset`(倒计时不再每次刷新回跳 24h)、`<10%` 红 / `<20%` 黄。
+- 验收:dock「额度」模块显示百分比 + 三色条 + `H:MM:SS 后重置` 每秒走字;切账号刷新;429 时显示限流并退避。**待真机确认。**
 
-### M5 — 自动探针 / 清理 / 历史(安卓待移植的二期)
-- 移植 `auto-draw.js`(自动抽卡:新建对话→填 prompt→发送→匹配目标→命中改名)、`conversation-rename.js`(清理算式标题残留)、`history.js`(会话历史本地记录)。
-- 验收:探针能跑完设定轮数,命中即停,清理不误删。
+### M5 — 探针 / 清理 / 历史 / 轮次 / 重命名 / 会话探针 / 回复监控 ✅ 代码就位
+全部从 arena-trace-android(及其参考的 arena-trace-inspector)移植,对应关系:
+
+| 功能 | dock 模块 | 逻辑库(单测) | 页面侧 | 来源 |
+|---|---|---|---|---|
+| 服务端模型 + **轮次对话解析模型** | 服务端模型 | `src/lib/turns.js`(TurnTracker) | snoop.js → Rust trace | android `TurnTracker.kt` |
+| **使用额度(Token / 费用,非百分比)** | 使用额度 | `src/lib/usage.js` + `src-tauri/src/usage.rs` | — | inspector `core.js` span 用量标签 |
+| **会话历史**(搜索/打开/删除/导出/清空,累计不因淘汰丢失) | 会话历史 | `src/lib/history.js` | — | inspector `history.js`、android `HistoryLogic.kt` |
+| **重命名对话(可加前缀)** | 重命名对话 | `src/lib/rename.js`、`src/lib/rpc.js` | `injected/conversation-rename.js`、`injected/probe.js` | android `conversation-rename.js` / `probe.js` |
+| **自动探针(抽卡)** | 自动探针 | `src/lib/probe-logic.js`、`src/lib/probe-runner.js` | `injected/probe.js` | android `ProbeLogic.kt` / `ProbeController.kt` |
+| **自动清理**(归档算式标题残留) | 自动清理 | `probe-runner.cleanup` | `probe.js` sidebarList/revealSidebarItem/archive | android `ProbeController.cleanup` |
+| **会话探针**(向当前对话发探针,识别本轮模型) | 会话探针 | `src/lib/session-probe.js` | `probe.js` sendToCurrent | android `quickSend` + TurnTracker |
+| **回复监控**(空回复/报错/中断/停滞 自动标记轮次) | 回复监控 | `src/lib/monitor.js` | `injected/monitor.js`(snoop 帧钩子) | ArenaKit 新增(用户需求) |
+
+- 验收:探针能跑完设定轮数、命中即停/命中全部才停、命中改名「前缀+模型-序号」;清理只归档算式标题且不碰当前对话;会话探针在当前对话内识别本轮模型;回复流异常在轮次列表出现徽标,正常显示「无异常信号」。**待真机确认。**
 
 ### M6 — Android 出包
 - `cargo tauri android build` 出 apk,复用 arena-trace-android 的 keystore/CI 方案。
@@ -83,17 +99,32 @@
 
 | 目标文件 | 来源 | 语言 | 移植要点 |
 |---|---|---|---|
-| `injected/snoop.js` | inspector `snoop.js` | JS→JS | 几乎原样。`postMessage` 目标改为 Tauri IPC 桥(`window.__ARENAKIT__.onToken`)。**sessionFromUrl 正则必须与 trace.rs 的 streamSession 保持 lockstep** |
-| `injected/manager.js` | Arena-Manager `Arena Manager.user.js` | JS→JS | 去掉 `GM_*`:`GM_setValue/getValue`→`localStorage` 或 Tauri store;`GM_xmlhttpRequest`(取 Logo/Gist)→ Tauri `invoke` 走 Rust fetch 绕过 CORS;`GM_addStyle`→ `document.head` 插 style |
-| `injected/unlock.js` | Model-Unlocker `main.js` + `boot.js` | JS→JS | `boot.js` 的设置(`window._ac`)改由前端配置注入;`main.js` 的 `__next_f`/fetch 改写逻辑原样。必须 `document_start` MAIN world |
-| `injected/plus.js` | Arena.ai-Plus `content.js` | JS→JS | 拉 OpenRouter 价格的 fetch 改走 Rust(避免 CORS);其余原样 |
-| `injected/leaderboard.js` | personal-leaderboard `content.js` | JS→JS | 纯本地统计,存储改 Tauri store |
-| `injected/eni.js` | Arena-Ai `arena-prompt-injector.user.js` | JS→JS | 保留 fetch 钩子注入 prompt;`GM_*` 设置面板改前端;去掉 Unicode 混淆(私有工具无需对抗自己) |
-| `src-tauri/src/trace.rs` | inspector `core.js` + android `ArenaProtocol.kt` `TraceClient.kt` | JS/Kotlin→Rust | validateToken(pub/iss/aud/exp/单一 run scope/session 匹配)、extractModels(cube 标签)、8×3s 轮询。**逐条对齐两版规则** |
-| `src-tauri/src/pulse.rs` | android `PulseClient.kt` `PulseTiming.kt` | Kotlin→Rust | 60s 轮询;cookie 签名变化即刷;429 按 Retry-After 退避 |
-| `src-tauri/src/cookies.rs` | android WebView cookie 导出 | Kotlin→Rust | 从 WebView 读 arena.ai Cookie 注入 reqwest |
-| `src/hud.*` | inspector `hud.js` `panel.js` `view-model.js` | JS→JS | overlay DOM,两端共用 |
-| `injected/autodraw.js` | inspector `auto-draw.js` | JS→JS | M5;保留所有 real-DOM pitfall 规避(见下) |
+| `injected/bridge.js` | ArenaKit 新增 | JS | 页面侧 `window.__ARENAKIT__`:`onToken`/`send`(页面事件→dock)/`on`+`dispatch`(dock→页面)/`storeGet|Set`/`proxyGet`/SPA 导航 `nav` 事件。**必须第一个注入** |
+| `injected/snoop.js` | inspector `snoop.js` | JS→JS | 几乎原样。`postMessage` 目标改为 `__ARENAKIT__.onToken`。**sessionFromUrl 正则必须与 trace.rs 的 streamSession 保持 lockstep**。ArenaKit 加了页面内帧钩子 `__ARENAKIT_MONITOR__`(会话文本不出页面) |
+| `injected/monitor.js` | ArenaKit 新增 | JS | 把 SSE 帧归约为帧数/字节/文本长度/错误帧/结束方式/空闲时长,只上报摘要(`reply-monitor` 事件);停止按钮仍在且 2 分钟无帧 → 停滞 |
+| `injected/pulse.js` | inspector `pulse.js` + android `PulseClient.kt`/`startPulseLoop` | JS/Kotlin→JS | 页面内同源 GET(Cookie 留在页面);60s / 切账号 15s / 429 退避;`pulse` 事件 |
+| `injected/conversation-rename.js` | android `assets/conversation-rename.js` | JS→JS | 逐字节同源。只走 Arena 自带的侧栏 ⋯ 菜单与 Rename/Archive 对话框;归档≠删除 |
+| `injected/probe.js` | android `assets/probe.js` | JS→JS | 无状态 RPC 层 `window.ArenaProbe.call(action, argsJson, reqId)`,结果改由 `__ARENAKIT__.send('probe-result', …)` 回传;`precheck` 增加 `hasDraft/draftIsOwnPrompt/title`。全部安全护栏保留(不覆盖人工草稿、只发算式、发送前确认 Agent Mode) |
+| `injected/manager.js` | Arena-Manager `Arena Manager.user.js` | JS→JS | 通过 `gm-shim.js` 提供 `GM_*`;`GM_xmlhttpRequest` 走 `proxy_get` |
+| `injected/unlock.js` | Model-Unlocker `main.js` + `boot.js` | JS→JS | 设置由 dock 开关经 `__AK_UNLOCK_SET__` 注入;必须 `document_start` MAIN world |
+| `injected/plus.js` | Arena.ai-Plus `content.js` | JS→JS | 价格 fetch 走 `proxy_get` |
+| `injected/leaderboard.js` | personal-leaderboard `content.js` | JS→JS | 纯本地统计 |
+| `injected/eni.js` | Arena-Ai `arena-prompt-injector.user.js` | JS→JS | fetch 钩子注入 prompt;设置面板在 dock |
+| `src-tauri/src/trace.rs` | inspector `core.js` + android `ArenaProtocol.kt` `TraceClient.kt` | JS/Kotlin→Rust | validateToken / extractModels / 8×3s 轮询。**逐条对齐两版规则** |
+| `src-tauri/src/usage.rs` | inspector `core.js`(span 用量标签) | JS→Rust | 从 span 抽 Token / 费用;`partial` 时继续轮询补齐 |
+| `src-tauri/src/store.rs` | ArenaKit 新增 | Rust | `<app_data_dir>/arenakit-store.json`,`store_get/set/keys`;dock 的 prefs / 会话历史 / 重命名闸门都存这里 |
+| `src-tauri/src/pulse.rs` | android `PulseTiming.kt` | Kotlin→Rust | 仅保留阈值/退避常量;实况轮询在页面侧(`injected/pulse.js`),倒计时锚定在 `src/lib/pulse.js` |
+| `src/dock.*` | inspector `hud.js` `panel.js` + android `MainActivity` 面板 | JS→JS | 原生 dock(独立 webview),模块:服务端模型/轮次、回复监控、使用额度、额度、会话历史、自动探针、自动清理、会话探针、重命名对话、功能模块、提示词注入 |
+| `src/lib/turns.js` | android `TurnTracker.kt` | Kotlin→JS | 每轮 → 模型;`routed` = 与首轮模型不同;历史最多 6 条 |
+| `src/lib/history.js` | inspector `history.js` + android `HistoryLogic.kt` | JS/Kotlin→JS | `history.<sessionId>` 记录 + `history-carry` 淘汰累计桶;200 条上限 |
+| `src/lib/usage.js` | inspector `view-model.js` | JS→JS | 用量合并/汇总/格式化/证据导出 |
+| `src/lib/rename.js` | ArenaKit 新增(前缀) + android `nextSuffix` | JS | `buildTitle({prefix, model, suffix})` ≤100 字符;每对话一次的自动重命名闸门 |
+| `src/lib/rpc.js` | android `ProbeController.rpc()` | Kotlin→JS | 35s 超时、`deliver(probe-result)`、`cancelAll` |
+| `src/lib/probe-logic.js` | android `ProbeLogic.kt` | Kotlin→JS | 目标解析/别名/模糊匹配、算式标题判定、清理候选、随机算式 |
+| `src/lib/probe-runner.js` | android `ProbeController.kt` | Kotlin→JS | 探针循环、清理扫描、quickSend;停止即时生效(每个 await 与取消令牌竞速) |
+| `src/lib/session-probe.js` | android `quickSend` + TurnTracker | Kotlin→JS | 前置检查(草稿/生成中/对话框)、等待本会话新一轮被识别 |
+| `src/lib/monitor.js` | ArenaKit 新增 | JS | `classifyReply` → 回复报错/中断/停滞/空回复,否则「无异常信号」;标记到当前会话最新一轮 |
+| `src/lib/pulse.js` | android `PulseTiming.kt` + inspector `pulse.js` | Kotlin/JS→JS | `resetTimeFromRefreshedAt`/`anchorReset`/`band`/`formatCountdown`/`createPulseState` |
 
 ---
 
@@ -130,28 +161,54 @@
 ## 6. 已知坑与规避
 
 - **代理/fake-ip**:mihomo 把 `*.arena.ai` 映射到 198.18.0.0/15;`api.trigger.dev` 与 `api.preview.arena.ai` 子域可能路由到死 egress。原生 reqwest 需允许直连或走正确 egress。curl 直连能通则是代理规则问题,不是站点问题。
-- **TipTap/ProseMirror 编辑器**:自动填 prompt 时 `Input.insertText` 和 keyDown+char 都失败/重复,只有逐字符 `char` 事件可行(桌面 CDP);移植 autodraw 到 WebView 注入时用页面内 `execCommand`/InputEvent 逐字符方案,先在真机验证。
+- **TipTap/ProseMirror 编辑器**:自动填 prompt 时 `Input.insertText` 和 keyDown+char 都失败/重复,只有逐字符 `char` 事件可行(桌面 CDP);`injected/probe.js` 的 `fillPrompt` 沿用安卓版已验证的页面内方案(选中内容后 `execCommand('insertText')`,失败则 textContent + input 事件兜底,写后回读校验),先在真机验证。
 - **Shadow DOM 关闭**:读状态用可访问性树/DOM 查询要注意,arena 部分组件 shadow 关闭。
 - **WebView 上下文失效**:Android WebView 被系统回收/重建后注入脚本会失联,需在 `onPageFinished`/Tauri page-load 事件里重新注入,并让 HUD 检测失联后提示刷新而非空转。
 - **Model-Unlocker 依赖 Next.js 内部结构**(`__next_f`、`disable-opus` 字段);arena 改版会失效,失效时 fetch 钩子静默透传(安全不破坏),需版本探测告警。
 
 ---
 
-## 7. IPC 契约(前端 ↔ Rust)
+## 7. IPC 契约(页面 ↔ Rust ↔ dock)
 
-前端注入脚本通过 `window.__ARENAKIT__` 与 Rust 通信(Tauri init script 里预置):
+Tauri 命令(`src-tauri/src/lib.rs`,由 `build.rs` 的 `AppManifest::commands` 生成 `permissions/autogenerated/allow-<cmd>.toml`,再在 `capabilities/` 中按 webview 授权):
+
+| 命令 | 谁能调 | 作用 |
+|---|---|---|
+| `on_token {sessionId, token}` | arena 页面 | snoop 截到令牌 → 校验 → 启动 trace 轮询 |
+| `page_event {name, payload}` | arena 页面 | 页面事件中继到 dock(`arenakit://page`) |
+| `store_get/set/keys` | 两者 | JSON 持久化 store |
+| `proxy_get {url}` | 两者 | 白名单原生 GET(Logo/价格/Gist) |
+| `arena_command {js}` | **仅 dock** | 在 arena 页面 eval(远程页面永远拿不到此权限) |
+
+capabilities:`capabilities/arena.json`(`remote.urls: https://arena.ai/*`,只给页面必需的 6 个命令)与 `capabilities/default.json`(dock,含 `arena_command`)。远程页面要用 IPC 必须有 `remote` capability,且启用了 app manifest 后所有自定义命令都走 ACL。
+
+Rust → dock 事件:
 
 ```
-// 页面 → Rust
-__ARENAKIT__.onToken({sessionId, token})     // snoop 截到令牌
-invoke('fetch_trace', {token, sessionId})     // 触发取证(或由 onToken 内部触发)
-invoke('proxy_get', {url})                     // 绕 CORS 的原生 GET(Logo/价格/Gist)
-invoke('get_credits')                          // 拉额度
-
-// Rust → 前端(事件)
-'arenakit://models'    {models: [{model, provider, partial}], runId}
-'arenakit://credits'   {remaining, total, resetAt}
-'arenakit://error'     {scope, message}
+'arenakit://trace'  {stage:'token'|'poll'|'model'|'error'|'done', sessionId, runId, attempt, max,
+                     models:[{model, provider, partial}], spans:[SpanUsage], complete, status, fatal, checkedAt(ms)}
+'arenakit://page'   {name, payload}   // 页面事件中继
 ```
 
-命令定义在 `src-tauri/src/lib.rs`,capabilities 在 `src-tauri/capabilities/default.json` 白名单授权。
+页面事件(`__ARENAKIT__.send(name, payload)` → `page_event` → dock `onPage(name)`):
+
+| name | 发出者 | payload |
+|---|---|---|
+| `nav` | bridge.js | `{path, sessionId, agentPath, title, url, reason}`(SPA 导航) |
+| `probe-result` | probe.js | `{reqId, ok, data}` / `{reqId, ok:false, error}` |
+| `reply-monitor` | monitor.js | `{sessionId, ended:'done'|'abort'|'stalled'|'http', frames, bytes, textChars, errorFrames, lastError, durationMs, idleMs, generating, at}` |
+| `pulse` | pulse.js | `{ok:true, percent, refreshedAt, at}` / `{ok:false, error, retryAfterMs, at}` |
+
+dock → 页面:`arena_command` eval;约定入口 `window.__ARENAKIT__.dispatch(name, payload)`(如 `pulse-refresh`)、`window.ArenaProbe.call(action, argsJson, reqId)`(探针 RPC)、`__AK_*_SET__`(增强脚本开关)。
+
+探针 RPC 动作(probe.js):`precheck` `newChat` `ensureAgentMode` `send{prompt}`(仅算式、仅新对话、不覆盖草稿)`sendToCurrent{text}`(当前对话,生成中拒绝)`sidebarList{expand}` `collapseSidebar` `openConversation` `revealSidebarItem{sessionId}` `rename{sessionId,title}` `archive{sessionId,requireCurrentUrl,manageSidebar}`。
+
+## 8. 测试与本地检查
+
+```bash
+node --test 'tests/**/*.test.mjs'   # 纯逻辑库直接 import;注入脚本用 node:vm + fakePage 跑
+node scripts/check-syntax.mjs       # 注入脚本按 script、dock 按 module 做语法检查
+cargo test --manifest-path src-tauri/Cargo.toml   # trace/usage/store/pulse 单测 + init 包隔离测试
+```
+
+CI(`.github/workflows/build.yml`):`node-test` → `rust-test` → `macos-dmg` / `android-apk`;可 `gh workflow run build.yml --ref <branch>` 手动触发。
