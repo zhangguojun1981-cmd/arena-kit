@@ -146,7 +146,7 @@ class LinkTab(
     val ripple = TypedValue()
     activity.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, ripple, true)
     b.setBackgroundResource(ripple.resourceId)
-    b.setOnClickListener(onClick)
+    b.setOnClickListener { onClick(it) }
     return b
   }
 
@@ -174,11 +174,11 @@ class LinkTab(
     titleView.setTextColor(onSurface)
     titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
     titleView.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    titleView.isSingleLine = true
+    titleView.setSingleLine(true)
     titleView.ellipsize = TextUtils.TruncateAt.END
     hostView.setTextColor(muted)
     hostView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-    hostView.isSingleLine = true
+    hostView.setSingleLine(true)
     hostView.ellipsize = TextUtils.TruncateAt.MIDDLE
     texts.addView(titleView)
     texts.addView(hostView)
@@ -332,7 +332,7 @@ class LinkTab(
     popup.menu.add(0, MENU_COPY, 1, "复制链接")
     popup.menu.add(0, MENU_SHARE, 2, "分享链接")
     val isWeb = isWebUrl(url)
-    for (i in 0 until popup.menu.size()) popup.menu.getItem(i).isEnabled = isWeb
+    for (i in 0 until popup.menu.size()) popup.menu.getItem(i).setEnabled(isWeb)
     popup.setOnMenuItemClickListener { item ->
       when (item.itemId) {
         MENU_BROWSER -> ExternalLinks.openInBrowser(activity, url)

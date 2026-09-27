@@ -115,6 +115,15 @@ jobs:
           grep -q "^package com.ati.arenakit$" "$gen_main" || { echo "unexpected package in $gen_main"; head -n 3 "$gen_main"; exit 1; }
           rm -f "$gen_main"
           cp -Rv src-tauri/android/. src-tauri/gen/android/
+          # The overlay needs androidx.webkit (WebViewCompat message listener for
+          # the link-tab bridge) and appcompat (PopupMenu). Recent Tauri templates
+          # already declare both; add them when an older template does not.
+          gradle=src-tauri/gen/android/app/build.gradle.kts
+          for dep in "androidx.webkit:webkit:1.14.0" "androidx.appcompat:appcompat:1.7.1"; do
+            name=${dep%:*}
+            grep -q "$name" "$gradle" || { echo "adding $dep"; printf '\ndependencies {\n    implementation("%s")\n}\n' "$dep" >> "$gradle"; }
+          done
+          grep -n "implementation(\|kotlin" "$gradle" src-tauri/gen/android/build.gradle.kts || true
           cargo tauri icon src-tauri/icons/icon.png || true
           # Release profile (optimised + stripped; the --debug build shipped an
           # unstripped ~190 MB .so). Gradle leaves it unsigned; we sign below.
