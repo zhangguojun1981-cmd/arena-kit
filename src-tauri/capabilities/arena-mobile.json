@@ -26,6 +26,7 @@
     "allow-proxy-get",
     "allow-store-get",
     "allow-store-set",
-    "allow-store-keys"
+    "allow-store-keys",
+    "allow-open-tab"
   ]
 }

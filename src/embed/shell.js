@@ -550,6 +550,11 @@ export function mount(win) {
       if (isOpen()) { setOpen(false); return true; }
       return false;
     },
+    /* The native in-app link tab (Android MainActivity overlay) covers the
+     * page; injected/links.js keeps its open state. Gates the reply watchdog. */
+    linkTabOpen: () => { try { const l = win.__ARENAKIT_LINKS__; return !!(l && typeof l.isOpen === 'function' && l.isOpen()); } catch { return false; } },
+    /* Open a web URL in the in-app link tab (desktop: separate window). */
+    openLink: (url) => { try { const l = win.__ARENAKIT_LINKS__; return !!(l && typeof l.open === 'function' && l.open(url)); } catch { return false; } },
     /* reply-monitor anomaly: red blinking outline (reference alert ring). */
     alert: (on) => { pill.dataset.alert = on ? 'true' : 'false'; },
     /* Pill display: { percent (0..100 | null), label, tone ('normal'|'routed'|'muted'|'active'), busy }. */

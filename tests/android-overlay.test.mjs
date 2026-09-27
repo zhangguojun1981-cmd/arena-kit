@@ -25,6 +25,39 @@ test('MainActivity pads the content frame by system-bar and IME insets (page flu
   assert.match(src, /setPadding\(bars\.left, bars\.top, bars\.right, maxOf\(bars\.bottom, ime\.bottom\)\)/);
 });
 
+test('MainActivity hosts the in-app link tab: page bridge + back handler wired in onWebViewCreate', () => {
+  const src = readFileSync(mainActivity, 'utf8');
+  assert.match(src, /override fun onWebViewCreate\(webView: WebView\)/);
+  assert.match(src, /super\.onWebViewCreate\(webView\)/, 'Tauri plugin manager still sees the webview');
+  assert.match(src, /WebViewCompat\.addWebMessageListener\(/);
+  assert.match(src, /"https:\/\/arena\.ai"/, 'message channel restricted to arena.ai');
+  assert.match(src, /addJavascriptInterface\(LegacyBridge/, 'fallback for WebViews without WebMessageListener');
+  assert.match(src, /BRIDGE_NAME = "ArenaKitAndroid"/, 'the object injected/links.js posts to');
+  assert.match(src, /onBackPressedDispatcher\.addCallback\(this, backCallback\)/);
+  assert.match(src, /__ARENAKIT_EMBED__/, 'back key reaches the embedded dock (sheet / menu / dialog)');
+  assert.match(src, /__ARENAKIT_LINKS__&&window\.__ARENAKIT_LINKS__\.setOpen/, 'tab state mirrored to the page');
+  for (const cmd of ['"openTab"', '"closeTab"', '"external"']) assert.ok(src.includes(cmd), cmd);
+  const tab = readFileSync(resolve(root, `src-tauri/android/app/src/main/java/${pkgPath}/LinkTab.kt`), 'utf8');
+  assert.match(tab, new RegExp(`^package ${conf.identifier.replace(/\./g, '\\.')}\\s*$`, 'm'));
+  assert.match(tab, /class LinkTab\(/);
+  assert.match(tab, /object ExternalLinks/);
+  assert.match(tab, /activity\.addContentView\(/, 'layered over the Wry webview inside the padded content frame');
+  assert.match(tab, /setSupportMultipleWindows\(false\)/);
+  assert.match(tab, /allowFileAccess = false/);
+  for (const label of ['在浏览器中打开', '复制链接', '分享链接', '关闭标签页', '刷新标签页']) assert.ok(tab.includes(label), label);
+  // the page-side interceptor + the Rust navigation net exist and agree on the bridge name / API
+  const links = readFileSync(resolve(root, 'injected/links.js'), 'utf8');
+  assert.ok(links.includes('window.ArenaKitAndroid'));
+  assert.ok(links.includes("cmd: 'openTab'") && links.includes("cmd: 'external'") && links.includes("cmd: 'closeTab'"));
+  const rs = readFileSync(resolve(root, 'src-tauri/src/lib.rs'), 'utf8');
+  assert.ok(rs.includes('.on_navigation(move |url| route_navigation(&nav_app, url))'));
+  assert.ok(rs.includes('window.__ARENAKIT_LINKS__&&window.__ARENAKIT_LINKS__.{}({})'));
+  assert.ok(readFileSync(resolve(root, 'src-tauri/build.rs'), 'utf8').includes('"open_tab"'));
+  for (const cap of ['arena.json', 'arena-mobile.json']) {
+    assert.ok(JSON.parse(readFileSync(resolve(root, `src-tauri/capabilities/${cap}`), 'utf8')).permissions.includes('allow-open-tab'), cap);
+  }
+});
+
 test('build.yml applies the overlay after android init and before the build', () => {
   const yml = readFileSync(resolve(root, '.github/workflows/build.yml'), 'utf8');
   const init = yml.indexOf('cargo tauri android init');

@@ -12,6 +12,7 @@
 //! mounted inside the arena page by the init script; it then talks to Rust
 //! through the same commands/events as the desktop dock.
 
+pub mod links;
 pub mod pulse;
 pub mod store;
 pub mod trace;
@@ -43,6 +44,10 @@ const PROBE_JS: &str = include_str!("../../injected/probe.js");
 // Conversation watchdog: reports error-card / empty-reply states of the open
 // conversation (`watch` page event); the dock's policy decides on auto reload.
 const WATCHDOG_JS: &str = include_str!("../../injected/watchdog.js");
+// Link interceptor: <a> clicks / target=_blank / window.open to other sites go
+// to the in-app link tab instead of replacing the conversation (links.rs is the
+// navigation-level safety net behind it).
+const LINKS_JS: &str = include_str!("../../injected/links.js");
 // document_idle UI scripts.
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
 const PLUS_JS: &str = include_str!("../../injected/plus.js");
@@ -86,6 +91,7 @@ fn build_init_script(embedded_dock: Option<&str>) -> String {
     guarded(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
     guarded(&mut s, "probe", PROBE_JS);
     guarded(&mut s, "watchdog", WATCHDOG_JS);
+    guarded(&mut s, "links", LINKS_JS);
     // defer UI scripts until the DOM is ready.
     s.push_str("(function(){var run=function(){\n");
     guarded(&mut s, "manager", MANAGER_JS);
@@ -453,6 +459,113 @@ async fn arena_command(app: tauri::AppHandle, js: String) -> Result<(), String> 
     wv.eval(&js).map_err(|e| e.to_string())
 }
 
+// ── link tab (reference LinkTab / LinkPolicy) ────────────────────────────
+
+/// Open `url` in the in-app link tab. Desktop: a separate window (no init
+/// scripts, no IPC — the tab is a plain browser view). Mobile: the native
+/// LinkTab layer (MainActivity overlay) is driven from the page, so hand the
+/// URL to injected/links.js, which talks to it.
+fn open_link_tab(app: &tauri::AppHandle, url: String) {
+    if !links::is_web_url(&url) {
+        return;
+    }
+    #[cfg(desktop)]
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static TABS: AtomicUsize = AtomicUsize::new(0);
+        let Ok(parsed) = url.parse::<tauri::Url>() else { return };
+        let label = format!("tab-{}", TABS.fetch_add(1, Ordering::Relaxed));
+        let title = parsed
+            .host_str()
+            .map(|h| format!("{} — ArenaKit 链接", h.trim_start_matches("www.")))
+            .unwrap_or_else(|| "ArenaKit 链接".to_string());
+        let handle = app.clone();
+        // Never build a window from inside a navigation callback: queue it.
+        let _ = app.run_on_main_thread(move || {
+            if let Err(e) = tauri::WebviewWindowBuilder::new(&handle, &label, WebviewUrl::External(parsed))
+                .title(title)
+                .inner_size(1000.0, 760.0)
+                .build()
+            {
+                eprintln!("[ArenaKit] link tab failed: {e}");
+            }
+        });
+    }
+    #[cfg(mobile)]
+    {
+        page_links_call(app, "open", &url);
+    }
+}
+
+/// Hand a non-web URL (mailto:, tel:, intent: …) to the OS / another app.
+fn open_external(app: &tauri::AppHandle, url: String) {
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        // One argument, no shell parsing: the URL can never inject a command.
+        #[cfg(target_os = "macos")]
+        let spawned = std::process::Command::new("open").arg(&url).spawn();
+        #[cfg(target_os = "windows")]
+        let spawned = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
+        if let Err(e) = spawned {
+            eprintln!("[ArenaKit] external link failed: {e}");
+        }
+    }
+    #[cfg(mobile)]
+    {
+        page_links_call(app, "external", &url);
+    }
+}
+
+/// Mobile: call `window.__ARENAKIT_LINKS__.<method>(url)` in the arena page.
+#[cfg(mobile)]
+fn page_links_call(app: &tauri::AppHandle, method: &str, url: &str) {
+    let Some(wv) = app.get_webview("arena") else { return };
+    let js = format!(
+        "window.__ARENAKIT_LINKS__&&window.__ARENAKIT_LINKS__.{}({})",
+        method,
+        json!(url)
+    );
+    let _ = wv.eval(&js);
+}
+
+/// Route a main-frame navigation of the arena webview (Tauri `on_navigation`).
+/// Returns whether the webview may load the URL itself.
+fn route_navigation(app: &tauri::AppHandle, url: &tauri::Url) -> bool {
+    match links::route_main(url.as_str()) {
+        links::Route::InPlace => true,
+        links::Route::NewTab => {
+            open_link_tab(app, url.to_string());
+            false
+        }
+        links::Route::ExternalApp => {
+            open_external(app, url.to_string());
+            false
+        }
+        links::Route::Block => false,
+    }
+}
+
+/// injected/links.js (a tapped link / target=_blank / window.open in the
+/// arena page) → open the in-app link tab. Desktop: a new window; on mobile
+/// the page talks to the native tab directly and this is a no-op (false).
+#[tauri::command]
+fn open_tab(app: tauri::AppHandle, url: String) -> Result<bool, String> {
+    if url.len() > 8192 || !links::is_web_url(&url) {
+        return Err("仅支持 http(s) 链接".into());
+    }
+    if cfg!(mobile) {
+        // Android: links.js talks to the native LinkTab directly.
+        return Ok(false);
+    }
+    open_link_tab(&app, url);
+    Ok(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(desktop)]
@@ -468,6 +581,7 @@ pub fn run() {
             store_set,
             store_keys,
             proxy_get,
+            open_tab,
             arena_command
         ])
         .setup(move |app| {
@@ -495,12 +609,16 @@ pub fn run() {
                 // AND on every navigation (Tauri re-runs initialization scripts
                 // per navigation), mirroring the Android WebViewClient
                 // re-injection.
+                let nav_app = app.handle().clone();
                 let _arena = window.add_child(
                     tauri::webview::WebviewBuilder::new(
                         "arena",
                         WebviewUrl::External("https://arena.ai".parse().unwrap()),
                     )
                     .initialization_script(&init)
+                    // Links to other sites open in a separate window, never
+                    // over the conversation (links.rs).
+                    .on_navigation(move |url| route_navigation(&nav_app, url))
                     .auto_resize(),
                     LogicalPosition::new(0.0, 0.0),
                     LogicalSize::new(width - dock_w, height),
@@ -523,12 +641,16 @@ pub fn run() {
             // part of the init script and mounts itself inside the page.
             #[cfg(mobile)]
             {
+                let nav_app = app.handle().clone();
                 let _arena = tauri::WebviewWindowBuilder::new(
                     app,
                     "arena",
                     WebviewUrl::External("https://arena.ai".parse().unwrap()),
                 )
                 .initialization_script(&init)
+                // Links to other sites open in the native link tab layer
+                // (MainActivity overlay), never over the conversation.
+                .on_navigation(move |url| route_navigation(&nav_app, url))
                 .build()?;
             }
 
@@ -548,7 +670,7 @@ mod tests {
         // bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("try{\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "manager", "plus", "leaderboard"] {
+        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));

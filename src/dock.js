@@ -911,6 +911,13 @@ onPage('reply-monitor', (summary) => {
   }
 });
 
+// ── in-app link tab (native layer on Android; injected/links.js reports its state) ──
+onPage('link-tab', (p) => {
+  const open = !!(p && p.open);
+  setStatus(open ? '链接页已打开（返回键 / ✕ 关闭）' : '链接页已关闭');
+  if (open && EMBED) EMBED.close();
+});
+
 // ── reply watchdog: auto refresh on error card / empty reply (reference ReplyWatchdog) ──
 /* injected/watchdog.js reports {k, path, generating, len, at, act} for the
  * open conversation; the pure policy (src/lib/watchdog.js) decides. The

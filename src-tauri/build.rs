@@ -13,6 +13,7 @@ fn main() {
             "store_get",
             "store_set",
             "store_keys",
+            "open_tab",
         ])),
     )
     .expect("failed to run tauri-build");
