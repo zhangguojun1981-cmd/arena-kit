@@ -3,6 +3,10 @@
  * MAIN world, document_start. Taps SSE for Trigger.dev run token.
  * PORT: tokens go to window.__ARENAKIT__.onToken({sessionId, token}) (bridge.js →
  * Rust `on_token`), falling back to the original postMessage channel outside Tauri.
+ * ArenaKit addition: a frame hook for the reply monitor (injected/monitor.js):
+ * window.__ARENAKIT_MONITOR__.{onOpen,onFrame,onEnd,onHttpError} receive the raw
+ * SSE frames IN THE PAGE ONLY — the monitor reduces them to counts/flags before
+ * anything crosses the bridge. Conversation text still never leaves the page.
  */
 /* Page-world SSE tap. No chrome.* — CSP-safe. Never posts conversation text. */
 (() => {
@@ -50,18 +54,30 @@
       takeTokens(obj, sessionId);
     }
   }
+  // Reply-monitor hook (optional, page-world only). Guarded so a monitor bug
+  // can never break token capture.
+  const monitor = () => window.__ARENAKIT_MONITOR__;
+  const mon = (fn, ...args) => { try { const m = monitor(); if (m && typeof m[fn] === 'function') m[fn](...args); } catch {} };
   async function tapBody(body, sessionId) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, {stream: true});
-      if (buf.length > 2 * 1024 * 1024) buf = buf.slice(-65536);
-      const parts = buf.split(/\r?\n\r?\n/);
-      buf = parts.pop() || '';
-      for (const part of parts) scanSse(part + '\n\n', sessionId);
+    mon('onOpen', sessionId);
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, {stream: true});
+        if (buf.length > 2 * 1024 * 1024) buf = buf.slice(-65536);
+        const parts = buf.split(/\r?\n\r?\n/);
+        buf = parts.pop() || '';
+        for (const part of parts) { scanSse(part + '\n\n', sessionId); mon('onFrame', sessionId, part, value ? value.byteLength : 0); }
+      }
+      if (buf.trim()) { scanSse(buf + '\n\n', sessionId); mon('onFrame', sessionId, buf, 0); }
+      mon('onEnd', sessionId, 'done');
+    } catch (e) {
+      mon('onEnd', sessionId, 'abort');
+      throw e;
     }
   }
   const origFetch = window.fetch;
@@ -69,7 +85,9 @@
     const response = await origFetch.apply(this, args);
     const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
     const sessionId = sessionFromUrl(url);
-    if (!sessionId || !response.ok || !response.body) return response;
+    if (!sessionId) return response;
+    if (!response.ok) { mon('onHttpError', sessionId, response.status); return response; }
+    if (!response.body) return response;
     try {
       const [page, probe] = response.body.tee();
       tapBody(probe, sessionId).catch(() => {});
@@ -81,7 +99,11 @@
     window.EventSource = function (url, config) {
       const es = new OrigES(url, config);
       const sessionId = sessionFromUrl(url);
-      if (sessionId) es.addEventListener('message', ev => { if (typeof ev.data === 'string') scanSse('data: ' + ev.data + '\n\n', sessionId); });
+      if (sessionId) {
+        mon('onOpen', sessionId);
+        es.addEventListener('message', ev => { if (typeof ev.data === 'string') { scanSse('data: ' + ev.data + '\n\n', sessionId); mon('onFrame', sessionId, 'data: ' + ev.data, ev.data.length); } });
+        es.addEventListener('error', () => mon('onEnd', sessionId, es.readyState === OrigES.CLOSED ? 'abort' : 'retry'));
+      }
       return es;
     };
     window.EventSource.prototype = OrigES.prototype;

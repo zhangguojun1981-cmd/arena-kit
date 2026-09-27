@@ -16,6 +16,7 @@ import { buildTitle, sanitizePrefix, createRenameGate } from './lib/rename.js';
 import { parseTargets, DEFAULT_TARGETS } from './lib/probe-logic.js';
 import { createProbeController } from './lib/probe-runner.js';
 import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/session-probe.js';
+import { createReplyMonitor } from './lib/monitor.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -40,6 +41,7 @@ const state = {
   renaming: false,          // a rename dialog is being driven right now
   probe: null,              // createProbeController() — auto probe / cleanup / quick send
   quickBusy: false,         // a session probe is in flight
+  monitor: null,            // createReplyMonitor() — reply stream anomaly badges
 };
 
 function sessionRecord(sessionId) {
@@ -461,6 +463,32 @@ function wireProbe() {
   setProbeRunningUi(false);
 }
 
+// ── module: reply monitor (stream anomaly badges) ───────────────────────
+function renderMonitor() {
+  const m = state.monitor;
+  if (!m) return;
+  const entries = m.entries.slice().reverse();
+  const head = q('ak-monitor-head');
+  const last = m.last;
+  if (!last) { head.textContent = '监听回复流：空回复 / 报错 / 中断 / 停滞会自动标记到对应轮次。'; q('ak-monitor-list').innerHTML = ''; return; }
+  head.textContent = (last.turn ? `第 ${last.turn} 轮 · ` : '') + last.line;
+  head.classList.toggle('ak-warn', last.anomalies.length > 0);
+  q('ak-monitor-list').innerHTML = entries.map((e) => {
+    const badges = e.anomalies.map((a) => `<span class="ak-badge ak-badge-err">${esc(a.label.split('：')[0])}</span>`).join('');
+    const when = new Date(e.at);
+    const hm = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+    return `<div class="ak-item"><span class="ak-item-title">${esc(hm)} · ${e.turn ? 'R' + e.turn : '会话 ' + esc(e.sessionId.slice(0, 8))}${badges}</span><span class="ak-item-models ak-sub">${esc(e.line)}</span></div>`;
+  }).join('');
+}
+onPage('reply-monitor', (summary) => {
+  if (!state.monitor) return;
+  const entry = state.monitor.ingest(summary);
+  if (!entry) return;
+  renderMonitor();
+  renderTurns();
+  if (entry.anomalies.length) setStatus(`回复监控：${entry.turn ? '第 ' + entry.turn + ' 轮 ' : ''}${entry.anomalies.map((a) => a.label).join('、')}`);
+});
+
 // ── module: session probe (send into the OPEN conversation, identify this turn)
 const quickState = (t) => { q('ak-quick-state').textContent = t; };
 async function sessionProbe() {
@@ -654,6 +682,7 @@ async function boot() {
   state.store = createStore(state.tauri);
   state.history = createHistoryStore(state.store);
   state.renameGate = createRenameGate(state.store);
+  state.monitor = createReplyMonitor({ tracker: state.tracker });
   state.rpc = state.tauri ? createRpc({ evalInPage: (js) => state.tauri.invoke('arena_command', { js }) }) : null;
   await loadPrefs();
   wireControls();

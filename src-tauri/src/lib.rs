@@ -24,6 +24,8 @@ use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl};
 const BRIDGE_JS: &str = include_str!("../../injected/bridge.js");
 const GM_SHIM_JS: &str = include_str!("../../injected/gm-shim.js");
 const SNOOP_JS: &str = include_str!("../../injected/snoop.js");
+// Reply monitor: reduces the SSE frames snoop.js taps to counts/flags in-page.
+const MONITOR_JS: &str = include_str!("../../injected/monitor.js");
 const UNLOCK_JS: &str = include_str!("../../injected/unlock.js");
 const ENI_JS: &str = include_str!("../../injected/eni.js");
 // Page-side RPC layer for the dock orchestrator (probe / rename / archive /
@@ -61,6 +63,7 @@ fn build_init_script() -> String {
     guarded(&mut s, "bridge", BRIDGE_JS);
     guarded(&mut s, "gm-shim", GM_SHIM_JS);
     guarded(&mut s, "snoop", SNOOP_JS);
+    guarded(&mut s, "monitor", MONITOR_JS);
     guarded(&mut s, "unlock", UNLOCK_JS);
     guarded(&mut s, "eni", ENI_JS);
     guarded(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
@@ -499,7 +502,7 @@ mod tests {
         // bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("try{\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "unlock", "eni", "conversation-rename", "probe", "manager", "plus", "leaderboard"] {
+        for name in ["bridge", "gm-shim", "snoop", "monitor", "unlock", "eni", "conversation-rename", "probe", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));
