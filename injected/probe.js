@@ -21,7 +21,7 @@
   const NEW_CHAT_LABELS = ['New Chat', 'New chat', '新建聊天', '新对话', '新建对话'];
 
   const visible = e => !!e?.isConnected && e.getClientRects().length > 0;
-  const session = () => location.pathname.match(/^\/agent\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
+  const session = () => location.pathname.match(/^\/(?:agent|c)\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
   const agentPath = () => location.pathname.replace(/\/$/, '') === '/agent';
   const clean = t => String(t ?? '').replace(/[\u200b\u200c\u200d\ufeff]/g, '').trim();
   const text = e => (e?.textContent || '').trim();
@@ -31,7 +31,7 @@
   // with words, so this never matches real user content.
   const isOwnPrompt = t => /^\s*\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=\s*$/.test(String(t || ''));
 
-  const sessionFromPath = path => path.match(/^\/agent\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
+  const sessionFromPath = path => path.match(/^\/(?:agent|c)\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
   const labelOf = e => ((e?.getAttribute?.('aria-label') || e?.placeholder || '') + ' ' + (e?.textContent || '')).trim();
   const isSearch = e => /search|搜索|查找/i.test(labelOf(e)) || e?.closest?.('[data-sidebar]');
 

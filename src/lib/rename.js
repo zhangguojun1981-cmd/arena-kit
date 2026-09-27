@@ -31,14 +31,28 @@ export function buildTitle({ prefix = '', model, suffix = '' } = {}) {
   return title.trim();
 }
 
-/* 3-digit per-model suffix counter (ProbeLogic.nextSuffix). `counters` is a
- * plain object persisted by the caller; returns the padded suffix + new map. */
+/* 3-digit suffix counter (ProbeLogic.nextSuffixFor). Every distinct
+ * "<prefix><model>" name counts independently (001, 002, …); without a prefix
+ * the key is the legacy per-model key, so existing counters keep counting.
+ * `counters` is a plain object persisted by the caller; returns the padded
+ * suffix + new map (most recently used names are evicted last). */
 export const normalizeModel = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-export function nextSuffix(model, counters = {}) {
-  const key = normalizeModel(model) || 'model';
+const MAX_COUNTERS = 300;
+export function counterKey(prefix, model) {
+  const modelKey = normalizeModel(model) || 'model';
+  const p = sanitizePrefix(prefix).trim().toLowerCase();
+  return p ? `p:${p}|${modelKey}` : modelKey;
+}
+export function nextSuffix(model, counters = {}, prefix = '') {
+  const key = counterKey(prefix, model);
   const current = Number.isInteger(counters[key]) && counters[key] >= 0 ? counters[key] : 0;
   const n = current + 1;
-  return { suffix: String(n).padStart(3, '0'), counters: { ...counters, [key]: n } };
+  const updated = { ...counters };
+  delete updated[key];
+  updated[key] = n; // re-insert so the most recently used names are evicted last
+  const keys = Object.keys(updated);
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_COUNTERS))) delete updated[k];
+  return { suffix: String(n).padStart(3, '0'), counters: updated };
 }
 
 /* Once-per-conversation gate for auto-rename (extension createAutoRenameStore

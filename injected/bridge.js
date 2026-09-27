@@ -66,29 +66,108 @@
   const send = (name, payload) => invoke('page_event', { name: String(name), payload: payload === undefined ? null : payload })
     .catch((e) => console.warn('[ArenaKit] page_event', name, e));
 
-  const sessionFromPath = (path) => String(path || '').match(/^\/agent\/([a-zA-Z0-9-]{1,128})\/?$/)?.[1] || null;
+  // Arena conversation pages: /agent/{id} and /c/{id} (reference
+  // HistoryLogic.CONVERSATION_PATH). The page id need not equal the stream's
+  // session id (/c/{evalId} aliases) — attribution follows the stream.
+  const SESSION_PATH = /^\/(?:agent|c)\/([a-zA-Z0-9-]{1,128})\/?$/;
+  const SESSION_ID = /^[a-zA-Z0-9-]{1,128}$/;
+  const sessionFromPath = (path) => String(path || '').match(SESSION_PATH)?.[1] || null;
+  const isNewChatPath = (path) => String(path || '').replace(/\/$/, '') === '/agent';
   const navState = () => ({
     path: location.pathname,
     sessionId: sessionFromPath(location.pathname),
-    agentPath: location.pathname.replace(/\/$/, '') === '/agent',
+    agentPath: isNewChatPath(location.pathname),
     title: String(document.title || '').slice(0, 300),
     url: location.href.split(/[?#]/)[0],
   });
 
+  // ── token routing (reference SessionRouting / TurnIntake) ───────────────
+  // snoop.js can still deliver a token from a conversation the user already
+  // left (a delayed stream, a prefetch, the old stream closing late). Handing
+  // it over would switch the dock's turn log back to the OLD chat. Rule: on a
+  // conversation page every stream is accepted (page id and stream id need not
+  // match, and a stream may rotate its id between turns); on the new-chat
+  // composer exactly ONE conversation is adopted — the first stream not seen
+  // before (the chat being created); anywhere else nothing is accepted.
+  const known = new Set();
+  let newChatSession = null;
+  let routedPath = location.pathname;
+  const noteKnown = (sessionId) => {
+    known.add(sessionId);
+    if (known.size > 256) known.delete(known.values().next().value);
+  };
+  const onRoutedNavigation = (path) => {
+    if (path === routedPath) return;
+    routedPath = path;
+    if (isNewChatPath(path)) newChatSession = null; // a fresh composer starts a fresh adoption
+  };
+  const accepts = (sessionId, page) => {
+    if (!SESSION_ID.test(String(sessionId || ''))) return false;
+    if (sessionFromPath(page)) return true;
+    if (!isNewChatPath(page)) return false;
+    if (newChatSession) return newChatSession === sessionId;
+    if (known.has(sessionId)) return false;
+    newChatSession = sessionId;
+    return true;
+  };
+
+  // Last accepted token per stream session, in memory only (the page already
+  // holds it): stream activity without a new token (arena streams many replies
+  // through ONE run) re-runs the lookup once the first one is over, so the
+  // model / turn data follows the growing run. Reference TurnIntake.onActivity.
+  const REFRESH_COOLDOWN_MS = 45_000;
+  const lastTokens = new Map();
+  const tokenExpiry = (token) => {
+    try {
+      const payload = JSON.parse(atob(String(token).split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      return Number(payload && payload.exp) || 0;
+    } catch { return 0; }
+  };
+  const rememberToken = (sessionId, token) => {
+    lastTokens.delete(sessionId);
+    lastTokens.set(sessionId, { token, at: Date.now(), refreshedAt: Date.now(), exp: tokenExpiry(token) });
+    if (lastTokens.size > 32) lastTokens.delete(lastTokens.keys().next().value);
+  };
+  const onToken = (p) => {
+    const page = p && typeof p.page === 'string' ? p.page : location.pathname;
+    if (!p || !accepts(p.sessionId, page)) return Promise.resolve(false);
+    noteKnown(p.sessionId);
+    rememberToken(p.sessionId, p.token);
+    return invoke('on_token', { token: p.token, sessionId: p.sessionId })
+      .then(() => true, (e) => { console.warn('[ArenaKit] on_token', e); return false; });
+  };
+  const onActivity = (p) => {
+    const page = p && typeof p.page === 'string' ? p.page : location.pathname;
+    if (!p || !accepts(p.sessionId, page)) return false;
+    const rec = lastTokens.get(p.sessionId);
+    if (!rec) return false;
+    const now = Date.now();
+    if (now - rec.refreshedAt < REFRESH_COOLDOWN_MS) return false;
+    if (rec.exp && rec.exp * 1000 <= now + 5000) return false;
+    rec.refreshedAt = now;
+    // Rust dedupes a token whose lookup is still running, so this is a no-op
+    // until the previous poll finished (forget_token) — exactly the reference
+    // "not while in flight" rule.
+    invoke('on_token', { token: rec.token, sessionId: p.sessionId })
+      .catch((e) => console.warn('[ArenaKit] on_token (refresh)', e));
+    return true;
+  };
+
   window.__ARENAKIT__ = {
     invoke,
-    onToken: (p) => invoke('on_token', { token: p.token, sessionId: p.sessionId })
-      .catch((e) => console.warn('[ArenaKit] on_token', e)),
+    onToken,
+    onActivity,
     proxyGet: (url) => invoke('proxy_get', { url }),
     storeGet: (key) => invoke('store_get', { key }),
     storeSet: (key, value) => invoke('store_set', { key, value: value === undefined ? null : value }),
-    send, on, dispatch, navState, sessionFromPath,
+    send, on, dispatch, navState, sessionFromPath, isNewChatPath,
   };
 
   // ── navigation announcements ────────────────────────────────────────────
   let lastSig = '';
   const announce = (reason) => {
     const s = navState();
+    onRoutedNavigation(s.path);
     const sig = s.path + '|' + s.title;
     if (sig === lastSig && reason !== 'init') return;
     lastSig = sig;

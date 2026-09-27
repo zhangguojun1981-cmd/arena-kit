@@ -1343,7 +1343,7 @@ function createTurnTracker() {
 
   /* Record the resolved model for `turn` and build the status text:
    * headline + per-turn history line ("本会话: R1 … · R2 …"). */
-  function record(turn, model, models = null) {
+  function record(turn, model, models = null, strength = '') {
     const m = String(model || '');
     if (!t.firstModel) t.firstModel = m;
     t.routed = m !== t.firstModel;
@@ -1352,7 +1352,7 @@ function createTurnTracker() {
     t.history.push(`R${turn} ${m}`);
     while (t.history.length > MAX_HISTORY) t.history.shift();
     const entry = t.turns.find((x) => x.turn === turn);
-    if (entry) { entry.model = m; entry.models = Array.isArray(models) && models.length ? models.slice() : [m]; entry.status = '已识别'; entry.routed = t.routed; }
+    if (entry) { entry.model = m; entry.models = Array.isArray(models) && models.length ? models.slice() : [m]; entry.status = '已识别'; entry.routed = t.routed; if (strength) entry.strength = String(strength).slice(0, 24); }
     const head = t.routed && changedFromPrev ? `第 ${turn} 轮 · 已切换模型 → ${m}`
       : t.routed ? `第 ${turn} 轮 · ${m}（非首轮模型）`
         : `第 ${turn} 轮 · ${m}`;
@@ -1471,14 +1471,28 @@ function buildTitle({ prefix = '', model, suffix = '' } = {}) {
   return title.trim();
 }
 
-/* 3-digit per-model suffix counter (ProbeLogic.nextSuffix). `counters` is a
- * plain object persisted by the caller; returns the padded suffix + new map. */
+/* 3-digit suffix counter (ProbeLogic.nextSuffixFor). Every distinct
+ * "<prefix><model>" name counts independently (001, 002, …); without a prefix
+ * the key is the legacy per-model key, so existing counters keep counting.
+ * `counters` is a plain object persisted by the caller; returns the padded
+ * suffix + new map (most recently used names are evicted last). */
 const normalizeModel = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-function nextSuffix(model, counters = {}) {
-  const key = normalizeModel(model) || 'model';
+const MAX_COUNTERS = 300;
+function counterKey(prefix, model) {
+  const modelKey = normalizeModel(model) || 'model';
+  const p = sanitizePrefix(prefix).trim().toLowerCase();
+  return p ? `p:${p}|${modelKey}` : modelKey;
+}
+function nextSuffix(model, counters = {}, prefix = '') {
+  const key = counterKey(prefix, model);
   const current = Number.isInteger(counters[key]) && counters[key] >= 0 ? counters[key] : 0;
   const n = current + 1;
-  return { suffix: String(n).padStart(3, '0'), counters: { ...counters, [key]: n } };
+  const updated = { ...counters };
+  delete updated[key];
+  updated[key] = n; // re-insert so the most recently used names are evicted last
+  const keys = Object.keys(updated);
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_COUNTERS))) delete updated[k];
+  return { suffix: String(n).padStart(3, '0'), counters: updated };
 }
 
 /* Once-per-conversation gate for auto-rename (extension createAutoRenameStore
@@ -1502,7 +1516,7 @@ function createRenameGate(store, { key = 'rename-attempted', max = 500 } = {}) {
   };
 }
 
-__exports.MAX_TITLE = MAX_TITLE; __exports.MAX_PREFIX = MAX_PREFIX; __exports.sanitizePrefix = sanitizePrefix; __exports.buildTitle = buildTitle; __exports.normalizeModel = normalizeModel; __exports.nextSuffix = nextSuffix; __exports.createRenameGate = createRenameGate;
+__exports.MAX_TITLE = MAX_TITLE; __exports.MAX_PREFIX = MAX_PREFIX; __exports.sanitizePrefix = sanitizePrefix; __exports.buildTitle = buildTitle; __exports.normalizeModel = normalizeModel; __exports.counterKey = counterKey; __exports.nextSuffix = nextSuffix; __exports.createRenameGate = createRenameGate;
 });
 __define("lib/probe-logic.js", function (__exports, __require) {
 'use strict';
@@ -1684,6 +1698,7 @@ function createProbeController({
   onCleanupState = () => {},            // (archived, active)
   onArchived = () => {},                // (sessionId) → void — a chat was archived (dock drops its local record)
   buildTitle = defaultTitle,            // (model, suffix) → title
+  titlePrefix = () => '',               // current title prefix: "<prefix><model>" counts per prefix
   suffixCounters = {},                  // persisted per-model counter map (mutated copy returned via onSuffixes)
   onSuffixes = () => {},                // (counters) → void  — persist hook
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1746,7 +1761,9 @@ function createProbeController({
   }
 
   async function renameHit(tok, sessionId, model) {
-    const r = nextSuffix(model, counters);
+    let prefix = '';
+    try { prefix = String(titlePrefix() || ''); } catch { prefix = ''; }
+    const r = nextSuffix(model, counters, prefix);
     counters = r.counters;
     try { onSuffixes({ ...counters }); } catch { /* persist hook must not break the run */ }
     const title = buildTitle(model, r.suffix);
@@ -2424,6 +2441,7 @@ const state = {
   tauri: null,
   store: null,
   nav: { sessionId: null, path: '/', title: '' },
+  aliases: new Map(),       // page conversation id → stream session id (conversationFor)
   prefs: {},
   // sessionId → { runs: [...mergeUsage shape], models: [{model,provider}], title }
   sessions: new Map(),
@@ -2456,6 +2474,26 @@ const state = {
 function sessionRecord(sessionId) {
   if (!state.sessions.has(sessionId)) state.sessions.set(sessionId, { runs: [], models: [], title: '' });
   return state.sessions.get(sessionId);
+}
+
+// Page conversation id → stream session id (reference TurnIntake.aliases).
+// Arena's conversation pages (/c/{evalId}, possibly /agent/{id}) can carry an
+// id that differs from the id in the realtime stream URL, while all turn data
+// is attributed to the stream id. In-memory only; learned from captured tokens.
+const MAX_ALIASES = 512;
+function aliasSession(pageId, streamId) {
+  if (!pageId || !streamId || pageId === streamId) return;
+  if (state.aliases.size >= MAX_ALIASES) state.aliases.clear();
+  state.aliases.set(pageId, streamId);
+}
+function conversationFor(id) {
+  let current = id || null;
+  for (let hops = 0; current && hops < 4; hops++) {
+    const next = state.aliases.get(current);
+    if (!next || next === current) break;
+    current = next;
+  }
+  return current;
 }
 
 const DEFAULT_PREFS = {
@@ -2678,27 +2716,36 @@ function onTrace(p) {
   if (state.prefs.capture === false) return; // 设置 → 截获会话流 off
   const sub = q('ak-model-sub');
   const tracker = state.tracker;
+  // Turns are keyed by the TOKEN (Rust tokenKey), not the run id: arena may
+  // deliver the same run scope for every turn of a conversation, and keying by
+  // run id collapsed all of them into turn 1 (reference TurnIntake).
+  const runKey = p.tokenKey || p.runId || '';
   if (p.stage === 'token') {
     state.current = { sessionId: p.sessionId, runId: p.runId || null };
     // A new run supersedes any picked run of the live conversation (extension: selectedRunId reset).
     if (!state.view.sessionId || state.view.sessionId === p.sessionId) state.view = { sessionId: null, runId: null };
     // A fresh run token = a new turn; a different session = conversation switch.
-    const { turn, switched, repeat } = tracker.onToken(p.sessionId, p.runId || '');
+    const { turn, switched, repeat } = tracker.onToken(p.sessionId, runKey);
     if (switched) { sessionRecord(p.sessionId).historical = false; state.turnHead = ''; }
+    // A conversation page may carry a different id than its stream (/c/{evalId}):
+    // map the page id to the stream id so the UI resolves by either. Only a NEW
+    // turn may claim the page — a replayed run is more likely a late stream of
+    // the chat the user just left.
+    if (!repeat && state.nav.sessionId) aliasSession(state.nav.sessionId, p.sessionId);
     if (!repeat) setModelDisplay('识别中…', { known: false, pending: true });
     sub.textContent = `第 ${turn} 轮 · run ` + String(p.runId || '').slice(0, 14);
     setHudStatus(`第 ${turn} 轮 · 已截获令牌，正在识别模型…`);
     renderTurns();
   } else if (p.stage === 'poll') {
-    const turn = tracker.turnOf(p.runId);
+    const turn = tracker.turnOf(runKey);
     if (turn) tracker.setStatus(turn, `读取中 ${p.attempt || ''}/${p.max || ''}`.trim());
     renderTurns();
   } else if (p.stage === 'error') {
-    const turn = tracker.turnOf(p.runId);
+    const turn = tracker.turnOf(runKey);
     if (turn) { tracker.setStatus(turn, p.fatal ? '失败' : '未识别'); if (p.fatal) tracker.mark(turn, 'trace-error', '读取失败'); }
     renderTurns();
   } else if (p.stage === 'done') {
-    const turn = tracker.turnOf(p.runId);
+    const turn = tracker.turnOf(runKey);
     if (turn) { const e = tracker.turns.find((x) => x.turn === turn); if (e && e.model) tracker.setStatus(turn, '完成'); }
     renderTurns();
   } else if (p.stage === 'model') {
@@ -2710,16 +2757,16 @@ function onTrace(p) {
     if (usage) rec.runs = mergeUsage(rec.runs, usage);
     rec.historical = false;
     state.current = { sessionId: p.sessionId, runId: p.runId || null };
-    if (models.length) saveHistory(p.sessionId, p.runId, models, usage);
+    if (models.length) saveHistory(p.sessionId, p.runId, models, usage, runKey);
     const providers = [...new Set(models.map((m) => m.provider).filter(Boolean))];
     const run = rec.runs.find((r) => r.runId === p.runId);
     if (models.length && p.complete) maybeAutoRename(p.sessionId, models[0].model, run);
     // Per-turn model resolution (routed = differs from this conversation's first model).
-    let turn = tracker.turnOf(p.runId);
-    if (!turn && models.length) turn = tracker.onToken(p.sessionId, p.runId || '').turn; // model without a seen token stage
+    let turn = tracker.turnOf(runKey);
+    if (!turn && models.length) turn = tracker.onToken(p.sessionId, runKey).turn; // model without a seen token stage
     let head = '';
     if (turn && models.length) {
-      head = tracker.record(turn, models[0].model, models.map((m) => m.model));
+      head = tracker.record(turn, models[0].model, models.map((m) => m.model), p.strength || '');
       if (!p.complete) tracker.setStatus(turn, completion(run?.spans || []));
       else tracker.setStatus(turn, run?.spans?.length ? completion(run.spans) : '已识别');
     }
@@ -2733,7 +2780,7 @@ function onTrace(p) {
     q('ak-model-sub').textContent = p.status || '错误';
   }
   if (p.stage === 'error') {
-    const turn = tracker.turnOf(p.runId);
+    const turn = tracker.turnOf(runKey);
     setHudStatus((turn ? `第 ${turn} 轮 · ` : '') + (p.status || '读取失败'));
   }
   if (p.status) setStatus(p.status);
@@ -2866,11 +2913,11 @@ async function exportCurrentEvidence() {
 }
 
 // ── module: conversation history (local store) ──────────────────────────
-async function saveHistory(sessionId, runId, models, usage) {
+async function saveHistory(sessionId, runId, models, usage, runKey = runId) {
   if (!state.history) return;
-  const title = state.nav.sessionId === sessionId ? state.nav.title : undefined;
+  const title = conversationFor(state.nav.sessionId) === sessionId ? state.nav.title : undefined;
   try {
-    const turn = state.tracker.sessionId === sessionId ? state.tracker.turnOf(runId) : undefined;
+    const turn = state.tracker.sessionId === sessionId ? state.tracker.turnOf(runKey) : undefined;
     const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: turn ?? undefined });
     state.historyIndex.set(sessionId, record);
     renderHistory();
@@ -2905,7 +2952,7 @@ function renderHistory() {
       : esc(recordModels(r).map((m) => m.model).join(' / '));
     const t = r.totals || {};
     const usage = t.spanCount ? `${formatTokens(t.tokens, t.tokensApproximate)} · ${formatMoney(t.costUsd)}` : '';
-    const cur = r.sessionId === state.nav.sessionId ? ' ak-current' : '';
+    const cur = r.sessionId === conversationFor(state.nav.sessionId) ? ' ak-current' : '';
     return `<div class="ak-item" data-sid="${esc(r.sessionId)}">
       <div class="ak-item-title${cur}">${esc(r.title || 'Arena 会话')}</div>
       <div class="ak-item-models">${models || '—'}</div>
@@ -3022,10 +3069,12 @@ onPage('nav', (n) => {
   if (n.reason === 'init') applyPageFlags(); // fresh page load: injected scripts start with flags unset
   const switched = n.sessionId !== state.nav.sessionId;
   state.nav = { sessionId: n.sessionId || null, path: n.path || '/', title: n.title || '' };
+  // Lookups go through the stream session the page id aliases to (/c/{evalId}).
+  const sid = conversationFor(state.nav.sessionId);
   q('ak-session').textContent = state.nav.sessionId ? '会话 ' + state.nav.sessionId.slice(0, 8) + '…' : (n.agentPath ? '新对话' : n.path || '');
-  if (state.nav.sessionId && state.sessions.has(state.nav.sessionId)) sessionRecord(state.nav.sessionId).title = state.nav.title;
+  if (sid && state.sessions.has(sid)) sessionRecord(sid).title = state.nav.title;
   if (switched) { renderHistory(); renderRenamePreview(); }
-  if (switched && !state.nav.sessionId) {
+  if (switched && !sid) {
     // Fresh /agent composer: nothing identified yet for this conversation.
     // (Best-effort reset; the next token's session id is the authoritative one.)
     state.current = { sessionId: null, runId: null };
@@ -3035,25 +3084,25 @@ onPage('nav', (n) => {
     setHudStatus('等待会话流…');
     renderTurns();
     renderUsage();
-  } else if (switched && state.nav.sessionId === state.tracker.sessionId) {
+  } else if (switched && sid === state.tracker.sessionId) {
     // Same conversation the tracker is already following (e.g. URL caught up
     // after the token) — keep the live turn state.
-    state.current = { sessionId: state.nav.sessionId, runId: state.current.runId };
-  } else if (switched && (state.sessions.has(state.nav.sessionId) || restoreFromHistory(state.nav.sessionId))) {
+    state.current = { sessionId: sid, runId: state.current.runId };
+  } else if (switched && (state.sessions.has(sid) || restoreFromHistory(sid))) {
     // Back to a known conversation: show its remembered model (local record,
     // not re-verified) until a new turn produces a fresh trace.
-    const rec = state.sessions.get(state.nav.sessionId);
+    const rec = state.sessions.get(sid);
     const last = rec.runs.at(-1);
-    state.current = { sessionId: state.nav.sessionId, runId: last?.runId || null };
-    const record = state.historyIndex.get(state.nav.sessionId);
-    if (record) rebuildTrackerFromRecord(state.nav.sessionId, record); else { state.tracker.reset(state.nav.sessionId); renderTurns(); }
+    state.current = { sessionId: sid, runId: last?.runId || null };
+    const record = state.historyIndex.get(sid);
+    if (record) rebuildTrackerFromRecord(sid, record); else { state.tracker.reset(sid); renderTurns(); }
     setModelDisplay(rec.models.map((m) => m.model).join(' / '), { known: rec.models.length > 0 });
     q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', rec.historical ? '本地记录 · 非重新验证' : ''].filter(Boolean).join(' · ');
     setHudStatus(rec.historical ? '已恢复本地记录的模型（非重新验证）' : (state.turnHead || '本次运行已识别'));
     renderUsage();
   } else if (switched) {
-    state.current = { sessionId: state.nav.sessionId, runId: null };
-    state.tracker.reset(state.nav.sessionId);
+    state.current = { sessionId: sid, runId: null };
+    state.tracker.reset(sid);
     setModelDisplay('', { known: false });
     q('ak-model-sub').textContent = '此对话尚无本地记录';
     setHudStatus('此对话尚无本地记录 · 发一条消息后识别');
@@ -3153,10 +3202,11 @@ function createDockProbe() {
   const counters = state.prefs.probeSuffixes && typeof state.prefs.probeSuffixes === 'object' ? state.prefs.probeSuffixes : {};
   return createProbeController({
     rpc: state.rpc,
-    modelForSession: (sid) => (state.sessions.get(sid)?.models || []).map((m) => m.model),
+    // The probe knows the PAGE id; turn data lives under the stream id it aliases.
+    modelForSession: (sid) => (state.sessions.get(conversationFor(sid))?.models || []).map((m) => m.model),
     // Extension acquire.js parity: show which stage the capture is in while waiting.
     stageForSession: (sid) => {
-      if (state.tracker.sessionId !== sid) return '截获会话流，等待运行令牌';
+      if (state.tracker.sessionId !== conversationFor(sid)) return '截获会话流，等待运行令牌';
       const t = state.tracker.turns.at(-1);
       return t?.status && t.status !== '已识别' ? `拉取 trace · ${t.status}` : '已取得运行令牌，读取 trace…';
     },
@@ -3183,6 +3233,7 @@ function createDockProbe() {
     // Extension parity: an archived probe chat also loses its local record.
     onArchived: (sid) => { dropLocalRecord(sid).catch(() => {}); },
     buildTitle: (model, suffix) => buildTitle({ prefix: state.prefs.renamePrefix, model, suffix }),
+    titlePrefix: () => state.prefs.renamePrefix || '',
     suffixCounters: counters,
     onSuffixes: (c) => savePrefs({ probeSuffixes: c }),
   });
@@ -3345,10 +3396,11 @@ function wireSessionProbe() {
 const renameStatus = (t) => { q('ak-rename-status').textContent = t; };
 
 function firstModelOf(sessionId) {
-  const rec = state.sessions.get(sessionId);
+  const sid = conversationFor(sessionId); // page id → stream id (/c/{evalId})
+  const rec = state.sessions.get(sid);
   const live = rec?.models?.[0]?.model;
   if (live) return live;
-  return state.historyIndex.get(sessionId)?.models?.[0]?.model || '';
+  return state.historyIndex.get(sid)?.models?.[0]?.model || state.historyIndex.get(sessionId)?.models?.[0]?.model || '';
 }
 
 function renderRenamePreview() {
@@ -3396,7 +3448,10 @@ const autoRenameSeen = new Set(); // in-memory fast path in front of the persist
 async function maybeAutoRename(sessionId, model, run) {
   if (!state.prefs.autoRename || !state.rpc || !sessionId || !model) return;
   if (state.probe?.isRunning) return;                          // the probe names its own sessions
-  if (state.nav.sessionId !== sessionId) return;              // only the conversation on screen
+  // Only the conversation on screen; the page id may alias the stream id
+  // (/c/{evalId}) and the page-side rename needs the PAGE id.
+  const pageId = state.nav.sessionId;
+  if (!pageId || conversationFor(pageId) !== sessionId) return;
   if (run?.spans?.some((sp) => sp.partial)) return;           // wait for the usage to settle
   if (autoRenameSeen.has(sessionId)) return;
   autoRenameSeen.add(sessionId);
@@ -3405,7 +3460,7 @@ async function maybeAutoRename(sessionId, model, run) {
   if (state.nav.title && state.nav.title.trim() === title) return; // already named
   try {
     if (!(await state.renameGate.claim(sessionId))) return;     // renamed (or tried) in an earlier session
-    await renameConversation(sessionId, title, { reason: '自动' });
+    await renameConversation(pageId, title, { reason: '自动' });
   } catch (e) {
     renameStatus('自动重命名失败: ' + (e && e.message || e) + '（可点击“立即重命名”重试）');
   }

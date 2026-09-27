@@ -216,6 +216,83 @@ pub fn extract_models(trace: &Value, run_id: &str) -> Result<Vec<ModelHit>, Stri
     Ok(found)
 }
 
+/// Strength / effort tier words a run can carry ("high", "max", …).
+const EFFORT_WORDS: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+/// Object keys that can carry a reasoning effort, compared after lower-casing
+/// and dropping `-`/`_` (reasoning_effort, reasoningEffort, thinking-effort, effort).
+const EFFORT_KEYS: [&str; 3] = ["reasoningeffort", "thinkingeffort", "effort"];
+const MAX_EFFORT_VISITS: usize = 4096;
+
+fn effort_word(text: &str, excluded: &[String]) -> Option<String> {
+    let word = text.trim().to_lowercase();
+    if EFFORT_WORDS.contains(&word.as_str()) && !excluded.iter().any(|m| *m == word) {
+        Some(word)
+    } else {
+        None
+    }
+}
+
+fn effort_from_chips(event: &Value, excluded: &[String]) -> Option<String> {
+    let items = event
+        .get("style").and_then(|s| s.get("accessory")).and_then(|a| a.get("items"))
+        .and_then(|v| v.as_array())?;
+    items
+        .iter()
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+        .find_map(|text| effort_word(text, excluded))
+}
+
+/// Walk the event JSON for an effort key with a string value (reference
+/// ArenaProtocol.EFFORT_PATTERN, done structurally instead of on the raw
+/// text). Bounded by a visit budget so a huge event cannot stall the poll.
+fn effort_from_json(event: &Value, excluded: &[String]) -> Option<String> {
+    fn walk(v: &Value, excluded: &[String], budget: &mut usize) -> Option<String> {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        match v {
+            Value::Object(map) => {
+                for (k, val) in map {
+                    let key: String = k.chars().filter(|c| *c != '-' && *c != '_').collect::<String>().to_lowercase();
+                    if EFFORT_KEYS.contains(&key.as_str()) {
+                        if let Some(word) = val.as_str().and_then(|t| effort_word(t, excluded)) {
+                            return Some(word);
+                        }
+                    }
+                }
+                map.values().find_map(|val| walk(val, excluded, budget))
+            }
+            Value::Array(arr) => arr.iter().find_map(|val| walk(val, excluded, budget)),
+            _ => None,
+        }
+    }
+    let mut budget = MAX_EFFORT_VISITS;
+    walk(event, excluded, &mut budget)
+}
+
+/// Optional strength/effort tier ("high", "max", …) for the run (reference
+/// ArenaProtocol.extractEffort): accessory chips first (model spans, then any
+/// span of the run), then effort keys in the event JSON. `models` excludes
+/// model chips that happen to be tier words (a model literally named "Max").
+/// None when the trace carries no tier — most traces today have none.
+pub fn extract_effort(trace: &Value, run_id: &str, models: &[String]) -> Option<String> {
+    let excluded: Vec<String> = models.iter().map(|m| m.trim().to_lowercase()).collect();
+    let events = trace_events(trace)?;
+    let same_run = |e: &&Value| e.get("runId").and_then(|v| v.as_str()) == Some(run_id);
+    for pass in 0..2 {
+        for event in events.iter().filter(same_run) {
+            if pass == 0 && !MODEL_SPANS.contains(&span_name(event).as_str()) {
+                continue;
+            }
+            if let Some(word) = effort_from_chips(event, &excluded) {
+                return Some(word);
+            }
+        }
+    }
+    events.iter().filter(same_run).find_map(|event| effort_from_json(event, &excluded))
+}
+
 // ─────────────────────────── tests ───────────────────────────
 #[cfg(test)]
 mod tests {
@@ -297,6 +374,42 @@ mod tests {
              "style": {"accessory": {"items": [{"icon": "cube", "text": "gpt-6"}]}}}
         ]});
         assert_eq!(extract_models(&trace, "run_x").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn effort_from_chips_prefers_model_spans_and_ignores_other_runs() {
+        let stream = json!({"runId": "run_abc123", "message": "ai.streamText.doStream",
+            "style": {"accessory": {"items": [{"text": "grok-4.6", "icon": "tabler-cube"}, {"text": "High", "icon": "tabler-flame"}]}}});
+        let other = json!({"runId": "run_abc123", "message": "chat title",
+            "style": {"accessory": {"items": [{"text": "max", "icon": "tabler-flame"}]}}});
+        let models = vec!["grok-4.6".to_string()];
+        assert_eq!(extract_effort(&json!({"events": [stream.clone()]}), "run_abc123", &models).as_deref(), Some("high"));
+        // Falls back to other spans of the same run, never to other runs.
+        let plain = json!({"runId": "run_abc123", "message": "ai.streamText.doStream",
+            "style": {"accessory": {"items": [{"text": "grok-4.6", "icon": "tabler-cube"}]}}});
+        assert_eq!(extract_effort(&json!({"events": [plain.clone(), other.clone()]}), "run_abc123", &models).as_deref(), Some("max"));
+        assert_eq!(extract_effort(&json!({"events": [plain]}), "run_abc123", &models), None);
+        assert_eq!(extract_effort(&json!({"events": [other]}), "run_other", &models), None);
+        assert_eq!(extract_effort(&json!({}), "run_abc123", &[]), None);
+    }
+
+    #[test]
+    fn effort_from_json_key_and_model_name_excluded() {
+        let payload = json!({"runId": "run_abc123", "message": "ai.streamText.doStream",
+            "data": {"model": "claude-opus", "reasoning_effort": "high", "text": "hi"}});
+        let models = vec!["claude-opus".to_string()];
+        assert_eq!(extract_effort(&json!({"events": [payload]}), "run_abc123", &models).as_deref(), Some("high"));
+        let camel = json!({"runId": "run_abc123", "message": "x", "data": {"nested": [{"thinkingEffort": "Max"}]}});
+        assert_eq!(extract_effort(&json!({"events": [camel]}), "run_abc123", &[]).as_deref(), Some("max"));
+        // A model literally named "max" must not be reported as a tier.
+        let max_chip = json!({"runId": "run_abc123", "message": "ai.streamText.doStream",
+            "style": {"accessory": {"items": [{"text": "max", "icon": "tabler-cube"}]}}});
+        assert_eq!(extract_effort(&json!({"events": [max_chip]}), "run_abc123", &["max".to_string()]), None);
+        // Non-whitelisted words are not tiers.
+        let bogus = json!({"runId": "run_abc123", "message": "chat title",
+            "style": {"accessory": {"items": [{"text": "$0.01", "icon": "tabler-currency-dollar"}, {"text": "so-high-lol", "icon": "x"}]}},
+            "data": {"effort": "extreme"}});
+        assert_eq!(extract_effort(&json!({"events": [bogus]}), "run_abc123", &[]), None);
     }
 
     #[test]

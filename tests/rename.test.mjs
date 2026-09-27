@@ -52,3 +52,24 @@ test('rename gate claims once per conversation and survives history deletion', a
   await gate.release('s3');
   assert.equal(await gate.claim('s3'), true);
 });
+
+test('nextSuffix counts every "<prefix><model>" name independently (ProbeLogic.nextSuffixFor)', () => {
+  const a = nextSuffix('claude-opus-5', {}, '[探针] ');
+  assert.equal(a.suffix, '001');
+  assert.equal(a.counters['p:[探针]|claudeopus5'], 1);
+  // Legacy per-model key keeps counting when there is no prefix.
+  const b = nextSuffix('claude-opus-5', a.counters);
+  assert.equal(b.suffix, '001');
+  assert.equal(b.counters.claudeopus5, 1);
+  // Same prefix (case / whitespace-insensitive) continues the counter.
+  const c = nextSuffix('Claude Opus 5', b.counters, '  [探针]');
+  assert.equal(c.suffix, '002');
+  assert.equal(nextSuffix('claude-opus-5', c.counters, '[抽卡] ').suffix, '001');
+  // Corrupt counters are ignored; at most 300 names are kept (oldest evicted first).
+  assert.equal(nextSuffix('m', { m: -4 }).suffix, '001');
+  let counters = {};
+  for (let i = 0; i < 305; i++) counters = nextSuffix('model-' + i, counters).counters;
+  assert.equal(Object.keys(counters).length, 300);
+  assert.equal(counters.model0, undefined);
+  assert.equal(counters.model304, 1);
+});

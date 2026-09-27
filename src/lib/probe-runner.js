@@ -47,6 +47,7 @@ export function createProbeController({
   onCleanupState = () => {},            // (archived, active)
   onArchived = () => {},                // (sessionId) → void — a chat was archived (dock drops its local record)
   buildTitle = defaultTitle,            // (model, suffix) → title
+  titlePrefix = () => '',               // current title prefix: "<prefix><model>" counts per prefix
   suffixCounters = {},                  // persisted per-model counter map (mutated copy returned via onSuffixes)
   onSuffixes = () => {},                // (counters) → void  — persist hook
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -109,7 +110,9 @@ export function createProbeController({
   }
 
   async function renameHit(tok, sessionId, model) {
-    const r = nextSuffix(model, counters);
+    let prefix = '';
+    try { prefix = String(titlePrefix() || ''); } catch { prefix = ''; }
+    const r = nextSuffix(model, counters, prefix);
     counters = r.counters;
     try { onSuffixes({ ...counters }); } catch { /* persist hook must not break the run */ }
     const title = buildTitle(model, r.suffix);

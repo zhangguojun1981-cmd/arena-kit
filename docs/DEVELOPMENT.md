@@ -69,7 +69,7 @@
 
 | 功能 | dock 模块 | 逻辑库(单测) | 页面侧 | 来源 |
 |---|---|---|---|---|
-| 服务端模型 + **轮次对话解析模型** | 服务端模型 | `src/lib/turns.js`(TurnTracker) | snoop.js → Rust trace | android `TurnTracker.kt` |
+| 服务端模型 + **轮次对话解析模型** | 服务端模型 | `src/lib/turns.js`(TurnTracker,按 tokenKey 计轮,可带强度档位) | snoop.js v2 → bridge 路由 → Rust trace | android `TurnTracker.kt` / `TurnIntake.kt`(页面 id → 流 id 别名 `conversationFor`,`/c/{evalId}` 页也能对上轮次与模型) |
 | **使用额度(Token / 费用,非百分比)**;覆盖率 / 查看运行 / 证据来源 | 使用额度 | `src/lib/usage.js` + `src/lib/usage-view.js` + `src-tauri/src/usage.rs` | — | inspector `core.js` span 用量标签、`view-model.js` / `popup.js` 运行视图 |
 | **会话历史**(搜索/分页/打开/查看运行/删除/导出/清空,累计不因淘汰丢失;**归档当前对话并删除记录**) | 会话历史 | `src/lib/history.js`、`dock.js archiveCurrent` | `conversation-rename.js` archive | inspector `history.js` / `hud.js` 归档聊天及删除记录、android `HistoryLogic.kt` |
 | **重命名对话(可加前缀)** | 重命名对话 | `src/lib/rename.js`、`src/lib/rpc.js` | `injected/conversation-rename.js`、`injected/probe.js` | android `conversation-rename.js` / `probe.js` |
@@ -118,8 +118,8 @@
 
 | 目标文件 | 来源 | 语言 | 移植要点 |
 |---|---|---|---|
-| `injected/bridge.js` | ArenaKit 新增 | JS | 页面侧 `window.__ARENAKIT__`:`onToken`/`send`(页面事件→dock)/`on`+`dispatch`(dock→页面)/`storeGet|Set`/`proxyGet`/SPA 导航 `nav` 事件。**必须第一个注入** |
-| `injected/snoop.js` | inspector `snoop.js` | JS→JS | 几乎原样。`postMessage` 目标改为 `__ARENAKIT__.onToken`。**sessionFromUrl 正则必须与 trace.rs 的 streamSession 保持 lockstep**。ArenaKit 加了页面内帧钩子 `__ARENAKIT_MONITOR__`(会话文本不出页面) |
+| `injected/bridge.js` | ArenaKit 新增 + android `SessionRouting.kt` / `TurnIntake.onActivity` | JS | 页面侧 `window.__ARENAKIT__`:`onToken`/`onActivity`/`send`(页面事件→dock)/`on`+`dispatch`(dock→页面)/`storeGet|Set`/`proxyGet`/SPA 导航 `nav` 事件。**必须第一个注入**。对话页正则 `^/(?:agent|c)/{id}`(`/c/{evalId}` 与流 session 可不同)。**令牌路由**:对话页接受所有流;`/agent` 新对话页只认第一条没见过的流(之后只认它,离开再进重新认);其他页丢弃 —— 防止旧对话的迟到流把轮次日志切回旧聊天。**活动刷新**:snoop 的活动 ping(同一 run 多条回复)在 45 s 冷却后用页面里仍持有的上一枚令牌重新 `on_token`(Rust 在上次轮询未结束时会去重),令牌临期不刷 |
+| `injected/snoop.js` | android `snoop.js` v2(即 inspector `snoop.js`) | JS→JS | 同时挂 **fetch(tee)/EventSource/XMLHttpRequest 渐进读/WebSocket(wss)** 四种传输 + 原始 JWT 形状兜底(非 SSE 的纯 JSON 体也能找到令牌);每个 (page, session, token) 只上报一次(page = 截获时的 `location.pathname`,随事件一起交给 bridge 路由);每会话 ≤ 1/15 s 的无内容活动 ping。`postMessage` 目标改为 `__ARENAKIT__.onToken`。**sessionFromUrl 正则必须与 trace.rs 的 streamSession 保持 lockstep**。ArenaKit 加了页面内帧钩子 `__ARENAKIT_MONITOR__`(会话文本不出页面) |
 | `injected/monitor.js` | ArenaKit 新增 | JS | 把 SSE 帧归约为帧数/字节/文本长度/错误帧/结束方式/空闲时长,只上报摘要(`reply-monitor` 事件);停止按钮仍在且 2 分钟无帧 → 停滞 |
 | `injected/links.js` | android `LinkPolicy.kt`(规则)+ `MainActivity.routeNavigation` / `onCreateWindow`(时机) | Kotlin→JS | 捕获阶段拦 `<a>` 点击(⌘/ctrl/中键 = 新窗口)、覆写 `window.open`;`routeMain(url,{gesture,redirect,linkClick,newWindow})` → `'in-place'|'tab'|'external'|'block'`;登录弹窗(`isAuthFlow`)保留 opener 不拦;安卓走 `ArenaKitAndroid.postMessage`,桌面走 `open_tab`,无运行时时退化为真正的新标签页 |
 | `injected/watchdog.js` | android `assets/watchdog.js`(v3) | JS→JS | 对话看门狗:错误卡正则 + 「发送后零增长」空回复判定,活动/发送时间戳存 sessionStorage(刷新后仍有参照);`ArenaProbeBridge.onLog('WATCH|…')` 改为 `__ARENAKIT__.send('watch', …)`,`PATH|` 推送省略(bridge.js `nav` 已覆盖) |
@@ -157,7 +157,8 @@
 - **清理只扫算式标题**(`^\s*\d{1,4}\s*[+\-*/×÷]\s*\d{1,4}\s*=\s*$`),保留模型名标题/用户标题/当前打开的对话。
 - **模式选择器标签**:折叠态读 `Agent`,展开态读 `Agent ModeBuilt for complex tasks`。用 `isAgentLabel` = `/^Agent(\s+Mode)?\b/i` 匹配两者,**禁止硬编码 `Agent Mode`**(会卡死 modeSelect)。
 - **双令牌捕获**:`snoop.js` 的 sessionFromUrl 正则必须与 trace.rs streamSession 同步,页面钩子才是 debugger 通道失效时的真备份。
-- 侧栏对话列表懒加载,等 `a[href^="/agent/"]` 出现再判"无可清理"。
+- 侧栏对话列表懒加载,等 `a[href^="/agent/"]` / `a[href^="/c/"]` 出现再判"无可清理"。
+- 探针命中标题 `<前缀><模型>-NNN`:序号按 **前缀+模型** 独立计数(`rename.js nextSuffix(model, counters, prefix)`,键 `p:<前缀>|<模型>`;无前缀沿用旧的按模型键),最多保留 300 个名字。
 - 默认 5 轮(1–100)。停止条件:命中即停(除非 findAll)、连续 3 次失败、或一次不可跳过的失败(草稿冲突/失去监听/导航)。detect 阶段的 token/trace 失败**可跳过**(下一轮是全新对话)。
 - **令牌只读**:decode 不是验签;Trigger.dev 在 GET 时校验。本项目绝不写 `/api/**`。
 
@@ -207,8 +208,10 @@ capabilities:`capabilities/arena.json`(`remote.urls: https://arena.ai/*`,只给�
 Rust → dock 事件:
 
 ```
-'arenakit://trace'  {stage:'token'|'poll'|'model'|'error'|'done', sessionId, runId, attempt, max,
-                     models:[{model, provider, partial}], spans:[SpanUsage], complete, status, fatal, checkedAt(ms)}
+'arenakit://trace'  {stage:'token'|'poll'|'model'|'error'|'done', sessionId, runId, tokenKey, attempt, max,
+                     models:[{model, provider, partial}], strength, spans:[SpanUsage], complete, status, fatal, checkedAt(ms)}
+                    // tokenKey = 令牌的不可逆哈希:dock 的轮次按它而不是 runId 计(arena 可能整段对话复用同一 run scope,
+                    // 按 runId 会把所有轮并成第 1 轮);strength = 可选强度/努力档位("high"/"max"…,trace.rs extract_effort)
 'arenakit://page'   {name, payload}   // 页面事件中继
 ```
 

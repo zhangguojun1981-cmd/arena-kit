@@ -54,7 +54,7 @@ export function createTurnTracker() {
 
   /* Record the resolved model for `turn` and build the status text:
    * headline + per-turn history line ("本会话: R1 … · R2 …"). */
-  function record(turn, model, models = null) {
+  function record(turn, model, models = null, strength = '') {
     const m = String(model || '');
     if (!t.firstModel) t.firstModel = m;
     t.routed = m !== t.firstModel;
@@ -63,7 +63,7 @@ export function createTurnTracker() {
     t.history.push(`R${turn} ${m}`);
     while (t.history.length > MAX_HISTORY) t.history.shift();
     const entry = t.turns.find((x) => x.turn === turn);
-    if (entry) { entry.model = m; entry.models = Array.isArray(models) && models.length ? models.slice() : [m]; entry.status = '已识别'; entry.routed = t.routed; }
+    if (entry) { entry.model = m; entry.models = Array.isArray(models) && models.length ? models.slice() : [m]; entry.status = '已识别'; entry.routed = t.routed; if (strength) entry.strength = String(strength).slice(0, 24); }
     const head = t.routed && changedFromPrev ? `第 ${turn} 轮 · 已切换模型 → ${m}`
       : t.routed ? `第 ${turn} 轮 · ${m}（非首轮模型）`
         : `第 ${turn} 轮 · ${m}`;

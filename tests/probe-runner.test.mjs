@@ -157,6 +157,22 @@ test('custom title builder and persisted suffix counters', async () => {
   assert.deepEqual(saved, [{ claudeopus5: 42 }]);
 });
 
+test('a title prefix gets its own suffix counter per "<prefix><model>" name', async () => {
+  const saved = [];
+  const h = harness({ modelsBySend: [['claude-opus-5']] });
+  const ctl = createProbeController({
+    rpc: h.rpc, modelForSession: () => ['claude-opus-5'], sleep: () => Promise.resolve(),
+    modelWaitMs: 10, modelPollMs: 1, roundPacingMs: 0,
+    suffixCounters: { claudeopus5: 41 },
+    onSuffixes: (c) => saved.push(c),
+    titlePrefix: () => '[探针] ',
+    buildTitle: (model, suffix) => `[探针] ${model}-${suffix}`,
+  });
+  await ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, autoRename: true });
+  assert.equal(h.calls.find((c) => c.action === 'rename').args.title, '[探针] claude-opus-5-001');
+  assert.deepEqual(saved, [{ claudeopus5: 41, 'p:[探针]|claudeopus5': 1 }]);
+});
+
 /* ── cleanup sweep ─────────────────────────────────────────────────────── */
 function cleanupHarness({ sidebar, failArchive = () => false } = {}) {
   const calls = [];

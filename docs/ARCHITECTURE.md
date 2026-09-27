@@ -41,8 +41,8 @@
 ## 令牌截获数据流(核心取证链)
 
 1. 用户在 arena.ai 发一条消息 → 页面向 `/ai-proxy/realtime/.../sessions/<id>/stream` 发 SSE 请求。
-2. `snoop.js`(MAIN world,`tee()` 分流响应体,不干扰页面)从 SSE 帧里提取 `public-access-token`(Trigger.dev JWT)+ `sessionId`;同时把原始帧交给页面内的 `monitor.js`(只归约为数字/标志,会话文本不出页面)。
-3. `__ARENAKIT__.onToken` → Tauri `on_token` 把 `{token, sessionId}` 送到 Rust。
+2. `snoop.js`(MAIN world;fetch `tee()` 分流响应体 + EventSource / XHR 渐进读 / WebSocket 四路挂钩,不干扰页面)从 SSE 帧(或纯 JSON 体的 JWT 形状兜底)里提取 `public-access-token`(Trigger.dev JWT)+ `sessionId` + 截获时的页面路径;同时把原始帧交给页面内的 `monitor.js`(只归约为数字/标志,会话文本不出页面)。
+3. `__ARENAKIT__.onToken` 先做路由(对话页 `/agent/{id}` `/c/{id}` 全收;`/agent` 新对话只认第一条新流;其他页丢弃)→ Tauri `on_token` 把 `{token, sessionId}` 送到 Rust。同一 run 后续回复的流活动(`onActivity`,≥45 s 冷却)会用同一枚令牌再跑一次查询。
 4. Rust `trace.rs`:`validate_token`(校验 pub/iss/aud/exp/单一 run scope/session 匹配)→ 轮询 `https://api.trigger.dev/api/v1/runs/<runId>/events`(8 次 × 3s,`Authorization: Bearer <token>`)→ `extract_models` 从 `ai.streamText.doStream` 等 span 的 cube 标签抽出服务端真实模型名,`usage.rs` 顺带抽 Token / 费用标签。
 5. 逐阶段 `arenakit://trace` 事件(token/poll/model/error/done)到 dock:轮次追踪器记录「第 N 轮 → 模型」,用量模块累加,会话历史落库,自动重命名(若开启)只在当前对话、trace 完整、每对话一次的前提下触发。**盲测模型也能看出真实身份。**
 

@@ -130,6 +130,16 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Opaque, non-reversible key for a run token (reference HistoryLogic.tokenKey).
+/// Arena may deliver the same run scope for every turn of a conversation, so the
+/// dock keys turns by the TOKEN, never by the run id. In-memory use only.
+fn token_key(token: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn valid_session_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
@@ -201,10 +211,11 @@ fn on_token(
         *n
     };
     let expires_at_ms: u64 = (claims.exp * 1000.0) as u64;
+    let key = token_key(&token);
     emit_trace(
         &app,
         json!({
-            "stage":"token","sessionId":session_id,"runId":claims.run_id,
+            "stage":"token","sessionId":session_id,"runId":claims.run_id,"tokenKey":key,
             "expiresAt":expires_at_ms,
             "status":"已取得本次运行标识，读取 trace…"
         }),
@@ -222,8 +233,9 @@ async fn poll_trace(
     claims: trace::Claims,
     generation: u64,
 ) {
+    let key = token_key(&token);
     let base = |extra: Value| -> Value {
-        let mut v = json!({"sessionId": session_id, "runId": claims.run_id});
+        let mut v = json!({"sessionId": session_id, "runId": claims.run_id, "tokenKey": key});
         if let (Some(dst), Some(src)) = (v.as_object_mut(), extra.as_object()) {
             for (k, val) in src {
                 dst.insert(k.clone(), val.clone());
@@ -370,11 +382,14 @@ fn handle_trace(
     };
     let checked_at = now_millis();
     let spans_json = serde_json::to_value(&spans).unwrap_or(Value::Array(Vec::new()));
+    // Optional strength / effort tier ("high", "max", …); empty when absent.
+    let model_names: Vec<String> = models.iter().map(|m| m.model.clone()).collect();
+    let strength = trace::extract_effort(trace_json, run_id, &model_names).unwrap_or_default();
     emit_trace(
         app,
         base(json!({
             "stage":"model","attempt":attempt,"max":TRACE_MAX_ATTEMPTS,
-            "checkedAt": checked_at,
+            "checkedAt": checked_at,"strength": strength,
             "models": model_json,
             "spans": spans_json,
             "complete": complete,

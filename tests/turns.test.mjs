@@ -148,3 +148,19 @@ test('turn entries carry model, status and deduplicated marks', () => {
   t.setStatus(1, '完成');
   assert.equal(t.turns[0].status, '完成');
 });
+
+test('record keeps an optional strength tier per turn and turns are keyed by the caller\'s run key', () => {
+  const t = createTurnTracker();
+  const a = t.onToken('s1', 'tok-key-1');
+  assert.equal(a.turn, 1);
+  t.record(1, 'gpt-6', ['gpt-6'], 'high');
+  assert.equal(t.turns[0].strength, 'high');
+  // Same run id delivered again under a different token key = a new turn.
+  const b = t.onToken('s1', 'tok-key-2');
+  assert.equal(b.turn, 2);
+  assert.equal(b.repeat, false);
+  t.record(2, 'gpt-6', ['gpt-6']);
+  assert.equal(t.turns[1].strength, undefined);
+  assert.equal(t.turnOf('tok-key-2'), 2);
+  assert.equal(t.onToken('s1', 'tok-key-1').repeat, true);
+});
