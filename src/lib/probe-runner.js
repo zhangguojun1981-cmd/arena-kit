@@ -40,6 +40,7 @@ const defaultTitle = (model, suffix) => (suffix ? `${model}-${suffix}` : String(
 export function createProbeController({
   rpc,                                  // { call(action, args) → Promise<data> }
   modelForSession,                      // (sessionId) → string[] | string | null
+  stageForSession = () => '',           // (sessionId) → progress text while the model is unknown (extension acquire.js stages)
   onProgress = () => {},                // (line) → void
   onFinished = () => {},                // (summary) → void
   onProbeState = () => {},              // (round, maxRounds, hits, active)
@@ -95,9 +96,13 @@ export function createProbeController({
   /* Poll the trace pipeline for the session's model names up to modelWaitMs. */
   async function awaitModels(tok, sessionId) {
     const deadline = now() + modelWaitMs;
+    let lastStage = '';
     for (;;) {
       const models = modelsOf(sessionId);
       if (models.length) return models;
+      let stage = '';
+      try { stage = String(stageForSession(sessionId) || ''); } catch { stage = ''; }
+      if (stage && stage !== lastStage) { lastStage = stage; onProgress(`等待模型 · ${stage}`); }
       if (now() >= deadline) return [];
       await wait(tok, modelPollMs);
     }

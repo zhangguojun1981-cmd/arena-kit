@@ -4,7 +4,7 @@ import { createProbeController } from '../src/lib/probe-runner.js';
 
 /* Scripted fake page: rpc actions resolve from handlers; the "trace pipeline"
  * learns a session's model when send() runs. */
-function harness({ modelsBySend = [], handlers = {}, modelDelayPolls = 0 } = {}) {
+function harness({ modelsBySend = [], handlers = {}, modelDelayPolls = 0, stages = null } = {}) {
   const calls = [];
   const log = [];
   const states = [];
@@ -30,6 +30,7 @@ function harness({ modelsBySend = [], handlers = {}, modelDelayPolls = 0 } = {})
       k.polls++;
       return k.polls > modelDelayPolls ? k.models : null;
     },
+    stageForSession: stages ? (sid) => { const k = known.get(sid); return k ? stages[Math.min(k.polls, stages.length) - 1] : ''; } : undefined,
     onProgress: (l) => log.push(l),
     onFinished: (s) => log.push('FIN ' + s),
     onProbeState: (round, max, hits, active) => states.push([round, max, hits, active]),
@@ -38,6 +39,14 @@ function harness({ modelsBySend = [], handlers = {}, modelDelayPolls = 0 } = {})
   });
   return { ctl, calls, log, states, rpc };
 }
+
+test('while waiting for the model, changed capture stages are logged once each (acquire.js parity)', async () => {
+  const h = harness({ modelsBySend: [['claude-opus-5']], modelDelayPolls: 4, stages: ['截获会话流，等待运行令牌', '截获会话流，等待运行令牌', '拉取 trace · 读取中 1/8', '拉取 trace · 读取中 2/8'] });
+  const r = await h.ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, autoRename: false });
+  assert.equal(r.hits.length, 1);
+  const stageLines = h.log.filter((l) => l.startsWith('等待模型 · '));
+  assert.deepEqual(stageLines, ['等待模型 · 截获会话流，等待运行令牌', '等待模型 · 拉取 trace · 读取中 1/8', '等待模型 · 拉取 trace · 读取中 2/8']);
+});
 
 test('probe loop: new chat → agent mode → send → await models → match → rename → stop on first hit', async () => {
   const h = harness({ modelsBySend: [['gpt-4o'], ['claude-opus-5']] });

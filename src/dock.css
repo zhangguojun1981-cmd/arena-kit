@@ -72,6 +72,8 @@ html, body {
 }
 .ak-btn:hover { border-color: var(--ak-accent); }
 .ak-btn-sm { width: auto; padding: 6px 12px; }
+.ak-btn-wide { width: 100%; margin-top: 6px; }
+.ak-btn[hidden] { display: none; }
 
 .ak-switch {
   display: flex; align-items: center; gap: 8px;

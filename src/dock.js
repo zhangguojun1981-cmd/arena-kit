@@ -321,8 +321,11 @@ async function loadHistoryIndex() {
 function historyRows() {
   return [...state.historyIndex.values()].sort((a, b) => String(b.lastSeen).localeCompare(String(a.lastSeen)));
 }
+const HISTORY_PAGE = 20; // extension popup pages 20 rows at a time
+let historyLimit = HISTORY_PAGE;
 function renderHistory() {
-  const rows = searchRecords(historyRows(), q('ak-history-q').value).slice(0, 60);
+  const all = searchRecords(historyRows(), q('ak-history-q').value);
+  const rows = all.slice(0, historyLimit);
   const fmtDate = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleString('zh-CN', { hour12: false }) : ''; };
   q('ak-history-list').innerHTML = rows.map((r) => {
     const turns = recordTurns(r);
@@ -340,10 +343,15 @@ function renderHistory() {
     </div>`;
   }).join('') || '<div class="ak-sub">暂无记录：识别到模型后自动保存（仅本机）</div>';
   const total = state.historyIndex.size;
-  q('ak-history-sub').textContent = total ? `共 ${total} 个会话${rows.length < total ? `，显示 ${rows.length}` : ''} · 仅保存会话→模型与用量标签` : '';
+  const more = q('ak-history-more');
+  more.hidden = all.length <= rows.length;
+  more.textContent = `加载更多（还有 ${Math.max(0, all.length - rows.length)} 个）`;
+  const filtered = all.length !== total ? `匹配 ${all.length} 个会话` : `共 ${total} 个会话`;
+  q('ak-history-sub').textContent = total ? `${filtered}${rows.length < all.length ? `，显示 ${rows.length}` : ''} · 仅保存会话→模型与用量标签，不包含未捕获的历史消耗` : '';
 }
 function wireHistory() {
-  q('ak-history-q').addEventListener('input', renderHistory);
+  q('ak-history-q').addEventListener('input', () => { historyLimit = HISTORY_PAGE; renderHistory(); });
+  q('ak-history-more').addEventListener('click', () => { historyLimit += HISTORY_PAGE; renderHistory(); });
   q('ak-history-list').addEventListener('click', async (e) => {
     const open = e.target.closest('[data-open]');
     const view = e.target.closest('[data-view]');
@@ -573,6 +581,12 @@ function createDockProbe() {
   return createProbeController({
     rpc: state.rpc,
     modelForSession: (sid) => (state.sessions.get(sid)?.models || []).map((m) => m.model),
+    // Extension acquire.js parity: show which stage the capture is in while waiting.
+    stageForSession: (sid) => {
+      if (state.tracker.sessionId !== sid) return '截获会话流，等待运行令牌';
+      const t = state.tracker.turns.at(-1);
+      return t?.status && t.status !== '已识别' ? `拉取 trace · ${t.status}` : '已取得运行令牌，读取 trace…';
+    },
     onProgress: probeLog,
     onFinished: (summary) => {
       probeLog(summary);

@@ -16,12 +16,12 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | 个人投票胜负统计 | [personal-leaderboard](https://github.com/wrapss/lmarena-personal-leaderboard) | A 前端注入 |
 | 每新对话自动注入系统提示词 | [Arena-Ai (ENI)](https://github.com/peyton2065/Arena-Ai) | 提示词注入 |
 | **截获运行令牌 → 拉 trace → 显示服务端真实模型名**,按**轮次**解析模型(非首轮模型高亮) | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector) / [-android](https://github.com/AI-modelsAPI/arena-trace-android) | B 取证 |
-| **使用额度(Token / 费用)**:本轮 / 本会话 / 累计,证据 JSON 导出 | arena-trace-inspector | B 取证 |
+| **使用额度(Token / 费用,非百分比)**:本轮 / 本会话 / 累计,Token / 费用覆盖率,按运行查看历史记录,证据来源折叠(span 级 ID 可复制),证据 JSON 导出 | arena-trace-inspector | B 取证 |
 | **额度百分比** + 三色进度条 + 锚定的重置倒计时 | arena-trace-android (pulse) | B 取证 |
-| **会话历史**:本地记录、搜索、一键打开、删除、导出、清空 | arena-trace-inspector / -android | B 取证 |
+| **会话历史**:本地记录、搜索、分页加载、一键打开 / 查看运行、删除、导出、清空,**归档当前对话并删除记录** | arena-trace-inspector / -android | B 取证 |
 | **重命名对话**:识别模型后手动 / 自动改名,可加统一前缀 | arena-trace-android + 前缀为 ArenaKit 新增 | B 取证 |
-| **自动探针(抽卡)**:新建对话 → 发算式 → 等 trace → 匹配目标 → 命中改名 | arena-trace-android (ProbeController) | B 取证 |
-| **自动清理**:归档算式标题的探针残留(仅归档不删除) | arena-trace-android | B 取证 |
+| **自动探针(抽卡)**:新建对话 → 发算式 → 等 trace → 匹配目标 → 命中改名;**自动抽卡**模式不设目标,每轮识别到什么模型就命名为模型名 | arena-trace-android (ProbeController) / arena-trace-inspector (auto-draw) | B 取证 |
+| **自动清理**:归档算式标题的探针残留(仅归档不删除),并同步删除其本地记录 | arena-trace-android / arena-trace-inspector | B 取证 |
 | **会话探针**:向当前对话发一条探针,识别「这一轮」实际模型 | arena-trace-android (quickSend) | B 取证 |
 | **回复监控**:空回复 / 报错 / 中断 / 停滞自动标记到轮次 | ArenaKit 新增 | B 取证 |
 

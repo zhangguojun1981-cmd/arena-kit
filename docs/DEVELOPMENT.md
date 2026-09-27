@@ -70,11 +70,11 @@
 | 功能 | dock 模块 | 逻辑库(单测) | 页面侧 | 来源 |
 |---|---|---|---|---|
 | 服务端模型 + **轮次对话解析模型** | 服务端模型 | `src/lib/turns.js`(TurnTracker) | snoop.js → Rust trace | android `TurnTracker.kt` |
-| **使用额度(Token / 费用,非百分比)** | 使用额度 | `src/lib/usage.js` + `src-tauri/src/usage.rs` | — | inspector `core.js` span 用量标签 |
-| **会话历史**(搜索/打开/删除/导出/清空,累计不因淘汰丢失) | 会话历史 | `src/lib/history.js` | — | inspector `history.js`、android `HistoryLogic.kt` |
+| **使用额度(Token / 费用,非百分比)**;覆盖率 / 查看运行 / 证据来源 | 使用额度 | `src/lib/usage.js` + `src/lib/usage-view.js` + `src-tauri/src/usage.rs` | — | inspector `core.js` span 用量标签、`view-model.js` / `popup.js` 运行视图 |
+| **会话历史**(搜索/分页/打开/查看运行/删除/导出/清空,累计不因淘汰丢失;**归档当前对话并删除记录**) | 会话历史 | `src/lib/history.js`、`dock.js archiveCurrent` | `conversation-rename.js` archive | inspector `history.js` / `hud.js` 归档聊天及删除记录、android `HistoryLogic.kt` |
 | **重命名对话(可加前缀)** | 重命名对话 | `src/lib/rename.js`、`src/lib/rpc.js` | `injected/conversation-rename.js`、`injected/probe.js` | android `conversation-rename.js` / `probe.js` |
-| **自动探针(抽卡)** | 自动探针 | `src/lib/probe-logic.js`、`src/lib/probe-runner.js` | `injected/probe.js` | android `ProbeLogic.kt` / `ProbeController.kt` |
-| **自动清理**(归档算式标题残留) | 自动清理 | `probe-runner.cleanup` | `probe.js` sidebarList/revealSidebarItem/archive | android `ProbeController.cleanup` |
+| **自动探针(抽卡)** + **自动抽卡**(`mode:'draw'`:无目标,每轮命名为模型名,不消耗序号) | 自动探针 | `src/lib/probe-logic.js`、`src/lib/probe-runner.js` | `injected/probe.js` | android `ProbeLogic.kt` / `ProbeController.kt`、inspector `auto-draw.js` |
+| **自动清理**(归档算式标题残留,`onArchived` 钩子同步删本地记录) | 自动清理 | `probe-runner.cleanup` | `probe.js` sidebarList/revealSidebarItem/archive | android `ProbeController.cleanup`、inspector 归档后删记录 |
 | **会话探针**(向当前对话发探针,识别本轮模型) | 会话探针 | `src/lib/session-probe.js` | `probe.js` sendToCurrent | android `quickSend` + TurnTracker |
 | **回复监控**(空回复/报错/中断/停滞 自动标记轮次) | 回复监控 | `src/lib/monitor.js` | `injected/monitor.js`(snoop 帧钩子) | ArenaKit 新增(用户需求) |
 
