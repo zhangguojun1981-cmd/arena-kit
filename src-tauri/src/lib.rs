@@ -876,11 +876,14 @@ mod tests {
         assert!(st.current().is_some());
         st.clear();
         assert!(login_pending_js(&st, &arena).is_none());
-        // expired entries are dropped on read
-        if let Ok(mut g) = st.pending.lock() {
-            *g = Some((json!({}), std::time::Instant::now() - std::time::Duration::from_secs(LOGIN_TTL_SECS + 1)));
+        // expired entries are dropped on read (checked_sub: a freshly booted CI
+        // runner may not have LOGIN_TTL_SECS of monotonic clock behind it)
+        if let Some(past) = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(LOGIN_TTL_SECS + 1)) {
+            if let Ok(mut g) = st.pending.lock() {
+                *g = Some((json!({}), past));
+            }
+            assert!(st.current().is_none());
         }
-        assert!(st.current().is_none());
         assert!(login_host_ok(&"https://appleid.apple.com/auth/authorize".parse().unwrap()));
         assert!(login_host_ok(&"https://xyz.supabase.co/auth/v1/authorize".parse().unwrap()));
         assert!(!login_host_ok(&"https://arena.ai.evil.com/".parse().unwrap()));
