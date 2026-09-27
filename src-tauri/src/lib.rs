@@ -556,7 +556,8 @@ mod tests {
         let s = build_init_script(Some("/*DOCK*/"));
         let dock = s.find("/*DOCK*/").unwrap();
         assert!(s.find("[ArenaKit] leaderboard init failed").unwrap() < dock);
-        assert!(dock < s.find("DOMContentLoaded").unwrap());
+        // bridge.js has its own DOMContentLoaded hook; the deferred-run trailer is the LAST one.
+        assert!(dock < s.rfind("DOMContentLoaded").unwrap());
         assert!(s.contains("[ArenaKit] dock-embedded init failed"));
         // the committed bundle is a self-contained classic script
         let bundle = include_str!("../../src/embed/dock-embedded.gen.js");
