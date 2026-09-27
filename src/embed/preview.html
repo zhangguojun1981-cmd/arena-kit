@@ -18,7 +18,7 @@
 <body>
   <div class="page">
     <h2>arena.ai 页面替身</h2>
-    <p class="hint">这不是 Arena。这一页只用来在桌面浏览器里看安卓内嵌 UI：悬浮球（额度环 / 模型）、单击径向工具条、双击面板、长按会话探针、拖动。下方按钮往 dock 灌假事件。</p>
+    <p class="hint">这不是 Arena。这一页只用来在桌面浏览器里看安卓内嵌 UI：状态胶囊（额度环 + 模型 / 任务进度 + ⟳）、单击打开底部面板、长按快捷菜单、拖动后自动贴边、页面底部上拉刷新。下方按钮往 dock 灌假事件。</p>
     <div class="bubble me">985×128=</div>
     <div class="bubble">985 × 128 = 126,080</div>
     <div class="bubble me">再来一题：473×82=</div>
@@ -33,6 +33,8 @@
     <button data-demo="routed">切换模型 → gpt-5</button>
     <button data-demo="anomaly">回复异常</button>
     <button data-demo="reset">新对话</button>
+    <button data-demo="probe">探针进行中</button>
+    <button data-demo="flash">已发送 ✓</button>
   </div>
   <script>
     // Minimal Tauri stand-in so the embedded bundle boots in "runtime" mode
@@ -83,6 +85,8 @@
         routed: () => { demos.token(); emit('arenakit://trace', { stage: 'model', sessionId: sid, runId: 'run_preview_' + turn, complete: true, models: [{ model: 'gpt-5', provider: 'openai' }], spans: [{ spanId: 'b', model: 'gpt-5', usage: { totalTokens: 890 }, costUsd: 0.004, ended: true }] }); },
         anomaly: () => emit('arenakit://page', { name: 'reply-monitor', payload: { sessionId: sid, runId: 'run_preview_' + turn, frames: 3, textChars: 0, errorFrames: 0, ended: 'done', durationMs: 1200, at: Date.now(), turn } }),
         reset: () => { turn = 0; emit('arenakit://page', { name: 'nav', payload: { sessionId: null, path: '/agent', title: '', agentPath: true, reason: 'demo' } }); },
+        probe: () => { const e = window.__ARENAKIT_EMBED__; let r = 0; const t = setInterval(() => { r += 1; e.setPill({ label: `探针 ${r}/5 · 命中 ${Math.floor(r / 3)}`, tone: 'active', busy: r < 5 }); if (r >= 5) { clearInterval(t); setTimeout(() => e.setPill({ label: '探针结束 · 命中 1', tone: 'active', busy: false }), 400); } }, 900); },
+        flash: () => { const e = window.__ARENAKIT_EMBED__; e.setPill({ label: '已发送 ✓', tone: 'active' }); setTimeout(() => e.setPill({ label: 'claude-opus-4-1', tone: 'normal' }), 2500); },
       };
       document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', () => demos[b.dataset.demo]()));
       setTimeout(demos.pulse72, 600);

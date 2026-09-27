@@ -7,204 +7,221 @@
   <link rel="stylesheet" href="dock.css" />
 </head>
 <body>
-  <!-- ArenaKit native side dock. Lives in its OWN webview (not injected into
-       arena.ai), docked to the right of the arena.ai webview. Decoupled from
-       the page DOM, so arena redesigns never break it. -->
-  <!-- Header = the reference app's panel top: model name (green; orange-yellow
-       when this turn's model differs from the conversation's first), the
-       per-turn status line, quota % + reset countdown with its bar, and the
-       browser back / forward / reload row. -->
+  <!-- ArenaKit panel. Desktop: lives in its OWN webview (not injected into
+       arena.ai), docked to the right of the arena.ai webview. Android: this
+       body is mounted inside the page as a bottom sheet (src/embed/shell.js).
+       Layout follows arena-trace-android's panel_sheet.xml: header (model +
+       headline · quota + reset · ⟳), quota bar, activity row with an
+       expandable log, segmented tabs 对话 / 探针 / 工具 / 更多. -->
   <header class="ak-head">
     <div class="ak-head-row">
-      <span class="ak-logo" aria-hidden="true"><svg viewBox="0 0 108 108"><polygon fill="#3A82F7" points="51.44,15.6 18.16,82.16 32.24,82.16 43.76,59.12 51.44,59.12"/><polygon fill="#00E599" points="56.56,15.6 56.56,59.12 64.24,59.12 75.76,82.16 89.84,82.16"/><polygon fill="#FFFFFF" points="39.92,66.8 68.08,66.8 73.2,77.04 34.8,77.04"/><polygon fill="#FFFFFF" points="54,10.48 57.2,19.44 54,28.4 50.8,19.44"/></svg></span>
+      <span class="ak-logo" aria-hidden="true"><svg viewBox="0 0 108 108"><rect width="108" height="108" rx="26" fill="#12151C"/><polygon fill="#3A82F7" points="18,80 36,24 46,24 32,80"/><polygon fill="#3A82F7" points="46,24 36,24 50,80 60,80"/><polygon fill="#FFFFFF" points="30,62 52,62 55,72 27,72"/><rect x="62" y="24" width="10" height="56" rx="2" fill="#FFFFFF"/><polygon fill="#00E599" points="72,52 84,24 95,24 78,60"/><polygon fill="#00E599" points="72,52 78,44 96,80 85,80"/></svg></span>
       <div class="ak-head-main">
         <div id="ak-hud-model" class="ak-hud-model" data-known="false" data-routed="false">模型待确认</div>
-        <div id="ak-hud-status" class="ak-hud-status">等待会话流…</div>
+        <div id="ak-hud-status" class="ak-hud-status">打开一个 Arena 对话后自动识别模型</div>
       </div>
-      <span class="ak-head-tools"></span>
-    </div>
-    <div class="ak-hud-pulse-row">
-      <span id="ak-hud-pulse" class="ak-hud-pulse">额度读取中…</span>
-      <button class="ak-link" data-action="pulse-refresh" title="额度接口每 60 秒读取一次；点此立即刷新">刷新额度</button>
+      <div class="ak-head-quota">
+        <div id="ak-hud-percent" class="ak-hud-percent" data-band="unknown">–</div>
+        <div id="ak-hud-pulse" class="ak-hud-reset">额度读取中…</div>
+      </div>
+      <span class="ak-head-tools">
+        <button class="ak-icon-btn ak-tonal" data-action="page-reload" aria-label="刷新页面" title="刷新页面"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg></button>
+      </span>
     </div>
     <div class="ak-bar"><div id="ak-bar-fill"></div></div>
-    <div class="ak-nav">
-      <button class="ak-btn ak-btn-sm" data-action="nav-back">‹ 后退</button>
-      <button class="ak-btn ak-btn-sm" data-action="nav-forward">前进 ›</button>
-      <button class="ak-btn ak-btn-sm" data-action="nav-reload">刷新</button>
-    </div>
   </header>
 
-  <!-- Module: server-side model (from the trace forensics pipeline) -->
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>服务端模型</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div id="ak-model" class="ak-big">—</div>
-      <div id="ak-model-sub" class="ak-sub">发一条消息后自动识别</div>
-      <div id="ak-session" class="ak-sub ak-mono"></div>
-      <div id="ak-turn-head" class="ak-turn-head"></div>
-      <div id="ak-turn-list" class="ak-turns"></div>
-    </div>
-  </section>
+  <!-- activity row: newest log line; tap to expand the log (reference panel_activity) -->
+  <div class="ak-activity" id="ak-activity" role="button" aria-expanded="false" tabindex="0">
+    <span id="ak-status" class="ak-activity-line">就绪</span>
+    <span class="ak-chev">▾</span>
+  </div>
+  <pre id="ak-log" class="ak-log ak-activity-log" hidden></pre>
 
-  <!-- Module: Token / trace cost (observed labels only, never inferred) -->
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>回复监控</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div id="ak-monitor-head" class="ak-sub">监听回复流：空回复 / 报错 / 中断 / 停滞会自动标记到对应轮次。</div>
-      <div id="ak-monitor-list" class="ak-list"></div>
-    </div>
-  </section>
+  <nav class="ak-tabs" role="tablist" aria-label="面板">
+    <button type="button" role="tab" data-tab="chat" aria-selected="true">对话</button>
+    <button type="button" role="tab" data-tab="probe" aria-selected="false">探针</button>
+    <button type="button" role="tab" data-tab="tools" aria-selected="false">工具</button>
+    <button type="button" role="tab" data-tab="more" aria-selected="false">更多</button>
+  </nav>
 
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>使用额度（Token / 费用）</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div class="ak-row"><span id="ak-usage-ctx" class="ak-sub">当前会话</span><button class="ak-link" data-action="usage-back" hidden>返回当前会话</button></div>
-      <label class="ak-field" id="ak-usage-pick-field" hidden><span>查看运行</span>
-        <select id="ak-usage-pick" class="ak-input"></select>
-      </label>
-      <div id="ak-usage-meta" class="ak-sub"></div>
-      <div class="ak-kv"><span class="ak-k">本轮</span><span id="ak-usage-run" class="ak-v">未提供</span></div>
-      <div class="ak-kv"><span class="ak-k">本会话</span><span id="ak-usage-session" class="ak-v">未提供</span></div>
-      <div class="ak-kv"><span class="ak-k">累计</span><span id="ak-usage-total" class="ak-v">未提供</span></div>
-      <div id="ak-usage-calls" class="ak-sub ak-calls"></div>
-      <details class="ak-fold"><summary>证据来源 <span id="ak-evidence-count"></span></summary>
-        <div class="ak-sub">只读来源：Trigger.dev run events → ai.streamText.doStream，按 runId + spanId 对齐，不混入其他运行。</div>
-        <div id="ak-evidence"></div>
-      </details>
-      <div class="ak-btns">
-        <button class="ak-btn ak-btn-sm" data-action="export-evidence">导出证据 JSON</button>
+  <main class="ak-pages">
+    <!-- ── 对话: per-turn model log (reference item_turn rows, newest first) ── -->
+    <section class="ak-page" data-page="chat" data-active="true">
+      <div class="ak-group">
+        <div class="ak-group-head"><span>轮次</span><span id="ak-turn-head" class="ak-group-note"></span></div>
+        <div id="ak-turn-list" class="ak-turns"><div class="ak-empty">暂无轮次记录：发一条消息后，每一轮实际应答的模型会记录在这里</div></div>
+        <div id="ak-model-sub" class="ak-sub ak-mono"></div>
+        <div id="ak-session" class="ak-sub ak-mono"></div>
       </div>
-      <textarea id="ak-export" class="ak-textarea" hidden readonly></textarea>
-    </div>
-  </section>
 
-  <!-- Module: local conversation → model history (never leaves the device) -->
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>会话历史</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <input id="ak-history-q" class="ak-input" type="search" placeholder="搜索标题 / 模型 / 会话 ID" />
-      <div id="ak-history-list" class="ak-list"></div>
-      <button id="ak-history-more" class="ak-btn ak-btn-sm ak-btn-wide" hidden>加载更多</button>
-      <div class="ak-btns">
-        <button class="ak-btn ak-btn-sm" data-action="history-export">导出全部</button>
-        <button class="ak-btn ak-btn-sm ak-danger" data-action="archive-current" title="归档 Arena 上当前打开的对话（走 Arena 自带的归档菜单，可在归档中找回），并删除它的本地记录">归档当前对话并删除记录</button>
-        <button class="ak-btn ak-btn-sm ak-danger" data-action="history-clear">清空历史</button>
-      </div>
-      <div id="ak-history-sub" class="ak-sub"></div>
-    </div>
-  </section>
-
-  <!-- Module: enhancement toggles + panels -->
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>自动探针（抽卡）</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div class="ak-sub">探针会新建对话并发送真实的算式消息（消耗额度），直到命中目标模型；命中的对话按「前缀 + 模型-序号」重命名。「自动抽卡」则不看目标：固定抽满轮数，每个对话按「前缀 + 模型」命名。</div>
-      <label class="ak-field"><span>目标模型（逗号分隔；别名 opus5 / fable5 / gpt6，或 /正则/）</span>
-        <input id="ak-probe-targets" class="ak-input" type="text" placeholder="opus5, fable5, gpt6" autocomplete="off" />
-      </label>
-      <div class="ak-inline">
-        <label class="ak-field ak-field-sm"><span>最多轮数</span><input id="ak-probe-rounds" class="ak-input" type="number" min="1" max="100" step="1" /></label>
-        <label class="ak-switch"><input type="checkbox" id="ak-probe-findall" /> 命中全部才停</label>
-        <label class="ak-switch"><input type="checkbox" id="ak-probe-rename" /> 命中后重命名</label>
-      </div>
-      <div class="ak-btns">
-        <button class="ak-btn ak-btn-sm" data-action="probe-start">开始探针</button>
-        <button class="ak-btn ak-btn-sm" data-action="draw-start" title="按「最多轮数」连抽：每轮新建对话、发一条算式、识别模型；勾选「命中后重命名」时每个对话都按模型名重命名（不加序号），不看目标、不提前停">自动抽卡</button>
-        <button class="ak-btn ak-btn-sm" data-action="probe-stop" disabled>停止</button>
-      </div>
-      <div id="ak-probe-state" class="ak-sub"></div>
-      <pre id="ak-probe-log" class="ak-log" hidden></pre>
-    </div>
-  </section>
-
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>自动清理</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div class="ak-sub">归档侧栏中标题为「纯算式」的对话（探针残留，如 1+1=），并删除它们的本地记录。只走 Arena 自带的归档菜单，仅归档不删除；当前打开的对话和人工命名的对话不会被触碰。</div>
-      <label class="ak-switch"><input type="checkbox" id="ak-cleanup-after" /> 探针结束后自动清理</label>
-      <div class="ak-btns">
-        <button class="ak-btn ak-btn-sm" data-action="cleanup-start">立即清理</button>
-        <button class="ak-btn ak-btn-sm" data-action="cleanup-stop" disabled>停止</button>
-      </div>
-      <div id="ak-cleanup-state" class="ak-sub"></div>
-    </div>
-  </section>
-
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>会话探针（当前对话）</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div class="ak-sub">在当前打开的对话里发送一条探针消息（消耗额度，不新建对话），用本轮 trace 识别「这一轮」实际应答的模型。留空则发送随机算式。</div>
-      <label class="ak-field"><span>探针内容（可选）</span>
-        <input id="ak-quick-text" class="ak-input" type="text" maxlength="8000" placeholder="留空 = 随机算式，如 473×82=" autocomplete="off" />
-      </label>
-      <label class="ak-switch"><input type="checkbox" id="ak-quick-rename" /> 识别后按模型名重命名当前对话</label>
-      <div class="ak-btns">
-        <button class="ak-btn ak-btn-sm" data-action="quick-send">发送到当前对话</button>
-      </div>
-      <div id="ak-quick-state" class="ak-sub"></div>
-    </div>
-  </section>
-
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>重命名对话</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <label class="ak-field"><span>标题前缀（可选）</span>
-        <input id="ak-rename-prefix" class="ak-input" type="text" maxlength="40" placeholder="例如 AK- 或 【探针】" autocomplete="off" />
-      </label>
-      <div id="ak-rename-preview" class="ak-sub ak-mono"></div>
-      <label class="ak-switch"><input type="checkbox" id="ak-auto-rename" /> 识别到模型后自动重命名当前对话</label>
-      <div class="ak-btns">
-        <button class="ak-btn ak-btn-sm" data-action="rename-now">立即重命名为模型名</button>
-      </div>
-      <div id="ak-rename-status" class="ak-sub"></div>
-    </div>
-  </section>
-
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>设置</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <label class="ak-field"><span>主题</span>
-        <div class="ak-seg" id="ak-theme" role="group" aria-label="主题">
-          <button type="button" data-theme-pick="auto" aria-pressed="true">跟随系统</button>
-          <button type="button" data-theme-pick="light" aria-pressed="false">亮色</button>
-          <button type="button" data-theme-pick="dark" aria-pressed="false">暗色</button>
+      <section class="ak-mod">
+        <div class="ak-mod-head"><span>使用额度（Token / 费用）</span><span class="ak-chev">▾</span></div>
+        <div class="ak-mod-body">
+          <div class="ak-row"><span id="ak-usage-ctx" class="ak-sub">当前会话</span><button class="ak-link" data-action="usage-back" hidden>返回当前会话</button></div>
+          <label class="ak-field" id="ak-usage-pick-field" hidden><span>查看运行</span>
+            <select id="ak-usage-pick" class="ak-input"></select>
+          </label>
+          <div id="ak-usage-meta" class="ak-sub"></div>
+          <div class="ak-kv"><span class="ak-k">本轮</span><span id="ak-usage-run" class="ak-v">未提供</span></div>
+          <div class="ak-kv"><span class="ak-k">本会话</span><span id="ak-usage-session" class="ak-v">未提供</span></div>
+          <div class="ak-kv"><span class="ak-k">累计</span><span id="ak-usage-total" class="ak-v">未提供</span></div>
+          <div id="ak-usage-calls" class="ak-sub ak-calls"></div>
+          <details class="ak-fold"><summary>证据来源 <span id="ak-evidence-count"></span></summary>
+            <div class="ak-sub">只读来源：Trigger.dev run events → ai.streamText.doStream，按 runId + spanId 对齐，不混入其他运行。</div>
+            <div id="ak-evidence"></div>
+          </details>
+          <div class="ak-btns">
+            <button class="ak-btn ak-btn-sm" data-action="export-evidence">导出证据 JSON</button>
+          </div>
+          <textarea id="ak-export" class="ak-textarea" hidden readonly></textarea>
         </div>
-      </label>
-      <label class="ak-field" id="ak-ball-field" hidden><span>悬浮球中心显示</span>
-        <div class="ak-seg" id="ak-ball-center" role="group" aria-label="悬浮球中心显示">
-          <button type="button" data-ball-pick="percent-model" aria-pressed="true">额度% + 模型</button>
-          <button type="button" data-ball-pick="percent" aria-pressed="false">仅额度%</button>
-          <button type="button" data-ball-pick="model" aria-pressed="false">模型优先</button>
+      </section>
+
+      <section class="ak-mod">
+        <div class="ak-mod-head"><span>回复监控</span><span class="ak-chev">▾</span></div>
+        <div class="ak-mod-body">
+          <div id="ak-monitor-head" class="ak-sub">监听回复流：空回复 / 报错 / 中断 / 停滞会自动标记到对应轮次。</div>
+          <div id="ak-monitor-list" class="ak-list"></div>
         </div>
-      </label>
-      <label class="ak-switch"><input type="checkbox" id="ak-capture-on" checked /> 截获会话流（识别模型的前提；关闭后不再上报运行令牌）</label>
-      <label class="ak-switch"><input type="checkbox" id="ak-pulse-on" checked /> 额度轮询（每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新）</label>
-      <label class="ak-switch"><input type="checkbox" id="ak-monitor-on" checked /> 回复监控（空回复 / 报错 / 中断 / 停滞标记）</label>
-    </div>
-  </section>
+      </section>
+    </section>
 
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>功能模块</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <button class="ak-btn" data-action="manager">模型筛选 / 管理面板</button>
-      <label class="ak-switch"><input type="checkbox" id="ak-unlock-opus" checked /> 解锁 Opus 全系</label>
-      <label class="ak-switch"><input type="checkbox" id="ak-unlock-hidden" /> 解锁隐藏 / 盲测模型</label>
-      <label class="ak-switch"><input type="checkbox" id="ak-plus" checked /> 排行榜性价比列</label>
-    </div>
-  </section>
+    <!-- ── 探针 (reference page_probe) ── -->
+    <section class="ak-page" data-page="probe" data-active="false">
+      <div class="ak-group">
+        <label class="ak-field"><span>目标模型（逗号分隔；别名 opus5 / fable5 / gpt6，或 /正则/）</span>
+          <input id="ak-probe-targets" class="ak-input" type="text" placeholder="opus5, fable5, gpt6" autocomplete="off" />
+        </label>
+        <div class="ak-stepper-row">
+          <span class="ak-stepper-label">最多轮数</span>
+          <div class="ak-stepper">
+            <button type="button" class="ak-icon-btn" data-step="-1" aria-label="减少">−</button>
+            <input id="ak-probe-rounds" class="ak-input ak-stepper-num" type="number" min="1" max="100" step="1" inputmode="numeric" />
+            <button type="button" class="ak-icon-btn" data-step="1" aria-label="增加">+</button>
+          </div>
+        </div>
+        <label class="ak-switch"><span class="ak-switch-text">命中全部目标才停止</span><input type="checkbox" id="ak-probe-findall" /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">命中后自动重命名会话</span><input type="checkbox" id="ak-probe-rename" /><i class="ak-switch-track"></i></label>
+        <label class="ak-field"><span>标题前缀（可选，探针命中 / 重命名共用）</span>
+          <input id="ak-rename-prefix" class="ak-input" type="text" maxlength="40" placeholder="例如 AK- 或 【探针】" autocomplete="off" />
+        </label>
+        <div id="ak-rename-preview" class="ak-sub ak-mono"></div>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-filled" data-action="probe-start">开始探针</button>
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="draw-start" title="按「最多轮数」连抽：每轮新建对话、发一条算式、识别模型；勾选「命中后自动重命名会话」时每个对话都按模型名重命名（不加序号），不看目标、不提前停">自动抽卡</button>
+          <button class="ak-btn ak-btn-sm" data-action="probe-stop" disabled>停止</button>
+        </div>
+        <div class="ak-note">探针会新建对话并发送真实的算式消息（消耗额度），直到命中目标模型；命中的对话按「前缀 + 模型-序号」重命名。「自动抽卡」不看目标：固定抽满轮数，每个对话按「前缀 + 模型」命名。</div>
+        <label class="ak-switch"><span class="ak-switch-text">探针结束后自动清理算式标题</span><input type="checkbox" id="ak-cleanup-after" /><i class="ak-switch-track"></i></label>
+        <div id="ak-probe-state" class="ak-sub"></div>
+        <pre id="ak-probe-log" class="ak-log" hidden></pre>
+      </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>会话探针</span></div>
+        <div class="ak-sub">在当前打开的对话里发送一条探针消息（消耗额度，不新建对话），用本轮 trace 识别「这一轮」实际应答的模型。留空则发送随机算式。</div>
+        <label class="ak-field"><span>探针内容（可选）</span>
+          <input id="ak-quick-text" class="ak-input" type="text" maxlength="8000" placeholder="留空 = 随机算式，如 473×82=" autocomplete="off" />
+        </label>
+        <label class="ak-switch"><span class="ak-switch-text">识别后按模型名重命名当前对话</span><input type="checkbox" id="ak-quick-rename" /><i class="ak-switch-track"></i></label>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="quick-send">发送到当前对话</button>
+        </div>
+        <div class="ak-note">也可以长按悬浮窗，选择「会话探针」</div>
+        <div id="ak-quick-state" class="ak-sub"></div>
+      </div>
+    </section>
 
-  <!-- Module: system-prompt injection (ENI) -->
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>提示词注入</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <label class="ak-switch"><input type="checkbox" id="ak-eni-on" /> 每新对话注入系统提示词</label>
-      <textarea id="ak-eni-text" class="ak-textarea" placeholder="在此输入系统提示词…"></textarea>
-      <button class="ak-btn ak-btn-sm" data-action="save-eni">保存提示词</button>
-    </div>
-  </section>
+    <!-- ── 工具 (reference page_tools) ── -->
+    <section class="ak-page" data-page="tools" data-active="false">
+      <div class="ak-group">
+        <div class="ak-group-head"><span>清理算式标题</span></div>
+        <div class="ak-sub">归档侧栏中标题为「纯算式」的对话（探针残留，如 1+1=），并删除它们的本地记录。只走 Arena 自带的归档菜单，仅归档不删除；当前打开的对话和人工命名的对话不会被触碰。</div>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="cleanup-start">开始清理</button>
+          <button class="ak-btn ak-btn-sm" data-action="cleanup-stop" disabled>停止清理</button>
+        </div>
+        <div id="ak-cleanup-state" class="ak-sub"></div>
+      </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>重命名当前对话</span></div>
+        <div class="ak-sub">走 Arena 自带的「重命名」菜单，标题 = 前缀 + 模型名（前缀在「探针」页设置）。</div>
+        <label class="ak-switch"><span class="ak-switch-text">识别到模型后自动重命名当前对话</span><input type="checkbox" id="ak-auto-rename" /><i class="ak-switch-track"></i></label>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="rename-now">立即重命名为模型名</button>
+        </div>
+        <div id="ak-rename-status" class="ak-sub"></div>
+      </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>页面</span></div>
+        <div class="ak-nav">
+          <button class="ak-btn ak-btn-sm" data-action="nav-back">‹ 后退</button>
+          <button class="ak-btn ak-btn-sm" data-action="nav-forward">前进 ›</button>
+          <button class="ak-btn ak-btn-sm" data-action="nav-reload">刷新</button>
+        </div>
+        <label class="ak-switch" id="ak-pill-refresh-row"><span class="ak-switch-text">悬浮窗显示刷新按钮</span><input type="checkbox" id="ak-pill-refresh" checked /><i class="ak-switch-track"></i></label>
+        <div class="ak-note ak-embed-only">在对话底部按住页面向上滑动也会刷新；刷新时顶部显示进度条。</div>
+      </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>回复监控</span></div>
+        <label class="ak-switch"><span class="ak-switch-text">回复出错或空白时自动刷新</span><input type="checkbox" id="ak-auto-refresh" checked /><i class="ak-switch-track"></i></label>
+        <div class="ak-sub">回复显示「出现问题，请重试」或模型已结束但页面空白时自动刷新页面；同一问题最多自动刷新 2 次（间隔 ≥ 30 秒），探针 / 清理进行中不刷新。</div>
+      </div>
+      <hr class="ak-divider" />
+      <section class="ak-mod">
+        <div class="ak-mod-head"><span>会话历史</span><span class="ak-chev">▾</span></div>
+        <div class="ak-mod-body">
+          <input id="ak-history-q" class="ak-input" type="search" placeholder="搜索标题 / 模型 / 会话 ID" />
+          <div id="ak-history-list" class="ak-list"></div>
+          <button id="ak-history-more" class="ak-btn ak-btn-sm ak-btn-wide" hidden>加载更多</button>
+          <div class="ak-btns">
+            <button class="ak-btn ak-btn-sm" data-action="history-export">导出全部</button>
+            <button class="ak-btn ak-btn-sm ak-danger" data-action="archive-current" title="归档 Arena 上当前打开的对话（走 Arena 自带的归档菜单，可在归档中找回），并删除它的本地记录">归档当前对话并删除记录</button>
+            <button class="ak-btn ak-btn-sm ak-danger" data-action="history-clear">清空历史</button>
+          </div>
+          <div id="ak-history-sub" class="ak-sub"></div>
+        </div>
+      </section>
+    </section>
 
-  <footer class="ak-foot"><span id="ak-status">就绪</span></footer>
+    <!-- ── 更多: feature modules, prompt injection, settings ── -->
+    <section class="ak-page" data-page="more" data-active="false">
+      <div class="ak-group">
+        <div class="ak-group-head"><span>功能模块</span></div>
+        <button class="ak-btn ak-tonal" data-action="manager">模型筛选 / 管理面板</button>
+        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系</span><input type="checkbox" id="ak-unlock-opus" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">解锁隐藏 / 盲测模型</span><input type="checkbox" id="ak-unlock-hidden" /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">排行榜性价比列</span><input type="checkbox" id="ak-plus" checked /><i class="ak-switch-track"></i></label>
+      </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>提示词注入</span></div>
+        <label class="ak-switch"><span class="ak-switch-text">每新对话注入系统提示词</span><input type="checkbox" id="ak-eni-on" /><i class="ak-switch-track"></i></label>
+        <textarea id="ak-eni-text" class="ak-textarea" placeholder="在此输入系统提示词…"></textarea>
+        <button class="ak-btn ak-btn-sm ak-tonal" data-action="save-eni">保存提示词</button>
+      </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>设置</span></div>
+        <label class="ak-field"><span>主题</span>
+          <div class="ak-seg" id="ak-theme" role="group" aria-label="主题">
+            <button type="button" data-theme-pick="auto" aria-pressed="true">跟随系统</button>
+            <button type="button" data-theme-pick="light" aria-pressed="false">亮色</button>
+            <button type="button" data-theme-pick="dark" aria-pressed="false">暗色</button>
+          </div>
+        </label>
+        <label class="ak-switch"><span class="ak-switch-text">截获会话流<small>识别模型的前提；关闭后不再上报运行令牌</small></span><input type="checkbox" id="ak-capture-on" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">额度轮询<small>每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新</small></span><input type="checkbox" id="ak-pulse-on" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">回复监控<small>空回复 / 报错 / 中断 / 停滞标记到对应轮次</small></span><input type="checkbox" id="ak-monitor-on" checked /><i class="ak-switch-track"></i></label>
+        <button class="ak-link" data-action="pulse-refresh" title="额度接口每 60 秒读取一次；点此立即刷新">立即刷新额度</button>
+      </div>
+      <div class="ak-about">ArenaKit · 界面参考 arena-trace-android</div>
+    </section>
+  </main>
   <script type="module" src="dock.js"></script>
 </body>
 </html>

@@ -26,14 +26,58 @@ import { createProbeController } from './lib/probe-runner.js';
 import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/session-probe.js';
 import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
+import { pillLabel, turnHeadline } from './lib/pill-layout.js';
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
 const EMBED = globalThis.__ARENAKIT_EMBED__ && globalThis.__ARENAKIT_EMBED__.root ? globalThis.__ARENAKIT_EMBED__ : null;
 const root = EMBED ? EMBED.root : document;
 const q = (id) => root.getElementById(id);
-const setStatus = (t) => { q('ak-status').textContent = t; };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ── activity log (reference panel_activity: newest line + expandable log) ──
+const LOG_MAX = 40;
+const LOG_SHOWN = 8;
+const activity = { lines: [], last: '' };
+function setStatus(t) {
+  const line = String(t ?? '');
+  q('ak-status').textContent = line;
+  if (!line || line === activity.last) return;
+  activity.last = line;
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0'), ss = String(d.getSeconds()).padStart(2, '0');
+  activity.lines.push(`${hh}:${mm}:${ss} ${line}`);
+  if (activity.lines.length > LOG_MAX) activity.lines.splice(0, activity.lines.length - LOG_MAX);
+  const box = q('ak-log');
+  if (box && !box.hidden) { box.textContent = activity.lines.slice(-LOG_SHOWN).join('\n'); box.scrollTop = box.scrollHeight; }
+}
+function wireActivity() {
+  const row = q('ak-activity');
+  const box = q('ak-log');
+  if (!row || !box) return;
+  const toggle = () => {
+    const open = row.getAttribute('aria-expanded') !== 'true';
+    row.setAttribute('aria-expanded', String(open));
+    box.hidden = !open;
+    if (open) { box.textContent = activity.lines.slice(-LOG_SHOWN).join('\n') || '（暂无记录）'; box.scrollTop = box.scrollHeight; }
+  };
+  row.addEventListener('click', toggle);
+  row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+}
+
+// ── segmented tabs 对话 / 探针 / 工具 / 更多 (remembered in prefs.panelTab) ──
+const TABS = ['chat', 'probe', 'tools', 'more'];
+function showTab(name, { persist = true } = {}) {
+  const tab = TABS.includes(name) ? name : 'chat';
+  root.querySelectorAll('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
+  root.querySelectorAll('[data-page]').forEach((p) => { p.dataset.active = String(p.dataset.page === tab); });
+  if (persist && state.prefs.panelTab !== tab) savePrefs({ panelTab: tab });
+  return tab;
+}
+function wireTabs() {
+  showTab(state.prefs.panelTab, { persist: false });
+  root.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+}
 
 const state = {
   tauri: null,
@@ -59,7 +103,10 @@ const state = {
   quickBusy: false,         // a session probe is in flight
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
-  hud: { model: '', routed: false, status: '', busy: null, busyTimer: 0, alertTimer: 0 }, // header + floating-ball display state
+  // header + status-pill display state: model/routed/pending, the running
+  // task (probe / cleanup / recovery) and a transient flash message
+  hud: { model: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
+  reloadAt: 0,              // last requestReload() (800 ms debounce, reference MainActivity)
 };
 
 function sessionRecord(sessionId) {
@@ -83,7 +130,9 @@ const DEFAULT_PREFS = {
   quickText: '',            // session probe text ('' = random arithmetic)
   quickRename: false,       // rename the conversation after the session probe identifies its model
   theme: 'auto',            // 'auto' (follow system, like the reference DayNight theme) | 'light' | 'dark'
-  ballCenter: 'percent-model', // floating ball centre (Android): 'percent-model' | 'percent' | 'model'
+  panelTab: 'chat',         // last selected segmented tab
+  pillRefresh: true,        // 悬浮窗显示刷新按钮 (Android status pill ⟳ zone)
+  autoRefresh: true,        // 回复出错或空白时自动刷新 (reply watchdog)
   capture: true,            // 截获会话流 (extension 监听 toggle): hand run tokens to Rust
   pulseOn: true,            // 额度轮询: periodic /api/me/pulse reads (manual 刷新 always works)
   monitorOn: true,          // 回复监控: reply-stream anomaly detection
@@ -124,81 +173,117 @@ function wireSettings() {
       if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
     });
   }
-  const field = q('ak-ball-field');
-  if (field) field.hidden = !EMBED;
-  const pickBall = (mode) => {
-    const m = ['percent-model', 'percent', 'model'].includes(mode) ? mode : 'percent-model';
-    root.querySelectorAll('[data-ball-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.ballPick === m)));
-    return m;
-  };
-  pickBall(state.prefs.ballCenter);
-  root.querySelectorAll('[data-ball-pick]').forEach((b) => b.addEventListener('click', () => {
-    savePrefs({ ballCenter: pickBall(b.dataset.ballPick) });
-    renderBall();
+  // 悬浮窗显示刷新按钮 (embedded only; the row is hidden on desktop via CSS)
+  const pillRefresh = q('ak-pill-refresh');
+  if (pillRefresh) {
+    pillRefresh.checked = state.prefs.pillRefresh !== false;
+    if (EMBED && typeof EMBED.setRefreshButton === 'function') EMBED.setRefreshButton(pillRefresh.checked);
+    pillRefresh.addEventListener('change', () => {
+      savePrefs({ pillRefresh: pillRefresh.checked });
+      if (EMBED && typeof EMBED.setRefreshButton === 'function') EMBED.setRefreshButton(pillRefresh.checked);
+    });
+  }
+  // 回复出错或空白时自动刷新 (reply watchdog policy)
+  const autoRefresh = q('ak-auto-refresh');
+  if (autoRefresh) {
+    autoRefresh.checked = state.prefs.autoRefresh !== false;
+    autoRefresh.addEventListener('change', () => {
+      savePrefs({ autoRefresh: autoRefresh.checked });
+      setStatus(autoRefresh.checked ? '已开启：回复出错或空白时自动刷新' : '已关闭自动刷新（回复异常仍会记录）');
+    });
+  }
+  // 最多轮数 stepper
+  root.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => {
+    const input = q('ak-probe-rounds');
+    const n = Math.min(100, Math.max(1, (parseInt(input.value, 10) || 5) + Number(b.dataset.step)));
+    input.value = String(n);
+    persistProbePanel();
   }));
+}
+
+// ── page reload (pill ⟳ · header ⟳ · 工具 → 刷新 · quick menu · pull-up) ──
+/* Reference MainActivity.requestReload: 800 ms debounce; when a probe /
+ * cleanup is running ask first ("停止并刷新"), then stop it and reload. The
+ * page marks sessionStorage so the NEXT document shows the top progress bar
+ * from document_start (bridge.js); the pill spins meanwhile. */
+function confirmDialog(opts) {
+  if (EMBED && typeof EMBED.confirm === 'function') return EMBED.confirm(opts);
+  try { return Promise.resolve(globalThis.confirm ? globalThis.confirm(`${opts.title}\n${opts.message}`) : true); } catch { return Promise.resolve(true); }
+}
+async function requestReload(source = 'panel') {
+  const now = Date.now();
+  if (now - state.reloadAt < 800) return false;
+  state.reloadAt = now;
+  const running = state.probe?.isRunning ? state.probe.mode : null;
+  if (running) {
+    const what = running === 'cleanup' ? '清理正在进行，刷新会中断本次清理。' : '探针正在运行，刷新会中断本次探针。';
+    const ok = await confirmDialog({ title: '刷新页面？', message: what, ok: '停止并刷新', cancel: '取消' });
+    if (!ok) return false;
+    state.probe.stop();
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  setStatus(source === 'pull' ? '上拉刷新页面…' : '刷新页面…');
+  const btn = root.querySelector('[data-action="page-reload"]');
+  if (btn) btn.dataset.loading = 'true';
+  if (EMBED && typeof EMBED.setLoading === 'function') EMBED.setLoading(true);
+  if (EMBED) EMBED.close();
+  await page('reload');
+  // Desktop: the arena webview reloads in place; the dock keeps running, so
+  // clear the header spinner after a moment.
+  if (!EMBED) setTimeout(() => { if (btn) btn.dataset.loading = 'false'; }, 1500);
+  return true;
 }
 
 // ── HUD header (reference panel top: model · status · pulse) ────────────
 /* Every place that learns something about the current conversation's model
  * goes through here, so the header, the 服务端模型 module and (on Android)
  * the floating ball never disagree. `known` false = placeholder text. */
-function setModelDisplay(text, { routed = false, known = true } = {}) {
+function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '' } = {}) {
   const t = String(text || '');
-  const big = q('ak-model');
-  big.textContent = known ? t : (t || '—');
-  big.dataset.routed = String(!!routed);
   const hud = q('ak-hud-model');
-  hud.textContent = known && t ? t : '模型待确认';
+  const label = known && t ? t + (strength ? ' · ' + strength : '') : '模型待确认';
+  hud.textContent = label;
   hud.dataset.known = String(!!(known && t));
   hud.dataset.routed = String(!!routed);
   state.hud.model = known && t ? t : '';
+  state.hud.strength = known && t ? String(strength || '') : '';
   state.hud.routed = !!routed;
-  if (EMBED && typeof EMBED.setBall === 'function') renderBall();
+  state.hud.pending = !!pending && !(known && t);
+  renderPill();
 }
 function setHudStatus(text) {
   state.hud.status = String(text || '');
   q('ak-hud-status').textContent = state.hud.status;
 }
-/* Floating-ball payload (embedded only): ring = quota %, centre = quota % and/or
- * the model, per prefs.ballCenter; a transient (probe / cleanup) owns the centre
- * while state.hud.busy is set. */
-function renderBall() {
-  if (!EMBED || typeof EMBED.setBall !== 'function') return;
+/* Status-pill payload (embedded only, reference HudFormat.pill): ring = quota %,
+ * label = flash → running task → model (warn tone when routed) → 识别中… →
+ * 新对话 → nothing; the ring's orbit spins while a task runs. */
+function renderPill() {
+  if (!EMBED || typeof EMBED.setPill !== 'function') return;
   const v = state.pulse.view();
-  const percent = v.percent;
-  const b = state.hud.busy;
-  if (b) { EMBED.setBall({ percent, band: v.band, top: b.top, bottom: b.bottom, isModel: false, routed: false }); return; }
-  const mode = state.prefs.ballCenter || 'percent-model';
-  const pct = percent === null ? '…' : percent + '%';
-  const model = state.hud.model;
-  const short = shortModel(model);
-  if (mode === 'model' && model) {
-    EMBED.setBall({ percent, band: v.band, top: short.top, bottom: short.bottom, isModel: true, routed: state.hud.routed });
-  } else if (mode === 'percent' || !model) {
-    EMBED.setBall({ percent, band: v.band, top: pct, bottom: '', isModel: false, routed: false });
-  } else {
-    // percent on top, one model line below: the whole id when short, else the name part
-    const both = short.top + (short.bottom ? ' ' + short.bottom : '');
-    EMBED.setBall({ percent, band: v.band, top: pct, bottom: both.length <= 12 ? both : short.top, isModel: true, routed: state.hud.routed });
-  }
+  const { text, tone } = pillLabel({
+    flash: state.hud.flash,
+    task: state.hud.task,
+    model: state.hud.model,
+    strength: state.hud.strength,
+    routed: state.hud.routed,
+    pending: state.hud.pending,
+    newChat: !state.nav.sessionId && /^\/agent\/?$/.test(state.nav.path || ''),
+  });
+  EMBED.setPill({ percent: v.percent, label: text, tone, busy: !!state.hud.task && state.hud.task.kind !== 'recovery' });
 }
-/* "claude-opus-4-8" → {top:"claude-opus", bottom:"4-8"}; "gpt-4o" → {top:"gpt", bottom:"4o"}
- * (reference applyBallModel: split at the first numeric token, ≤ 12 chars a line). */
-function shortModel(model) {
-  const id = String(model || '').split(' / ')[0].trim();
-  if (!id) return { top: '', bottom: '' };
-  const parts = id.split(/[-_ /]+/).filter(Boolean);
-  const v = parts.findIndex((x) => /^\d/.test(x));
-  const clip = (x) => (x.length > 12 ? x.slice(0, 11) + '…' : x);
-  if (v <= 0) return { top: clip(id), bottom: '' };
-  return { top: clip(parts.slice(0, v).join('-')), bottom: clip(parts.slice(v).join('-')) };
+/* Transient pill message ("已发送 ✓" 2.5 s, "探针结束 · 命中 n" 4 s). */
+function flashPill(text, ms = 2500) {
+  state.hud.flash = String(text || '');
+  renderPill();
+  clearTimeout(state.hud.flashTimer);
+  state.hud.flashTimer = setTimeout(() => { state.hud.flash = ''; renderPill(); }, ms);
 }
-/* Briefly show a two-line status in the ball centre (reference flashBall). */
-function flashBall(top, bottom, ms = 2500) {
-  state.hud.busy = { top, bottom };
-  renderBall();
-  clearTimeout(state.hud.busyTimer);
-  state.hud.busyTimer = setTimeout(() => { state.hud.busy = null; renderBall(); }, ms);
+/* The running task shown on the pill: {kind:'probe', round, max, hits, draw} |
+ * {kind:'cleanup', archived} | {kind:'recovery'} | null. */
+function setTask(task) {
+  state.hud.task = task || null;
+  renderPill();
 }
 
 // ── page event routing (arena page → dock) ──────────────────────────────
@@ -247,7 +332,7 @@ function onTrace(p) {
     // A fresh run token = a new turn; a different session = conversation switch.
     const { turn, switched, repeat } = tracker.onToken(p.sessionId, p.runId || '');
     if (switched) { sessionRecord(p.sessionId).historical = false; state.turnHead = ''; }
-    if (!repeat) setModelDisplay('识别中…', { known: false });
+    if (!repeat) setModelDisplay('识别中…', { known: false, pending: true });
     sub.textContent = `第 ${turn} 轮 · run ` + String(p.runId || '').slice(0, 14);
     setHudStatus(`第 ${turn} 轮 · 已截获令牌，正在识别模型…`);
     renderTurns();
@@ -285,8 +370,7 @@ function onTrace(p) {
       if (!p.complete) tracker.setStatus(turn, completion(run?.spans || []));
       else tracker.setStatus(turn, run?.spans?.length ? completion(run.spans) : '已识别');
     }
-    setModelDisplay(models.map((m) => m.model).join(' / '), { routed: !!tracker.routed, known: models.length > 0 });
-    if (!models.length) q('ak-model').textContent = '未识别';
+    setModelDisplay(models.map((m) => m.model).join(' / '), { routed: !!tracker.routed, known: models.length > 0, strength: p.strength || '' });
     sub.textContent = ['run ' + String(p.runId || '').slice(0, 14), providers.join(', '), completion(run?.spans || [])].filter(Boolean).join(' · ');
     if (head) state.turnHead = head.split('\n')[0];
     setHudStatus(head ? head.split('\n')[0] : (turn ? `第 ${turn} 轮 · trace 未包含模型标签；不猜测模型` : 'trace 未包含模型标签；不猜测模型'));
@@ -303,15 +387,25 @@ function onTrace(p) {
 }
 
 // ── module: turns (per-turn model timeline) ─────────────────────────────
+const TURN_EMPTY = '<div class="ak-empty">暂无轮次记录：发一条消息后，每一轮实际应答的模型会记录在这里</div>';
+const ICON_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+const ICON_ALERT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>';
+/* Reference item_turn rows, newest first: R-number · model (+ strength) ·
+ * 已切换 tag when the model differs from the first turn's · ✓ / spinner / ⚠. */
 function renderTurns() {
   const t = state.tracker;
   const list = q('ak-turn-list');
-  if (!t.turns.length) { list.innerHTML = ''; q('ak-turn-head').textContent = ''; state.turnHead = ''; return; }
-  q('ak-turn-head').textContent = [state.turnHead, t.historyLine()].filter(Boolean).join('\n');
-  list.innerHTML = t.turns.slice(-12).map((e) => {
+  if (!t.turns.length) { list.innerHTML = TURN_EMPTY; q('ak-turn-head').textContent = ''; state.turnHead = ''; return; }
+  const restored = t.turns.every((e) => e.status === '历史');
+  q('ak-turn-head').textContent = turnHeadline({ count: t.turnCount, firstModel: t.firstModel, routed: !!t.routed, restored });
+  const failed = (e) => /失败|错误|过期|未识别/.test(e.status || '') || e.marks.some((m) => /error|fail/.test(m.kind));
+  list.innerHTML = t.turns.slice(-30).reverse().map((e) => {
     const marks = e.marks.map((m) => `<span class="ak-badge ${/error|fail|empty|trunc/.test(m.kind) ? 'ak-badge-err' : 'ak-badge-warn'}">${esc(m.label)}</span>`).join('');
-    const routed = e.routed ? '<span class="ak-badge ak-badge-warn">非首轮模型</span>' : '';
-    return `<div class="ak-turn"><span class="ak-turn-n">R${e.turn}</span><span class="ak-turn-m${e.routed ? ' ak-routed' : ''}">${esc(e.models.join(' / ') || e.model || '—')}${routed}${marks}</span><span class="ak-turn-s">${esc(e.status || '')}</span></div>`;
+    const routed = e.routed ? '<span class="ak-badge ak-badge-warn">已切换</span>' : '';
+    const model = e.models.join(' / ') || e.model;
+    const icon = model ? `<span class="ak-turn-ok" title="已识别">${ICON_CHECK}</span>` : failed(e) ? `<span class="ak-turn-fail" title="${esc(e.status || '')}">${ICON_ALERT}</span>` : '<span class="ak-turn-spin" title="识别中"></span>';
+    const status = model ? (e.status && !/^已识别|^完成|^历史/.test(e.status) ? e.status : '') : (e.status || '识别中');
+    return `<div class="ak-turn"><span class="ak-turn-n">R${e.turn}</span><span class="ak-turn-m${e.routed ? ' ak-routed' : ''}">${esc(model || (failed(e) ? (e.status || '未识别') : '识别中…'))}${e.strength ? ' <span class="ak-sub">· ' + esc(e.strength) + '</span>' : ''}${routed}${marks}</span>${status && model ? `<span class="ak-turn-s">${esc(status)}</span>` : ''}${icon}</div>`;
   }).join('');
 }
 
@@ -613,6 +707,7 @@ onPage('nav', (n) => {
     renderTurns();
     renderUsage();
   }
+  renderPill(); // "新对话" / model label follows the page
 });
 
 // ── module: auto probe (Android ProbeController port) ───────────────────
@@ -723,20 +818,14 @@ function createDockProbe() {
       q('ak-probe-state').textContent = active
         ? (draw ? `抽卡进行中 · 第 ${round}/${max} 轮 · 已识别 ${hits}` : `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}`)
         : (q('ak-probe-state').textContent || '');
-      // Reference ball transient: "R2/5" + "命中1" while running, "探针完" for 3 s after.
-      if (EMBED) {
-        if (typeof EMBED.setBusy === 'function') EMBED.setBusy('probe', active);
-        if (active) { clearTimeout(state.hud.busyTimer); state.hud.busy = { top: `R${round}/${max}`, bottom: (draw ? '识别' : '命中') + hits }; renderBall(); }
-        else flashBall(draw ? '抽卡完' : '探针完', (draw ? '识别' : '命中') + hits, 3000);
-      }
+      // Reference pill: "探针 2/5 · 命中 1" while running, "探针结束 · 命中 n" for 4 s after.
+      if (active) setTask({ kind: 'probe', round, max, hits, draw });
+      else { setTask(null); flashPill(`${draw ? '抽卡' : '探针'}结束 · ${draw ? '识别' : '命中'} ${hits}`, 4000); }
     },
     onCleanupState: (archived, active) => {
       q('ak-cleanup-state').textContent = active ? `清理中 · 已归档 ${archived}` : `上次清理已归档 ${archived}`;
-      if (EMBED) {
-        if (typeof EMBED.setBusy === 'function') EMBED.setBusy('cleanup', active);
-        if (active) { clearTimeout(state.hud.busyTimer); state.hud.busy = { top: '清理', bottom: String(archived) }; renderBall(); }
-        else flashBall('已归档', String(archived), 3000);
-      }
+      if (active) setTask({ kind: 'cleanup', archived });
+      else { setTask(null); flashPill(`清理完成 · 已归档 ${archived}`, 4000); }
     },
     // Extension parity: an archived probe chat also loses its local record.
     onArchived: (sid) => { dropLocalRecord(sid).catch(() => {}); },
@@ -764,9 +853,14 @@ function renderPulse() {
   const fill = q('ak-bar-fill');
   fill.style.width = (v.percent ?? 0) + '%';
   fill.dataset.band = v.band;
-  q('ak-hud-pulse').textContent = v.text;
-  q('ak-hud-pulse').classList.toggle('ak-warn', !!v.error);
-  if (EMBED) renderBall();
+  // Header right column (reference panel_quota / panel_quota_reset).
+  const pct = q('ak-hud-percent');
+  pct.textContent = v.percent === null ? '–' : v.percent + '%';
+  pct.dataset.band = v.band;
+  const reset = q('ak-hud-pulse');
+  reset.textContent = v.percent === null ? (v.error ? '额度：' + v.error : '额度读取中…') : [v.reset || '', v.error].filter(Boolean).join(' · ') || '剩余额度';
+  reset.classList.toggle('ak-warn', !!v.error);
+  renderPill();
 }
 onPage('pulse', (ev) => { state.pulse.ingest(ev); renderPulse(); });
 setInterval(renderPulse, 1000);
@@ -823,7 +917,7 @@ async function sessionProbe() {
     const sessionId = pre.session || null;
     const afterTurn = sessionId && state.tracker.sessionId === sessionId ? state.tracker.turnCount : 0;
     quickState(`发送 "${text.slice(0, 40)}"…${go.reason ? ' · ' + go.reason : ''}`);
-    if (EMBED) flashBall('探针', '发送中', 2500);
+    flashPill('探针发送中…', 2500);
     const sent = await state.probe.quickSend(text);
     if (!sent.ok) { quickState(sent.message); return; }
     quickState('已发送，等待本轮 trace 识别模型…');
@@ -974,9 +1068,8 @@ function wireControls() {
         page('navBack');
       } else if (a === 'nav-forward') {
         page('navForward');
-      } else if (a === 'nav-reload') {
-        page('reload');
-        if (EMBED) EMBED.close();
+      } else if (a === 'nav-reload' || a === 'page-reload') {
+        requestReload('panel');
       } else if (a === 'quick-send') {
         sessionProbe();
       } else if (a === 'cleanup-start') {
@@ -1026,7 +1119,10 @@ async function boot() {
   }
   state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
+  if (EMBED && EMBED.host && EMBED.host.dataset) EMBED.host.dataset.embed = 'true';
   wireTheme();
+  wireTabs();
+  wireActivity();
   wireSettings();
   wireControls();
   wireUsageView();
@@ -1036,21 +1132,41 @@ async function boot() {
   wireCleanup();
   wireSessionProbe();
   if (state.rpc) state.probe = createDockProbe();
-  // Floating-ball gestures (reference MainActivity): radial dock buttons, long
-  // press = 会话探针 quick send, double tap = panel (the shell opens it itself).
+  // Status-pill gestures (reference MainActivity): tap → panel (the shell
+  // opens it itself), tap on ⟳ → reload, long press → quick menu, pull-up at
+  // the bottom of the conversation → reload.
   if (EMBED && typeof EMBED.onAction === 'function') {
-    EMBED.onAction((name) => {
-      if (name === 'probe') {
-        if (state.probe?.isRunning && state.probe.mode !== 'cleanup') { state.probe.stop(); probeLog('正在停止…'); return; }
+    const probeRunning = () => !!state.probe?.isRunning && state.probe.mode !== 'cleanup';
+    const cleanupRunning = () => !!state.probe?.isRunning && state.probe.mode === 'cleanup';
+    if (typeof EMBED.setMenuProvider === 'function') {
+      EMBED.setMenuProvider(() => [
+        { id: 'probe', label: probeRunning() ? '停止探针' : '开始探针' },
+        { id: 'quick', label: '会话探针', disabled: probeRunning() || cleanupRunning() },
+        { id: 'cleanup', label: cleanupRunning() ? '停止清理' : '清理算式标题' },
+        { id: 'refresh', label: '刷新页面' },
+        { id: 'panel', label: '打开面板' },
+      ]);
+    }
+    EMBED.onAction((name, arg) => {
+      const id = name === 'menu' ? arg : name;
+      if (id === 'probe') {
+        if (probeRunning()) { state.probe.stop(); probeLog('正在停止…'); return; }
         state.probeDraw = false;
+        showTab('probe');
         startProbe('probe');
-      } else if (name === 'cleanup') {
-        if (state.probe?.isRunning && state.probe.mode === 'cleanup') { state.probe.stop(); probeLog('正在停止清理…'); return; }
+      } else if (id === 'cleanup') {
+        if (cleanupRunning()) { state.probe.stop(); probeLog('正在停止清理…'); return; }
+        showTab('tools');
         startCleanup();
-      } else if (name === 'refresh') {
-        page('reload');
-      } else if (name === 'quick') {
+      } else if (id === 'refresh') {
+        requestReload('pill');
+      } else if (id === 'pull-refresh') {
+        requestReload('pull');
+      } else if (id === 'quick') {
+        showTab('probe');
         sessionProbe();
+      } else if (id === 'panel' && name === 'menu') {
+        EMBED.open();
       }
     });
   }

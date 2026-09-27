@@ -18,6 +18,26 @@
 (() => {
   if (window.__ARENAKIT__) return;
 
+  // ── reload progress: 2 px brand bar at the very top, from document_start
+  // until `load` (reference page_progress). Only after an ArenaKit-triggered
+  // reload (page-actions `reload` stamps sessionStorage; cleared here).
+  (function bootProgress() {
+    let stamp = 0;
+    try { stamp = Number(sessionStorage.getItem('arenakit.reloading')) || 0; sessionStorage.removeItem('arenakit.reloading'); } catch { return; }
+    if (!stamp || Date.now() - stamp > 60_000 || document.readyState === 'complete') return;
+    const dark = (() => { try { return matchMedia('(prefers-color-scheme: dark)').matches; } catch { return false; } })();
+    const bar = document.createElement('div');
+    bar.id = 'arenakit-boot-progress';
+    bar.setAttribute('style', `position:fixed;top:0;left:0;height:2px;width:8%;background:${dark ? '#9DB8FF' : '#2F6BFF'};z-index:2147483647;transition:width .3s ease-out,opacity .25s;pointer-events:none;`);
+    (document.documentElement || document).appendChild(bar);
+    let v = 8;
+    const tick = setInterval(() => { v = Math.min(90, v + (90 - v) * 0.08); bar.style.width = v + '%'; }, 200);
+    const finish = () => { clearInterval(tick); bar.style.width = '100%'; setTimeout(() => { bar.style.opacity = '0'; setTimeout(() => bar.remove(), 300); }, 250); };
+    document.addEventListener('DOMContentLoaded', () => { v = Math.max(v, 70); bar.style.width = v + '%'; }, { once: true });
+    window.addEventListener('load', finish, { once: true });
+    setTimeout(finish, 30_000);
+  })();
+
   const internals = () => window.__TAURI_INTERNALS__;
   const invoke = (cmd, args) => {
     const t = internals();

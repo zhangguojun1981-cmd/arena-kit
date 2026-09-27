@@ -1,36 +1,45 @@
 /* Embedded dock shell (Android).
  *
- * Mobile Tauri gives us exactly one webview per window, so the side dock that
+ * Mobile Tauri gives us exactly one webview per window, so the dock that
  * desktop renders in its own webview is mounted INSIDE the arena.ai page
- * instead, following the reference app's (arena-trace-android) UI:
+ * instead, following the reference app's (arena-trace-android v0.6.x) overlay:
  *
- *   floating ball  neon quota ring (arc length = remaining %, blue ≥ 20 %,
- *                  amber 10–19 %, red < 10 %) on an obsidian core; the centre
- *                  shows the quota % and/or the model (orange-yellow when the
- *                  turn was routed to a different model). Draggable.
- *   gestures       single tap → radial dock (探针 / 清理 / 刷新)
- *                  double tap → panel · long press → 会话探针 quick send
- *   panel          floating card (rounded, elevated, draggable by its header)
- *                  hosting the very same dock markup (dock.html body) and
- *                  stylesheet (dock.css) in a shadow root, so arena's CSS and
- *                  ours never touch. A scrim behind it collapses everything.
+ *   status pill   flat 36 dp capsule hugging a screen edge: quota ring (arc =
+ *                 remaining %, number inside) + one-line label (model / task
+ *                 progress / flash message) + optional ⟳ zone (spins while
+ *                 the page loads). Drag to move; on release it snaps to the
+ *                 nearer side. Position is stored as (side, yFraction).
+ *   gestures      tap → panel · tap on ⟳ → reload · long press → quick menu
+ *                 (probe / session probe / cleanup / reload / panel)
+ *   panel         bottom sheet flush with the bottom edge (handle, header,
+ *                 tabs); scrim tap, swipe-down or the back key closes it. It
+ *                 hosts the very same dock markup (dock.html body) and
+ *                 stylesheet (dock.css) in a shadow root, so arena's CSS and
+ *                 ours never touch. The pill fades out while the sheet is open.
+ *   extras        2 dp page-load progress bar at the top, in-shadow confirm
+ *                 dialog, pull-up-to-refresh at the bottom of the conversation.
  *
  * scripts/bundle-dock.mjs packs this file, dock.js and src/lib into one classic
  * script (src/embed/dock-embedded.gen.js) that Rust appends to the mobile init
  * bundle. mount(win) builds the DOM and publishes `win.__ARENAKIT_EMBED__`
- * ({ root, host, open, close, toggle, isOpen, alert, setBall, onAction }) which
- * dock.js reads at module evaluation time — the bundle calls mount() first. */
+ * (see `api` below) which dock.js reads at module evaluation time — the bundle
+ * calls mount() first. */
 import { CSS, MARKUP } from './assets.gen.js';
+import { pillPlacement, releasePosition, normalizeFraction, ringBand, PILL_MARGIN, PILL_DEFAULT_Y, SNAP_MS } from '../lib/pill-layout.js';
 
 export const HOST_ID = 'arenakit-embed';
-const FAB_POS_KEY = 'arenakit.fab.pos';
-const PANEL_POS_KEY = 'arenakit.panel.pos';
-export const BALL_SIZE = 64;      // reference: 64dp core + glow band
+const PILL_POS_KEY = 'arenakit.pill.pos';
+export const PILL_HEIGHT = 36;    // reference StatusPillView height
+export const RING_SIZE = 26;      // quota ring diameter
+const RING_STROKE = 2.5;
+const RING_R = (RING_SIZE - RING_STROKE) / 2;
+export const RING_C = 2 * Math.PI * RING_R;
 const TAP_SLOP = 6;               // px before a press becomes a drag
-const DOUBLE_TAP_MS = 260;
-const LONG_PRESS_MS = 550;
-const RING_R = 27;                // ring radius in the 76×76 viewBox
-const RING_C = 2 * Math.PI * RING_R;
+const LONG_PRESS_MS = 500;
+const PULL_THRESHOLD = 90;        // px of upward drag at the bottom → refresh
+const LOAD_STALL_MS = 30_000;     // reference: give up on a stalled load
+/* Backwards-compatible alias (older tests / callers). */
+export const BALL_SIZE = PILL_HEIGHT;
 
 /* dock.css targets a standalone document; retarget its document-level rules to
  * the shadow root (`:host` carries the CSS variables, `.ak-shell` is "body"). */
@@ -43,14 +52,15 @@ export function shadowCss(css) {
     .replace(/(^|\n)html,\s*body\s*\{/g, '$1.ak-shell {');
 }
 
-/* Neon palette by quota health (reference FloatingBallView.neonPalette /
- * PulseBar.colorFor). Unknown percent → dim blue full circle. */
+/* Ring colours by quota health (reference StatusPillView / PulseBar). The
+ * concrete colours come from the dock palette (CSS variables); this returns
+ * the band + a fallback hex for environments without custom properties. */
 export function ringPalette(percent) {
-  const p = percent === null || percent === undefined || percent === '' ? NaN : Number(percent);
-  if (!Number.isFinite(p)) return { base: '#2563FF', bright: '#4CE3FF', dim: true };
-  if (p < 10) return { base: '#E11D2A', bright: '#FF7A7A', dim: false };
-  if (p < 20) return { base: '#FF8A00', bright: '#FFC85C', dim: false };
-  return { base: '#2563FF', bright: '#4CE3FF', dim: false };
+  const band = ringBand(percent);
+  if (band === 'danger') return { band, base: '#D93025', dim: false };
+  if (band === 'warning') return { band, base: '#B26A00', dim: false };
+  if (band === 'ok') return { band, base: '#2F6BFF', dim: false };
+  return { band, base: '#2F6BFF', dim: true };
 }
 
 /* Font size (px) that fits `text` into `maxWidth` at ~0.58 em per char (CJK counts double). */
@@ -62,112 +72,140 @@ export function fitFont(text, base, maxWidth, min = 7) {
   return w > maxWidth && w > 0 ? Math.max(min, Math.floor(base * maxWidth / w)) : base;
 }
 
+/* Keep a free-floating box inside the viewport (used while dragging). */
+export function clampPos(pos, vw, vh, size = PILL_HEIGHT, w = size) {
+  const x = Number(pos && pos.x) || 0;
+  const y = Number(pos && pos.y) || 0;
+  return {
+    x: Math.max(0, Math.min(x, Math.max(0, vw - w))),
+    y: Math.max(0, Math.min(y, Math.max(0, vh - size))),
+  };
+}
+
 export const EMBED_CSS = `
 :host { all: initial; }
-.ak-wrap {
-  position: fixed; right: 12px; bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-  width: ${BALL_SIZE}px; height: ${BALL_SIZE}px; z-index: 2147483001;
-  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+.ak-pill-wrap {
+  position: fixed; left: auto; right: ${PILL_MARGIN}px; top: 120px; z-index: 2147483001;
+  height: ${PILL_HEIGHT}px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  transition: opacity .15s ease-out;
 }
-.ak-fab {
-  position: absolute; inset: 0; width: ${BALL_SIZE}px; height: ${BALL_SIZE}px; padding: 0; margin: 0;
-  border: 0; border-radius: 50%; background: transparent; cursor: pointer; overflow: visible;
-  font: 700 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  -webkit-tap-highlight-color: transparent; touch-action: none;
+.ak-pill-wrap[data-snap="true"] { transition: left ${SNAP_MS}ms cubic-bezier(.2,.8,.3,1), top ${SNAP_MS}ms cubic-bezier(.2,.8,.3,1), opacity .15s ease-out; }
+.ak-pill-wrap[data-hidden="true"] { opacity: 0; pointer-events: none; }
+.ak-pill {
+  display: flex; align-items: center; height: ${PILL_HEIGHT}px; padding: 0 5px; margin: 0;
+  border-radius: ${PILL_HEIGHT / 2}px; border: 1px solid var(--ak-pill-stroke); background: var(--ak-pill-bg); color: var(--ak-fg);
+  box-shadow: 0 2px 8px rgba(0,0,0,.14); cursor: pointer; overflow: hidden; box-sizing: border-box;
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
-.ak-fab svg { position: absolute; left: -6px; top: -6px; width: ${BALL_SIZE + 12}px; height: ${BALL_SIZE + 12}px; overflow: visible; pointer-events: none; }
-.ak-ring-glow { transform-origin: 38px 38px; transform: rotate(-90deg); opacity: .55; animation: ak-breathe 2.6s ease-in-out infinite; }
-.ak-ring-arc { transform-origin: 38px 38px; transform: rotate(-90deg); }
-.ak-ring-comet { transform-origin: 38px 38px; animation: ak-sweep 2.4s linear infinite; }
-.ak-ring-track { opacity: .18; }
-.ak-fab[data-dim="true"] .ak-ring-arc, .ak-fab[data-dim="true"] .ak-ring-glow { opacity: .35; animation: none; }
-.ak-fab[data-dim="true"] .ak-ring-comet { display: none; }
-.ak-fab[data-alert="true"] .ak-core-rim { stroke: #E11D2A; stroke-width: 2; animation: ak-blink 1s steps(2, start) infinite; }
-.ak-fab-text {
-  position: absolute; inset: 7px; border-radius: 50%; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 1px; color: #fff; text-align: center; pointer-events: none;
-}
-.ak-fab-top { font-weight: 700; font-size: 15px; line-height: 1.1; white-space: nowrap; max-width: 100%; overflow: hidden; }
-.ak-fab-bottom { font-weight: 400; font-size: 9px; line-height: 1.1; color: #B7C4D6; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.ak-fab:not([data-model="false"]) .ak-fab-bottom { font-weight: 700; color: #fff; }
-.ak-fab[data-routed="true"] .ak-fab-top, .ak-fab[data-routed="true"] .ak-fab-bottom { color: #FFB300; }
-.ak-fab[data-routed="true"][data-model="mixed"] .ak-fab-top { color: #fff; }
-@keyframes ak-sweep { to { transform: rotate(360deg); } }
-@keyframes ak-breathe { 0%, 100% { opacity: .35; } 50% { opacity: .8; } }
-@keyframes ak-blink { 50% { opacity: .2; } }
+.ak-pill:active { filter: brightness(.96); }
+.ak-pill-ring { position: relative; flex: none; width: ${RING_SIZE}px; height: ${RING_SIZE}px; }
+.ak-pill-ring svg { position: absolute; inset: 0; width: ${RING_SIZE}px; height: ${RING_SIZE}px; overflow: visible; }
+.ak-pill-track { fill: none; stroke: var(--ak-surface-high); stroke-width: ${RING_STROKE}; }
+.ak-pill-arc { fill: none; stroke: var(--ak-brand); stroke-width: ${RING_STROKE}; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dasharray .4s; }
+.ak-pill-arc[data-band="warning"] { stroke: var(--ak-warn); }
+.ak-pill-arc[data-band="danger"] { stroke: var(--ak-danger); }
+.ak-pill-arc[data-band="unknown"] { stroke: transparent; }
+.ak-pill-orbit { fill: none; stroke: var(--ak-brand); stroke-width: ${RING_STROKE}; stroke-linecap: round; transform-origin: 50% 50%; display: none; }
+.ak-pill[data-busy="true"] .ak-pill-orbit { display: block; animation: ak-orbit 1.1s linear infinite; }
+.ak-pill[data-busy="true"] .ak-pill-arc { opacity: .35; }
+.ak-pill-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; letter-spacing: -.2px; color: var(--ak-fg); }
+.ak-pill-label { margin-left: 8px; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ak-fg); padding-right: 9px; }
+.ak-pill-label:empty { display: none; }
+.ak-pill-label[data-tone="routed"] { color: var(--ak-warn); }
+.ak-pill-label[data-tone="muted"] { color: var(--ak-sub); }
+.ak-pill-label[data-tone="active"] { color: var(--ak-brand); }
+.ak-pill-div { flex: none; width: 1px; height: 18px; background: var(--ak-line); margin-left: -1px; }
+.ak-pill-label:empty + .ak-pill-div { margin-left: 5px; }
+.ak-pill-refresh { flex: none; width: 34px; height: ${PILL_HEIGHT}px; margin-right: -5px; display: flex; align-items: center; justify-content: center; color: var(--ak-sub); }
+.ak-pill-refresh svg { width: 18px; height: 18px; fill: currentColor; }
+.ak-pill[data-refreshing="true"] .ak-pill-refresh svg { animation: ak-spin 1s linear infinite; color: var(--ak-brand); }
+.ak-pill[data-refresh="false"] .ak-pill-div, .ak-pill[data-refresh="false"] .ak-pill-refresh { display: none; }
+.ak-pill[data-refresh="false"] .ak-pill-label { padding-right: 9px; }
+.ak-pill[data-alert="true"] { border-color: var(--ak-danger); animation: ak-blink 1s steps(2, start) infinite; }
+@keyframes ak-orbit { to { transform: rotate(360deg); } }
+@keyframes ak-spin { to { transform: rotate(360deg); } }
+@keyframes ak-blink { 50% { border-color: var(--ak-pill-stroke); } }
 
-/* radial dock: neon pill with the three quick actions, hugging the ball */
-.ak-dock {
-  position: absolute; top: 50%; right: calc(100% - 6px); transform: translateY(-50%) scale(.6); transform-origin: right center;
-  display: flex; gap: 8px; padding: 6px 14px 6px 8px; border-radius: 28px;
-  background: linear-gradient(90deg, rgba(10,12,18,.9), rgba(22,27,38,.95)); border: 1px solid rgba(76,227,255,.3);
-  box-shadow: 0 6px 18px rgba(0,0,0,.4); opacity: 0; pointer-events: none; transition: transform .16s ease-out, opacity .16s ease-out;
-}
-.ak-wrap[data-side="right"] .ak-dock { right: auto; left: calc(100% - 6px); transform-origin: left center; padding: 6px 8px 6px 14px; }
-.ak-wrap[data-dock="true"] .ak-dock { transform: translateY(-50%) scale(1); opacity: 1; pointer-events: auto; }
-.ak-dock button {
-  width: 44px; height: 44px; border-radius: 22px; border: 1px solid rgba(76,227,255,.2); padding: 0; cursor: pointer;
-  background: radial-gradient(circle at 50% 40%, #20283A, #0A0C12); color: #fff; display: flex; align-items: center; justify-content: center;
-  -webkit-tap-highlight-color: transparent;
-}
-.ak-dock button:active { border-color: #4CE3FF; }
-.ak-dock button svg { width: 22px; height: 22px; fill: #fff; }
-.ak-dock button[data-busy="true"] { border-color: #FFB300; }
+/* page-load progress: 2 dp brand bar at the very top (reference page_progress) */
+.ak-progress { position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 2147483005; pointer-events: none; opacity: 0; transition: opacity .25s; }
+.ak-progress[data-show="true"] { opacity: 1; }
+.ak-progress-fill { height: 100%; width: 0; background: var(--ak-brand); transition: width .3s ease-out; }
 
-/* scrim behind the open panel / dock (tap collapses) */
-.ak-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 2147483000; opacity: 0; pointer-events: none; transition: opacity .16s; }
+/* scrim behind the open sheet / menu / dialog */
+.ak-scrim { position: fixed; inset: 0; background: var(--ak-scrim); z-index: 2147483000; opacity: 0; pointer-events: none; transition: opacity .2s; }
 .ak-scrim[data-show="true"] { opacity: 1; pointer-events: auto; }
 
-/* the panel card (reference: rounded 16dp card anchored top-right, draggable) */
-.ak-panel {
-  position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); right: 12px;
-  width: min(380px, calc(100vw - 24px)); max-height: min(78vh, 680px);
+/* bottom sheet (reference panel_sheet.xml: flush with the bottom, 20 dp top corners) */
+.ak-sheet {
+  position: fixed; left: 50%; bottom: 0; width: min(560px, 100vw); max-height: 85vh; max-height: min(85vh, 85dvh);
   z-index: 2147483002; background: var(--ak-bg); color: var(--ak-fg);
-  border-radius: 16px; box-shadow: var(--ak-shadow); border: 1px solid var(--ak-line);
-  display: flex; flex-direction: column; overflow: hidden;
-  opacity: 0; transform: scale(.96); transform-origin: top right; pointer-events: none;
-  transition: transform .16s ease-out, opacity .16s ease-out;
+  border-radius: 20px 20px 0 0; box-shadow: 0 -6px 30px rgba(0,0,0,.28);
+  display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  transform: translate(-50%, 102%); pointer-events: none;
+  transition: transform .2s cubic-bezier(.2,.8,.3,1);
 }
-.ak-panel[data-open="true"] { opacity: 1; transform: none; pointer-events: auto; }
+.ak-sheet[data-open="true"] { transform: translate(-50%, 0); pointer-events: auto; }
+.ak-sheet[data-dragging="true"] { transition: none; }
+.ak-sheet-handle { flex: none; display: flex; justify-content: center; padding: 8px 0 2px; touch-action: none; cursor: grab; }
+.ak-sheet-handle i { display: block; width: 32px; height: 4px; border-radius: 2px; background: var(--ak-surface-high); }
+.ak-sheet-top { flex: none; touch-action: none; }
+.ak-sheet-top #ak-log { touch-action: pan-y; }
 .ak-shell { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; height: auto; overscroll-behavior: contain; }
-.ak-shell .ak-head { cursor: grab; touch-action: none; }
 .ak-close { margin-left: 2px; }
+
+/* long-press quick menu (reference PopupMenu) */
+.ak-menu {
+  position: fixed; z-index: 2147483003; min-width: 188px; padding: 6px 0; border-radius: 12px;
+  background: var(--ak-bg); color: var(--ak-fg); box-shadow: 0 8px 28px rgba(0,0,0,.28); border: 1px solid var(--ak-line);
+  opacity: 0; transform: scale(.96); transform-origin: top right; pointer-events: none; transition: opacity .12s, transform .12s;
+  font: 14px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+}
+.ak-menu[data-show="true"] { opacity: 1; transform: none; pointer-events: auto; }
+.ak-menu button { display: block; width: 100%; padding: 12px 18px; margin: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.ak-menu button:active { background: var(--ak-surface-low); }
+.ak-menu button[data-danger="true"] { color: var(--ak-danger); }
+.ak-menu button[disabled] { opacity: .4; }
+
+/* confirm dialog (reference MaterialAlertDialog) */
+.ak-dialog { position: fixed; inset: 0; z-index: 2147483004; display: none; align-items: center; justify-content: center; padding: 24px; }
+.ak-dialog[data-show="true"] { display: flex; }
+.ak-dialog-card { width: min(340px, 100%); border-radius: 20px; padding: 20px 20px 12px; background: var(--ak-bg); color: var(--ak-fg); box-shadow: 0 12px 40px rgba(0,0,0,.35); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+.ak-dialog-title { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.ak-dialog-msg { color: var(--ak-sub); white-space: pre-line; }
+.ak-dialog-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 16px; }
+.ak-dialog-btns button { border: 0; background: transparent; color: var(--ak-brand); font: 600 14px/1 inherit; font-family: inherit; padding: 10px 14px; border-radius: 20px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.ak-dialog-btns button[data-ok] { background: var(--ak-brand); color: var(--ak-on-brand); }
+
+/* pull-up-to-refresh hint (bottom of the conversation) */
+.ak-pull { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translate(-50%, 20px); z-index: 2147483001;
+  padding: 8px 14px; border-radius: 18px; background: var(--ak-pill-bg); border: 1px solid var(--ak-pill-stroke); color: var(--ak-sub); box-shadow: 0 2px 8px rgba(0,0,0,.14);
+  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif; opacity: 0; pointer-events: none; transition: opacity .12s, transform .12s; display: flex; align-items: center; gap: 8px; }
+.ak-pull[data-show="true"] { opacity: 1; transform: translate(-50%, 0); }
+.ak-pull[data-armed="true"] { color: var(--ak-brand); border-color: var(--ak-brand); }
+.ak-pull svg { width: 16px; height: 16px; fill: currentColor; transition: transform .15s; }
+.ak-pull[data-armed="true"] svg { transform: rotate(180deg); }
 `;
 
-const ICONS = {
-  probe: '<svg viewBox="0 0 24 24"><path d="M12,2 A10,10 0 1 0 12,22 A10,10 0 1 0 12,2 Z M12,4 A8,8 0 1 1 12,20 A8,8 0 1 1 12,4 Z"/><path d="M12,7 A5,5 0 1 0 12,17 A5,5 0 1 0 12,7 Z M12,9 A3,3 0 1 1 12,15 A3,3 0 1 1 12,9 Z"/><path d="M11,11 h2 v2 h-2 z"/></svg>',
-  cleanup: '<svg viewBox="0 0 24 24"><path d="M19.4,4.6 L21,6.2 L14.8,12.4 L13.2,10.8 Z"/><path d="M12.4,11.6 L14,13.2 L11.5,15.7 C10.2,17 8.4,17.6 6.5,17.4 L3,20 L3.6,16.2 C3.4,14.4 4,12.6 5.3,11.3 L7.8,8.8 L9.4,10.4 Z M6.7,15.7 C7.7,15.8 8.7,15.4 9.4,14.7 L11.2,12.9 L10.9,12.6 L9,14.5 C8.3,15.2 7.6,15.5 6.7,15.7 Z"/></svg>',
-  refresh: '<svg viewBox="0 0 24 24"><path d="M12,5 V2 L8,6 L12,10 V7 C14.76,7 17,9.24 17,12 C17,14.76 14.76,17 12,17 C9.24,17 7,14.76 7,12 H5 C5,15.87 8.13,19 12,19 C15.87,19 19,15.87 19,12 C19,8.13 15.87,5 12,5 Z"/></svg>',
+export const ICONS = {
+  refresh: '<svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>',
+  arrowUp: '<svg viewBox="0 0 24 24"><path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>',
 };
 
-function ballSvg() {
-  return '<svg viewBox="0 0 76 76" aria-hidden="true">'
-    + '<defs>'
-    + '<radialGradient id="ak-core" cx="50%" cy="42%" r="55%"><stop offset="0" stop-color="#161B26"/><stop offset="1" stop-color="#0A0C12"/></radialGradient>'
-    + '<filter id="ak-blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2"/></filter>'
-    + `<mask id="ak-lit"><circle class="ak-ring-mask" cx="38" cy="38" r="${RING_R}" fill="none" stroke="#fff" stroke-width="6" stroke-dasharray="${RING_C} ${RING_C}" transform="rotate(-90 38 38)"/></mask>`
-    + '</defs>'
-    + `<circle cx="38" cy="38" r="${RING_R - 3.5}" fill="url(#ak-core)"/>`
-    + `<circle class="ak-core-rim" cx="38" cy="38" r="${RING_R - 3.5}" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="1"/>`
-    + `<circle class="ak-ring-track" cx="38" cy="38" r="${RING_R}" fill="none" stroke="#fff" stroke-width="3.2"/>`
-    + `<circle class="ak-ring-glow" cx="38" cy="38" r="${RING_R}" fill="none" stroke="#2563FF" stroke-width="5" stroke-linecap="round" stroke-dasharray="${RING_C} ${RING_C}" filter="url(#ak-blur)"/>`
-    + `<circle class="ak-ring-arc" cx="38" cy="38" r="${RING_R}" fill="none" stroke="#2563FF" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="${RING_C} ${RING_C}"/>`
-    + `<g mask="url(#ak-lit)"><circle class="ak-ring-comet" cx="38" cy="38" r="${RING_R}" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="10 ${RING_C}" opacity=".9"/></g>`
+function ringSvg() {
+  const c = RING_SIZE / 2;
+  return `<svg viewBox="0 0 ${RING_SIZE} ${RING_SIZE}" aria-hidden="true">`
+    + `<circle class="ak-pill-track" cx="${c}" cy="${c}" r="${RING_R}"/>`
+    + `<circle class="ak-pill-arc" data-band="unknown" cx="${c}" cy="${c}" r="${RING_R}" stroke-dasharray="0 ${RING_C}"/>`
+    + `<circle class="ak-pill-orbit" cx="${c}" cy="${c}" r="${RING_R}" stroke-dasharray="${(RING_C * 80 / 360).toFixed(2)} ${RING_C.toFixed(2)}"/>`
     + '</svg>';
 }
 
-/* Clamp a saved/dragged position to the viewport. */
-export function clampPos(pos, vw, vh, size = BALL_SIZE) {
-  const x = Math.min(Math.max(0, Number(pos && pos.x) || 0), Math.max(0, vw - size));
-  const y = Math.min(Math.max(0, Number(pos && pos.y) || 0), Math.max(0, vh - size));
-  return { x, y };
-}
-
-export function mount(win = globalThis) {
-  const doc = win.document;
-  if (!doc || !doc.documentElement) return false;
-  if (win.__ARENAKIT_EMBED__ && win.__ARENAKIT_EMBED__.root) return false; // already mounted (idempotent)
-  if (typeof doc.createElement !== 'function') return false;
+/* Build the shell inside `win.document`. Returns false when already mounted. */
+export function mount(win) {
+  const doc = win && win.document;
+  if (!doc || typeof doc.createElement !== 'function') return false;
+  if (win.__ARENAKIT_EMBED__ && win.__ARENAKIT_EMBED__.root) return false;
   const existing = doc.getElementById(HOST_ID);
   if (existing) existing.remove();
 
@@ -176,23 +214,44 @@ export function mount(win = globalThis) {
   host.setAttribute('style', 'all:initial;position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;');
   const root = typeof host.attachShadow === 'function' ? host.attachShadow({ mode: 'open' }) : host;
   root.innerHTML = `<style>${shadowCss(CSS)}\n${EMBED_CSS}</style>`
+    + '<div class="ak-progress" data-show="false"><div class="ak-progress-fill"></div></div>'
     + '<div class="ak-scrim" data-show="false"></div>'
-    + '<div class="ak-wrap" data-dock="false" data-side="left">'
-    + '<div class="ak-dock" role="toolbar" aria-label="快捷操作">'
-    + `<button type="button" data-dock-action="probe" aria-label="探针" title="自动探针">${ICONS.probe}</button>`
-    + `<button type="button" data-dock-action="cleanup" aria-label="清理" title="自动清理">${ICONS.cleanup}</button>`
-    + `<button type="button" data-dock-action="refresh" aria-label="刷新" title="刷新页面">${ICONS.refresh}</button>`
-    + '</div>'
-    + `<button class="ak-fab" type="button" aria-label="ArenaKit" data-dim="true" data-model="false" data-routed="false">${ballSvg()}`
-    + '<span class="ak-fab-text"><span class="ak-fab-top">…</span><span class="ak-fab-bottom"></span></span></button>'
-    + '</div>'
-    + `<div class="ak-panel" data-open="false" role="dialog" aria-label="ArenaKit"><div class="ak-shell">${MARKUP}</div></div>`;
+    + '<div class="ak-pill-wrap" data-side="right" data-hidden="false" data-snap="false">'
+    + '<div class="ak-pill" role="button" tabindex="0" aria-label="ArenaKit" data-busy="false" data-refresh="true" data-refreshing="false" data-alert="false">'
+    + `<span class="ak-pill-ring">${ringSvg()}<span class="ak-pill-pct">–</span></span>`
+    + '<span class="ak-pill-label" data-tone="muted"></span>'
+    + '<span class="ak-pill-div"></span>'
+    + `<span class="ak-pill-refresh" aria-label="刷新页面" title="刷新页面">${ICONS.refresh}</span>`
+    + '</div></div>'
+    + '<div class="ak-menu" data-show="false" role="menu" aria-label="快捷操作"></div>'
+    + '<div class="ak-sheet" data-open="false" data-dragging="false" role="dialog" aria-label="ArenaKit">'
+    + '<div class="ak-sheet-handle" aria-hidden="true"><i></i></div>'
+    + '<div class="ak-sheet-top"></div>'
+    + `<div class="ak-shell">${MARKUP}</div></div>`
+    + '<div class="ak-dialog" data-show="false" role="alertdialog"><div class="ak-dialog-card"><div class="ak-dialog-title"></div><div class="ak-dialog-msg"></div>'
+    + '<div class="ak-dialog-btns"><button type="button" data-cancel>取消</button><button type="button" data-ok>确定</button></div></div></div>'
+    + `<div class="ak-pull" data-show="false" data-armed="false">${ICONS.arrowUp}<span>上拉刷新</span></div>`;
   (doc.body || doc.documentElement).appendChild(host);
 
-  const wrap = root.querySelector('.ak-wrap');
-  const fab = root.querySelector('.ak-fab');
-  const panel = root.querySelector('.ak-panel');
+  const wrap = root.querySelector('.ak-pill-wrap');
+  const pill = root.querySelector('.ak-pill');
+  const sheet = root.querySelector('.ak-sheet');
+  const shell = root.querySelector('.ak-shell');
   const scrim = root.querySelector('.ak-scrim');
+  const menu = root.querySelector('.ak-menu');
+  const dialog = root.querySelector('.ak-dialog');
+  const progress = root.querySelector('.ak-progress');
+  const progressFill = root.querySelector('.ak-progress-fill');
+  const pullHint = root.querySelector('.ak-pull');
+  // Reference sheet: header / quota / activity / tabs stay put, only the
+  // page content scrolls — move those blocks above the scroll container.
+  const sheetTop = root.querySelector('.ak-sheet-top');
+  if (sheetTop && shell && typeof shell.querySelector === 'function') {
+    for (const sel of ['.ak-head', '.ak-activity', '#ak-log', '.ak-tabs']) {
+      const el = shell.querySelector(sel);
+      if (el) sheetTop.appendChild(el);
+    }
+  }
   const tools = root.querySelector('.ak-head-tools') || root.querySelector('.ak-head');
   const close = doc.createElement('button');
   close.className = 'ak-icon-btn ak-close';
@@ -203,19 +262,280 @@ export function mount(win = globalThis) {
 
   const vw = () => win.innerWidth || 360;
   const vh = () => win.innerHeight || 640;
-  let actionHandler = null;
-  const fire = (name) => { if (typeof actionHandler === 'function') { try { actionHandler(name); } catch (e) { console.warn('[arenakit] embed action', name, e); } } };
-
-  const isOpen = () => panel.dataset.open === 'true';
-  const dockOpen = () => wrap.dataset.dock === 'true';
-  const syncScrim = () => { scrim.dataset.show = isOpen() || dockOpen() ? 'true' : 'false'; };
-  const setDock = (v) => { wrap.dataset.dock = v ? 'true' : 'false'; syncScrim(); };
-  const setOpen = (v) => {
-    panel.dataset.open = v ? 'true' : 'false';
-    if (v) setDock(false);
-    wrap.style.visibility = v ? 'hidden' : '';
-    syncScrim();
+  const later = (fn, ms) => setTimeout(fn, ms);
+  const rectOf = (el) => {
+    const r = el.getBoundingClientRect() || {};
+    const left = Number(r.left) || 0, top = Number(r.top) || 0, width = Number(r.width) || 0, height = Number(r.height) || 0;
+    return { left, top, width, height, right: Number.isFinite(r.right) ? r.right : left + width, bottom: Number.isFinite(r.bottom) ? r.bottom : top + height };
   };
+  const onWin = (type, fn, opts) => { if (typeof win.addEventListener === 'function') win.addEventListener(type, fn, opts); };
+  let actionHandler = null;
+  let menuProvider = null;
+  const fire = (name, arg) => { if (typeof actionHandler === 'function') { try { actionHandler(name, arg); } catch (e) { console.warn('[arenakit] embed action', name, e); } } };
+  /* Native shell (Android MainActivity overlay) — optional one-way channel. */
+  const native = (msg) => {
+    const n = win.ArenaKitAndroid;
+    if (n && typeof n.postMessage === 'function') { try { n.postMessage(JSON.stringify(msg)); } catch (_) { /* ignore */ } }
+  };
+
+  // ── open / close state ────────────────────────────────────────────────
+  const isOpen = () => sheet.dataset.open === 'true';
+  const menuOpen = () => menu.dataset.show === 'true';
+  const dialogOpen = () => dialog.dataset.show === 'true';
+  const syncScrim = () => { scrim.dataset.show = isOpen() || menuOpen() ? 'true' : 'false'; };
+  const syncPillHidden = () => { wrap.dataset.hidden = isOpen() ? 'true' : 'false'; };
+  const setMenu = (show) => { menu.dataset.show = show ? 'true' : 'false'; if (!show) menu.innerHTML = ''; syncScrim(); };
+  const setOpen = (v) => {
+    const was = isOpen();
+    sheet.dataset.open = v ? 'true' : 'false';
+    sheet.style.transform = '';
+    if (v) setMenu(false);
+    syncPillHidden();
+    syncScrim();
+    if (was !== !!v) { native({ cmd: 'panel', open: !!v }); fire(v ? 'open' : 'close'); }
+  };
+
+  // ── pill rendering ────────────────────────────────────────────────────
+  const arc = root.querySelector('.ak-pill-arc');
+  const pctEl = root.querySelector('.ak-pill-pct');
+  const labelEl = root.querySelector('.ak-pill-label');
+  const refreshEl = root.querySelector('.ak-pill-refresh');
+  let pillState = { percent: null, label: '', tone: 'muted', busy: false };
+  function setPill(p = {}) {
+    pillState = { ...pillState, ...p };
+    const raw = pillState.percent;
+    const pct = raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) ? Math.max(0, Math.min(100, Math.round(Number(raw)))) : null;
+    const band = ringBand(pct);
+    if (arc) {
+      arc.setAttribute('data-band', band);
+      arc.dataset.band = band;
+      arc.setAttribute('stroke-dasharray', `${((pct === null ? 0 : pct / 100) * RING_C).toFixed(3)} ${RING_C.toFixed(3)}`);
+    }
+    pctEl.textContent = pct === null ? '–' : String(pct);
+    const text = String(pillState.label || '');
+    labelEl.textContent = text;
+    labelEl.dataset.tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
+    pill.dataset.busy = pillState.busy ? 'true' : 'false';
+    pill.setAttribute('aria-label', 'ArenaKit ' + (pct === null ? '' : pct + '% ') + text);
+    place(); // the label width changed → keep the right-hand edge on the margin
+  }
+  const setRefreshButton = (on) => { pill.dataset.refresh = on ? 'true' : 'false'; place(); };
+
+  // ── page-load progress + spinning ⟳ ──────────────────────────────────
+  let loadTimer = 0;
+  let stallTimer = 0;
+  let loadValue = 0;
+  const showProgress = (v) => { loadValue = v; progressFill.style.width = v + '%'; };
+  function setLoading(on) {
+    clearInterval(loadTimer); loadTimer = 0;
+    clearTimeout(stallTimer); stallTimer = 0;
+    pill.dataset.refreshing = on ? 'true' : 'false';
+    if (on) {
+      progress.dataset.show = 'true';
+      showProgress(8);
+      loadTimer = setInterval(() => showProgress(Math.min(90, loadValue + (90 - loadValue) * 0.08)), 200);
+      stallTimer = later(() => setLoading(false), LOAD_STALL_MS);
+    } else {
+      showProgress(100);
+      later(() => { if (!loadTimer) { progress.dataset.show = 'false'; showProgress(0); } }, 250);
+    }
+  }
+
+  // ── confirm dialog ────────────────────────────────────────────────────
+  let dialogResolve = null;
+  const closeDialog = (result) => {
+    dialog.dataset.show = 'false';
+    const r = dialogResolve; dialogResolve = null;
+    if (r) r(result);
+  };
+  function confirm({ title = '', message = '', ok = '确定', cancel = '取消' } = {}) {
+    if (dialogResolve) closeDialog(false);
+    root.querySelector('.ak-dialog-title').textContent = title;
+    root.querySelector('.ak-dialog-msg').textContent = message;
+    root.querySelector('.ak-dialog-btns [data-ok]').textContent = ok;
+    root.querySelector('.ak-dialog-btns [data-cancel]').textContent = cancel;
+    dialog.dataset.show = 'true';
+    return new Promise((resolve) => { dialogResolve = resolve; });
+  }
+  root.querySelector('.ak-dialog-btns [data-ok]').addEventListener('click', () => closeDialog(true));
+  root.querySelector('.ak-dialog-btns [data-cancel]').addEventListener('click', () => closeDialog(false));
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) closeDialog(false); });
+
+  // ── quick menu (long press) ───────────────────────────────────────────
+  function openMenu() {
+    const items = typeof menuProvider === 'function' ? (menuProvider() || []) : [];
+    if (!items.length) return;
+    menu.innerHTML = items.map((it) => `<button type="button" role="menuitem" data-menu="${String(it.id).replace(/"/g, '')}"${it.danger ? ' data-danger="true"' : ''}${it.disabled ? ' disabled' : ''}>${String(it.label).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</button>`).join('');
+    menu.querySelectorAll('[data-menu]').forEach((b) => b.addEventListener('click', () => { const id = b.dataset.menu; setMenu(false); fire('menu', id); }));
+    // Anchor next to the pill, on the free side of the screen.
+    const r = rectOf(wrap);
+    menu.style.top = '0px'; menu.style.left = '0px'; menu.style.right = 'auto';
+    menu.dataset.show = 'true';
+    const mh = menu.offsetHeight || 240;
+    const mw = menu.offsetWidth || 200;
+    let top = r.bottom + 6;
+    if (top + mh > vh() - 8) top = Math.max(8, r.top - mh - 6);
+    let left = wrap.dataset.side === 'left' ? r.left : r.right - mw;
+    left = Math.max(8, Math.min(left, vw() - mw - 8));
+    menu.style.top = top + 'px'; menu.style.left = left + 'px';
+    menu.style.transformOrigin = (wrap.dataset.side === 'left' ? 'left' : 'right') + ' ' + (top > r.top ? 'top' : 'bottom');
+    syncScrim();
+  }
+
+  // ── pill placement (side + y fraction, snap on release) ──────────────
+  let pos = { side: 'right', y: PILL_DEFAULT_Y };
+  try {
+    const saved = JSON.parse(win.localStorage.getItem(PILL_POS_KEY) || 'null');
+    if (saved && typeof saved === 'object') pos = { side: saved.side === 'left' ? 'left' : 'right', y: normalizeFraction(saved.y) };
+  } catch (_) { /* storage blocked: default position */ }
+  const pillWidth = () => wrap.offsetWidth || (wrap.getBoundingClientRect && wrap.getBoundingClientRect().width) || 120;
+  function place(animate = false) {
+    const p = pillPlacement(pos, vw(), vh(), pillWidth(), PILL_HEIGHT);
+    wrap.dataset.snap = animate ? 'true' : 'false';
+    wrap.dataset.side = p.side;
+    wrap.style.left = p.x + 'px'; wrap.style.top = p.y + 'px'; wrap.style.right = 'auto';
+    return p;
+  }
+  const savePos = () => { try { win.localStorage.setItem(PILL_POS_KEY, JSON.stringify(pos)); } catch (_) { /* ignore */ } };
+  onWin('resize', () => place(false));
+  if (win.visualViewport && typeof win.visualViewport.addEventListener === 'function') win.visualViewport.addEventListener('resize', () => place(false));
+
+  // ── pill gestures: tap / ⟳ tap / long press / drag ───────────────────
+  let drag = null;
+  let longTimer = 0;
+  const inRefreshZone = (x) => {
+    if (pill.dataset.refresh === 'false') return false;
+    const rr = rectOf(refreshEl);
+    return rr.width > 0 && x >= rr.left - 2 && x <= rr.right + 2;
+  };
+  wrap.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const r = wrap.getBoundingClientRect();
+    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false, long: false, last: null };
+    try { wrap.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    clearTimeout(longTimer);
+    longTimer = later(() => {
+      if (!drag || drag.moved) return;
+      drag.long = true;
+      openMenu();
+      fire('longpress');
+    }, LONG_PRESS_MS);
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id || drag.long) return;
+    const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (!drag.moved && Math.hypot(dx, dy) < TAP_SLOP) return;
+    if (!drag.moved) { drag.moved = true; clearTimeout(longTimer); wrap.dataset.snap = 'false'; }
+    const w = pillWidth();
+    drag.last = clampPos({ x: drag.ox + dx, y: drag.oy + dy }, vw(), vh(), PILL_HEIGHT, w);
+    wrap.style.left = drag.last.x + 'px'; wrap.style.top = drag.last.y + 'px'; wrap.style.right = 'auto';
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag; drag = null;
+    clearTimeout(longTimer);
+    if (d.long) return;
+    if (d.moved) {
+      if (d.last) { pos = releasePosition(d.last, vw(), vh(), pillWidth(), PILL_HEIGHT); place(true); savePos(); }
+      return;
+    }
+    if (inRefreshZone(e.clientX)) { fire('refresh'); return; }
+    fire('panel');
+    setOpen(true);
+  };
+  wrap.addEventListener('pointerup', end);
+  wrap.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; clearTimeout(longTimer); place(true); } });
+  pill.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fire('panel'); setOpen(true); } });
+  pill.addEventListener('contextmenu', (e) => e.preventDefault());
+  place(false);
+
+  // ── sheet: swipe down on the handle / header closes it ───────────────
+  const grabs = [root.querySelector('.ak-sheet-handle'), sheetTop || root.querySelector('.ak-head')].filter(Boolean);
+  let sdrag = null;
+  for (const g of grabs) {
+    g.addEventListener('pointerdown', (e) => {
+      if (e.target && typeof e.target.closest === 'function' && e.target.closest('button, input, select, textarea, a, pre, [role="tablist"]')) return;
+      sdrag = { id: e.pointerId, sy: e.clientY, dy: 0, t0: Date.now(), moved: false };
+      try { g.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    });
+    g.addEventListener('pointermove', (e) => {
+      if (!sdrag || e.pointerId !== sdrag.id) return;
+      const dy = Math.max(0, e.clientY - sdrag.sy);
+      if (!sdrag.moved && dy < TAP_SLOP) return;
+      sdrag.moved = true; sdrag.dy = dy;
+      sheet.dataset.dragging = 'true';
+      sheet.style.transform = `translate(-50%, ${dy}px)`;
+    });
+    const sEnd = (e) => {
+      if (!sdrag || e.pointerId !== sdrag.id) return;
+      const d = sdrag; sdrag = null;
+      sheet.dataset.dragging = 'false';
+      const h = sheet.getBoundingClientRect().height || 400;
+      const fast = d.dy > 40 && (Date.now() - d.t0) < 300;
+      if (d.moved && (d.dy > h * 0.25 || fast)) setOpen(false); else sheet.style.transform = '';
+    };
+    g.addEventListener('pointerup', sEnd);
+    g.addEventListener('pointercancel', sEnd);
+  }
+  close.addEventListener('click', () => setOpen(false));
+  scrim.addEventListener('click', () => { if (menuOpen()) setMenu(false); else setOpen(false); });
+
+  // ── pull-up-to-refresh at the bottom of the conversation ─────────────
+  let pull = null;
+  const scrollParentOf = (el) => {
+    let n = el;
+    while (n && n !== doc.body && n !== doc.documentElement && n.nodeType === 1) {
+      let oy = '';
+      try { oy = typeof win.getComputedStyle === 'function' ? win.getComputedStyle(n).overflowY : ''; } catch (_) { oy = ''; }
+      if (/(auto|scroll)/.test(oy) && n.scrollHeight > n.clientHeight + 1) return n;
+      n = n.parentElement;
+    }
+    return null;
+  };
+  const atBottom = (el) => {
+    if (el) return el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+    const se = doc.scrollingElement || doc.documentElement;
+    if (!se) return true;
+    return (win.scrollY || 0) + vh() >= se.scrollHeight - 2;
+  };
+  const showPull = (dy) => {
+    const armed = dy >= PULL_THRESHOLD;
+    pullHint.dataset.show = dy > 10 ? 'true' : 'false';
+    pullHint.dataset.armed = armed ? 'true' : 'false';
+    const span = pullHint.querySelector('span');
+    if (span) span.textContent = armed ? '松开刷新' : '上拉刷新';
+  };
+  const onTouchStart = (e) => {
+    if (isOpen() || menuOpen() || dialogOpen() || !e.touches || e.touches.length !== 1) { pull = null; return; }
+    const t = e.touches[0];
+    const target = e.target;
+    if (!target || target === host || (typeof target.closest === 'function' && (target.closest('#' + HOST_ID) || target.closest('textarea, input, select, [contenteditable="true"], button, a, [role="button"], [role="slider"]')))) { pull = null; return; }
+    const scroller = typeof target.closest === 'function' ? scrollParentOf(target) : null;
+    if (!atBottom(scroller)) { pull = null; return; }
+    pull = { x: t.clientX, y: t.clientY, scroller, top: scroller ? scroller.scrollTop : (win.scrollY || 0), armed: false };
+  };
+  const onTouchMove = (e) => {
+    if (!pull || !e.touches || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dy = pull.y - t.clientY;
+    const dx = Math.abs(t.clientX - pull.x);
+    const nowTop = pull.scroller ? pull.scroller.scrollTop : (win.scrollY || 0);
+    if (nowTop !== pull.top || (dx > 40 && dx > dy)) { pull = null; showPull(0); return; }
+    pull.armed = dy >= PULL_THRESHOLD;
+    showPull(dy);
+  };
+  const onTouchEnd = () => {
+    if (!pull) return;
+    const armed = pull.armed; pull = null;
+    showPull(0);
+    if (armed) fire('pull-refresh');
+  };
+  if (typeof doc.addEventListener === 'function') {
+    doc.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    doc.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    doc.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    doc.addEventListener('touchcancel', () => { pull = null; showPull(0); }, { passive: true, capture: true });
+  }
 
   const api = {
     root, host,
@@ -223,147 +543,39 @@ export function mount(win = globalThis) {
     close: () => setOpen(false),
     toggle: () => setOpen(!isOpen()),
     isOpen,
-    /* reply-monitor anomaly: red blinking rim (reference alert ring). */
-    alert: (on) => { fab.dataset.alert = on ? 'true' : 'false'; },
-    /* Ball display: { percent (0..100 | null), top, bottom, isModel, routed }. */
-    setBall: (b) => setBall(b || {}),
-    /* Quick actions: 'probe' | 'cleanup' | 'refresh' (radial dock), 'quick' (long press), 'panel' (double tap). */
+    /* Back key (Android MainActivity → JS): true when consumed. */
+    handleBack: () => {
+      if (dialogOpen()) { closeDialog(false); return true; }
+      if (menuOpen()) { setMenu(false); return true; }
+      if (isOpen()) { setOpen(false); return true; }
+      return false;
+    },
+    /* reply-monitor anomaly: red blinking outline (reference alert ring). */
+    alert: (on) => { pill.dataset.alert = on ? 'true' : 'false'; },
+    /* Pill display: { percent (0..100 | null), label, tone ('normal'|'routed'|'muted'|'active'), busy }. */
+    setPill,
+    /* Legacy alias for the old ball API: {percent, top, bottom, isModel, routed}. */
+    setBall: (b = {}) => setPill({ percent: b.percent ?? null, label: [b.top && !/%$/.test(String(b.top)) ? b.top : '', b.bottom].filter(Boolean).join(' '), tone: b.routed ? 'routed' : (b.isModel ? 'normal' : 'muted'), busy: false }),
+    /* Show / hide the ⟳ zone (设置 → 悬浮窗显示刷新按钮). */
+    setRefreshButton,
+    /* Page load in progress: spinning ⟳ + top progress bar. */
+    setLoading,
+    /* Quick actions: 'panel' | 'refresh' | 'pull-refresh' | 'menu' (id) | 'longpress' | 'open' | 'close'. */
     onAction: (fn) => { actionHandler = fn; },
-    /* Mark a dock button busy (probe / cleanup running). */
-    setBusy: (name, on) => { const b = root.querySelector(`[data-dock-action="${name}"]`); if (b) b.dataset.busy = on ? 'true' : 'false'; },
-    ballSize: BALL_SIZE,
+    /* Long-press menu items: () => [{ id, label, danger?, disabled? }]. */
+    setMenuProvider: (fn) => { menuProvider = fn; },
+    /* Legacy: mark a quick action busy (now reflected by the pill label). */
+    setBusy: () => {},
+    /* Modal confirm inside the shadow root; resolves true on 确定. */
+    confirm,
+    /* Native Android shell channel (no-op elsewhere). */
+    native,
+    scrollTo: (el) => { if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start' }); else if (shell) shell.scrollTop = 0; },
+    ballSize: PILL_HEIGHT,
+    pillSize: PILL_HEIGHT,
   };
-  close.addEventListener('click', api.close);
-  scrim.addEventListener('click', () => { setDock(false); setOpen(false); });
-  root.querySelectorAll('[data-dock-action]').forEach((b) => b.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const name = b.dataset.dockAction;
-    setDock(false);
-    fire(name);
-  }));
-
-  // ── ball rendering ──────────────────────────────────────────────────
-  const arc = root.querySelector('.ak-ring-arc');
-  const glow = root.querySelector('.ak-ring-glow');
-  const maskArc = root.querySelector('.ak-ring-mask');
-  const comet = root.querySelector('.ak-ring-comet');
-  const topEl = root.querySelector('.ak-fab-top');
-  const bottomEl = root.querySelector('.ak-fab-bottom');
-  function setBall({ percent = null, top = '…', bottom = '', isModel = false, routed = false } = {}) {
-    const p = percent !== null && percent !== undefined && percent !== '' && Number.isFinite(Number(percent)) ? Math.max(0, Math.min(100, Number(percent))) : null;
-    const pal = ringPalette(p);
-    const lit = (p === null ? 1 : p / 100) * RING_C;
-    const dash = `${lit} ${RING_C}`;
-    if (arc) { arc.setAttribute('stroke', pal.base); arc.setAttribute('stroke-dasharray', dash); }
-    if (glow) { glow.setAttribute('stroke', pal.bright); glow.setAttribute('stroke-dasharray', dash); }
-    if (maskArc) maskArc.setAttribute('stroke-dasharray', dash);
-    if (comet) comet.setAttribute('stroke', pal.bright);
-    fab.dataset.dim = pal.dim ? 'true' : 'false';
-    const t = String(top || '…');
-    const btm = String(bottom || '');
-    const maxW = BALL_SIZE - 18;
-    topEl.textContent = t;
-    topEl.style.fontSize = fitFont(t, btm ? 12 : 15, maxW) + 'px';
-    bottomEl.textContent = btm;
-    bottomEl.style.fontSize = fitFont(btm, 9, maxW) + 'px';
-    bottomEl.style.display = btm ? '' : 'none';
-    // 'mixed' = quota % on top, model below (only the model line takes the routed colour)
-    fab.dataset.model = isModel ? (btm && /%$/.test(t) ? 'mixed' : 'true') : 'false';
-    fab.dataset.routed = isModel && routed ? 'true' : 'false';
-    fab.setAttribute('aria-label', 'ArenaKit ' + t + (btm ? ' ' + btm : ''));
-  }
-  setBall({});
-
-  // ── ball: drag / tap / double tap / long press ───────────────────────
-  let drag = null;
-  let tapTimer = 0;
-  let longTimer = 0;
-  const place = (pos) => {
-    const p = clampPos(pos, vw(), vh(), BALL_SIZE);
-    wrap.style.left = p.x + 'px'; wrap.style.top = p.y + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto';
-    wrap.dataset.side = p.x + BALL_SIZE / 2 < vw() / 2 ? 'right' : 'left'; // dock opens toward the free side
-    return p;
-  };
-  try {
-    const saved = JSON.parse(win.localStorage.getItem(FAB_POS_KEY) || 'null');
-    if (saved && typeof saved === 'object') place(saved);
-  } catch (_) { /* storage blocked: default corner */ }
-  fab.addEventListener('pointerdown', (e) => {
-    const r = wrap.getBoundingClientRect();
-    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false, long: false };
-    try { fab.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-    clearTimeout(longTimer);
-    longTimer = setTimeout(() => {
-      if (!drag || drag.moved) return;
-      drag.long = true;
-      clearTimeout(tapTimer); tapTimer = 0;
-      setDock(false);
-      fire('quick');
-    }, LONG_PRESS_MS);
-  });
-  fab.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id || drag.long) return;
-    const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
-    if (!drag.moved && Math.hypot(dx, dy) < TAP_SLOP) return;
-    if (!drag.moved) { drag.moved = true; clearTimeout(longTimer); setDock(false); }
-    drag.last = place({ x: drag.ox + dx, y: drag.oy + dy });
-  });
-  const end = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    const d = drag; drag = null;
-    clearTimeout(longTimer);
-    if (d.long) return;
-    if (d.moved) { try { win.localStorage.setItem(FAB_POS_KEY, JSON.stringify(d.last)); } catch (_) { /* ignore */ } return; }
-    if (tapTimer) {            // second tap within the window → panel
-      clearTimeout(tapTimer); tapTimer = 0;
-      setDock(false);
-      fire('panel');
-      setOpen(true);
-      return;
-    }
-    tapTimer = setTimeout(() => { tapTimer = 0; setDock(!dockOpen()); }, DOUBLE_TAP_MS);
-  };
-  fab.addEventListener('pointerup', end);
-  fab.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; clearTimeout(longTimer); } });
-
-  // ── panel: drag by the header (buttons / inputs inside still work) ──
-  const head = root.querySelector('.ak-head');
-  let pdrag = null;
-  const placePanel = (pos) => {
-    const r = panel.getBoundingClientRect();
-    const x = Math.min(Math.max(0, pos.x), Math.max(0, vw() - (r.width || 300)));
-    const y = Math.min(Math.max(0, pos.y), Math.max(0, vh() - Math.min(r.height || 200, 120)));
-    panel.style.left = x + 'px'; panel.style.top = y + 'px'; panel.style.right = 'auto';
-    panel.style.transformOrigin = 'top left';
-    return { x, y };
-  };
-  try {
-    const saved = JSON.parse(win.localStorage.getItem(PANEL_POS_KEY) || 'null');
-    if (saved && typeof saved === 'object' && Number.isFinite(saved.x) && Number.isFinite(saved.y)) placePanel(saved);
-  } catch (_) { /* ignore */ }
-  if (head) {
-    head.addEventListener('pointerdown', (e) => {
-      if (e.target && typeof e.target.closest === 'function' && e.target.closest('button, input, select, textarea, a')) return;
-      const r = panel.getBoundingClientRect();
-      pdrag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false, last: null };
-      try { head.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-    });
-    head.addEventListener('pointermove', (e) => {
-      if (!pdrag || e.pointerId !== pdrag.id) return;
-      const dx = e.clientX - pdrag.sx, dy = e.clientY - pdrag.sy;
-      if (!pdrag.moved && Math.hypot(dx, dy) < TAP_SLOP) return;
-      pdrag.moved = true;
-      pdrag.last = placePanel({ x: pdrag.ox + dx, y: pdrag.oy + dy });
-    });
-    const pend = (e) => {
-      if (!pdrag || e.pointerId !== pdrag.id) return;
-      const d = pdrag; pdrag = null;
-      if (d.moved && d.last) { try { win.localStorage.setItem(PANEL_POS_KEY, JSON.stringify(d.last)); } catch (_) { /* ignore */ } }
-    };
-    head.addEventListener('pointerup', pend);
-    head.addEventListener('pointercancel', () => { pdrag = null; });
-  }
-
+  setPill({});
   win.__ARENAKIT_EMBED__ = api;
+  native({ cmd: 'ready' });
   return true;
 }

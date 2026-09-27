@@ -54,9 +54,14 @@ export const PAGE_ACTIONS = {
     js: () => 'window.history&&window.history.forward()',
     run: (w) => (w.history ? w.history.forward() : undefined),
   },
+  // Marks sessionStorage first so the NEXT document shows the top progress
+  // bar from document_start (bridge.js reads and clears the flag).
   reload: {
-    js: () => 'window.location&&window.location.reload&&window.location.reload()',
-    run: (w) => (w.location && typeof w.location.reload === 'function' ? w.location.reload() : undefined),
+    js: () => "try{sessionStorage.setItem('arenakit.reloading',String(Date.now()))}catch(e){}window.location&&window.location.reload&&window.location.reload()",
+    run: (w) => {
+      try { w.sessionStorage.setItem('arenakit.reloading', String(Date.now())); } catch { /* storage blocked */ }
+      return w.location && typeof w.location.reload === 'function' ? w.location.reload() : undefined;
+    },
   },
   // probe.js RPC: answered asynchronously through the bridge as 'probe-result'.
   probeCall: {

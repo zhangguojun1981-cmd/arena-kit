@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { read } from './helpers.mjs';
 import { generate, transformModule, collectModules, extractMarkup } from '../scripts/bundle-dock.mjs';
-import { shadowCss, clampPos, mount, ringPalette, fitFont, BALL_SIZE } from '../src/embed/shell.js';
+import { shadowCss, clampPos, mount, ringPalette, fitFont, BALL_SIZE, PILL_HEIGHT, RING_C } from '../src/embed/shell.js';
+import { pillPlacement, releasePosition, snapSide, fractionForY, pillLabel, turnHeadline, ringBand, PILL_MARGIN } from '../src/lib/pill-layout.js';
 import { summarizeUsage, formatMoney } from '../src/lib/usage.js';
 import { buildTitle } from '../src/lib/rename.js';
 
@@ -76,22 +77,71 @@ test('shadowCss retargets document-level rules to the shadow root', () => {
   assert.ok(css.includes('.ak-head { color: red; }'));
 });
 
-test('clampPos keeps the floating button inside the viewport', () => {
-  assert.deepEqual(clampPos({ x: -20, y: 5000 }, 360, 640), { x: 0, y: 640 - BALL_SIZE });
+test('clampPos keeps a dragged box inside the viewport', () => {
+  assert.equal(BALL_SIZE, PILL_HEIGHT);
+  assert.deepEqual(clampPos({ x: -20, y: 5000 }, 360, 640), { x: 0, y: 640 - PILL_HEIGHT });
   assert.deepEqual(clampPos({ x: -20, y: 5000 }, 360, 640, 46), { x: 0, y: 594 });
-  assert.deepEqual(clampPos({ x: 100, y: 100 }, 360, 640), { x: 100, y: 100 });
+  assert.deepEqual(clampPos({ x: 350, y: 100 }, 360, 640, 36, 120), { x: 240, y: 100 });
   assert.deepEqual(clampPos(null, 360, 640), { x: 0, y: 0 });
 });
 
-test('ringPalette follows the reference quota health bands (blue ≥20, amber 10–19, red <10, dim unknown)', () => {
+test('ringPalette / ringBand follow the reference quota health bands (brand ≥20, warn 10–19, danger <10, unknown → track only)', () => {
   assert.equal(ringPalette(null).dim, true);
-  assert.equal(ringPalette(undefined).base, '#2563FF');
-  assert.deepEqual(ringPalette(0), { base: '#E11D2A', bright: '#FF7A7A', dim: false });
-  assert.equal(ringPalette(9).base, '#E11D2A');
-  assert.equal(ringPalette(10).base, '#FF8A00');
-  assert.equal(ringPalette(19).base, '#FF8A00');
-  assert.equal(ringPalette(20).base, '#2563FF');
-  assert.equal(ringPalette(100).base, '#2563FF');
+  assert.equal(ringPalette(null).band, 'unknown');
+  assert.equal(ringPalette(undefined).base, '#2F6BFF');
+  assert.deepEqual(ringPalette(0), { band: 'danger', base: '#D93025', dim: false });
+  assert.equal(ringPalette(9).band, 'danger');
+  assert.equal(ringPalette(10).band, 'warning');
+  assert.equal(ringPalette(19).base, '#B26A00');
+  assert.equal(ringPalette(20).band, 'ok');
+  assert.equal(ringPalette(100).base, '#2F6BFF');
+  assert.equal(ringBand(''), 'unknown');
+});
+
+/* ── pill geometry (FloatingDragHelper port) ─────────────────────────── */
+test('pillPlacement keeps the pill on its side with the 8 dp margin and maps the y fraction onto the free range', () => {
+  assert.deepEqual(pillPlacement({ side: 'right', y: 0.18 }, 360, 640, 120, 36), { side: 'right', x: 360 - 120 - PILL_MARGIN, y: 8 + Math.round((640 - 36 - 16) * 0.18) });
+  assert.deepEqual(pillPlacement({ side: 'left', y: 0 }, 360, 640, 120, 36), { side: 'left', x: 8, y: 8 });
+  assert.deepEqual(pillPlacement({ side: 'left', y: 1 }, 360, 640, 120, 36), { side: 'left', x: 8, y: 640 - 36 - 8 });
+  // garbage → defaults (right side, 18 %)
+  assert.deepEqual(pillPlacement(null, 360, 640, 100, 36), pillPlacement({ side: 'right', y: 0.18 }, 360, 640, 100, 36));
+  assert.equal(pillPlacement({ side: 'right', y: 'x' }, 360, 640, 100, 36).y, pillPlacement({ side: 'right', y: 0.18 }, 360, 640, 100, 36).y);
+  // a pill wider than the viewport still starts at the margin
+  assert.equal(pillPlacement({ side: 'right', y: 0 }, 200, 640, 400, 36).x, 8);
+});
+
+test('releasePosition snaps to the nearer edge and keeps the height as a fraction', () => {
+  assert.equal(snapSide(100, 360), 'left');
+  assert.equal(snapSide(180, 360), 'right');
+  const left = releasePosition({ x: 30, y: 300 }, 360, 640, 120, 36);
+  assert.equal(left.side, 'left');
+  assert.ok(Math.abs(left.y - fractionForY(300, 640, 36)) < 1e-9);
+  assert.equal(releasePosition({ x: 200, y: 300 }, 360, 640, 120, 36).side, 'right');
+  assert.equal(releasePosition({ x: 0, y: -50 }, 360, 640, 120, 36).y, 0);
+  assert.equal(releasePosition({ x: 0, y: 5000 }, 360, 640, 120, 36).y, 1);
+  // round trip: placing at the released fraction lands on the same y
+  const rel = releasePosition({ x: 300, y: 222 }, 360, 640, 120, 36);
+  assert.equal(pillPlacement(rel, 360, 640, 120, 36).y, 222);
+});
+
+test('pillLabel priority: flash → task → model (routed = warn tone) → 识别中 → 新对话 → ring only', () => {
+  assert.deepEqual(pillLabel({ flash: '已发送 ✓', task: { kind: 'probe', round: 1, max: 5, hits: 0 }, model: 'gpt-5' }), { text: '已发送 ✓', tone: 'active' });
+  assert.deepEqual(pillLabel({ task: { kind: 'probe', round: 2, max: 5, hits: 1 }, model: 'gpt-5' }), { text: '探针 2/5 · 命中 1', tone: 'active' });
+  assert.deepEqual(pillLabel({ task: { kind: 'probe', round: 3, max: 10, hits: 3, draw: true } }), { text: '抽卡 3/10 · 识别 3', tone: 'active' });
+  assert.deepEqual(pillLabel({ task: { kind: 'cleanup', archived: 4 } }), { text: '清理中 · 已归档 4', tone: 'active' });
+  assert.deepEqual(pillLabel({ task: { kind: 'recovery' } }), { text: '回复异常 · 自动刷新…', tone: 'active' });
+  assert.deepEqual(pillLabel({ model: 'claude-opus-4-1' }), { text: 'claude-opus-4-1', tone: 'normal' });
+  assert.deepEqual(pillLabel({ model: 'gpt-5', routed: true, strength: 'high' }), { text: 'gpt-5 · high', tone: 'routed' });
+  assert.deepEqual(pillLabel({ pending: true }), { text: '识别中…', tone: 'muted' });
+  assert.deepEqual(pillLabel({ newChat: true }), { text: '新对话', tone: 'muted' });
+  assert.deepEqual(pillLabel({}), { text: '', tone: 'muted' });
+});
+
+test('turnHeadline mirrors HudFormat.headline', () => {
+  assert.equal(turnHeadline({}), '');
+  assert.equal(turnHeadline({ count: 1, firstModel: 'gpt-5' }), '共 1 轮 · 首轮 gpt-5');
+  assert.equal(turnHeadline({ count: 5, firstModel: 'a', routed: true, restored: true }), '共 5 轮 · 首轮 a · 当前已切换 · 本地记录');
+  assert.equal(turnHeadline({ count: 2 }), '共 2 轮');
 });
 
 test('fitFont shrinks long centre text but never below the floor', () => {
@@ -132,27 +182,62 @@ function fakeDom() {
   return { doc, shadow, events, mk, byId };
 }
 
-test('mount() builds the shadow host once and publishes the embed API', () => {
+test('mount() builds the shadow host once and publishes the embed API', async () => {
   const { doc, shadow } = fakeDom();
   const store = new Map();
   const win = { document: doc, innerWidth: 360, innerHeight: 640, localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) } };
   assert.equal(mount(win), true);
   const api = win.__ARENAKIT_EMBED__;
   assert.equal(api.root, shadow);
-  assert.ok(shadow.innerHTML.includes('<style>') && shadow.innerHTML.includes('id="ak-status"') && shadow.innerHTML.includes('class="ak-fab"'));
+  assert.ok(shadow.innerHTML.includes('<style>') && shadow.innerHTML.includes('id="ak-status"') && shadow.innerHTML.includes('class="ak-pill"'));
+  assert.ok(shadow.innerHTML.includes('class="ak-sheet"') && shadow.innerHTML.includes('class="ak-sheet-handle"'), 'bottom sheet with handle');
   assert.ok(shadow.innerHTML.includes(':host {') && !shadow.innerHTML.includes('html, body'));
   assert.equal(doc.body.children.length, 1);
   assert.equal(api.isOpen(), false);
+  const events = [];
+  api.onAction((n, a) => events.push(a ? n + ':' + a : n));
   api.toggle(); assert.equal(api.isOpen(), true);
+  const wrap = shadow.querySelector('.ak-pill-wrap');
+  assert.equal(wrap.dataset.hidden, 'true', 'pill fades out while the sheet is open');
   api.close(); assert.equal(api.isOpen(), false);
-  // ball API: percent → arc + palette; model → centre lines
-  const arc = shadow.querySelector('.ak-ring-arc');
-  api.setBall({ percent: 15, top: '15%', bottom: 'gpt 5', isModel: true, routed: true });
-  assert.equal(arc.attr_stroke, '#FF8A00');
-  assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.15 * 2 * Math.PI * 27).toFixed(3).slice(0, 5)));
-  let fired = null; api.onAction((n) => { fired = n; });
-  assert.equal(typeof api.setBusy, 'function');
-  assert.equal(fired, null);
+  assert.equal(wrap.dataset.hidden, 'false');
+  assert.deepEqual(events, ['open', 'close']);
+  // default placement: right edge, 18 % down
+  assert.equal(wrap.dataset.side, 'right');
+  assert.equal(wrap.style.left, (360 - 46 - PILL_MARGIN) + 'px');
+  // pill API: percent → arc length + band; label + tone; busy orbit
+  const arc = shadow.querySelector('.ak-pill-arc');
+  api.setPill({ percent: 15, label: 'gpt-5', tone: 'routed', busy: false });
+  assert.equal(arc.dataset.band, 'warning');
+  assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.15 * RING_C).toFixed(3)));
+  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '15');
+  assert.equal(shadow.querySelector('.ak-pill-label').textContent, 'gpt-5');
+  assert.equal(shadow.querySelector('.ak-pill-label').dataset.tone, 'routed');
+  api.setPill({ percent: null, label: '', tone: 'muted', busy: true });
+  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '–');
+  assert.equal(arc.dataset.band, 'unknown');
+  assert.equal(shadow.querySelector('.ak-pill').dataset.busy, 'true');
+  // legacy setBall still maps onto the pill
+  api.setBall({ percent: 72, top: '72%', bottom: 'claude-opus', isModel: true, routed: false });
+  assert.equal(shadow.querySelector('.ak-pill-label').textContent, 'claude-opus');
+  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '72');
+  // ⟳ zone toggle + loading state + back key + menu provider + confirm
+  api.setRefreshButton(false);
+  assert.equal(shadow.querySelector('.ak-pill').dataset.refresh, 'false');
+  api.setLoading(true);
+  assert.equal(shadow.querySelector('.ak-pill').dataset.refreshing, 'true');
+  assert.equal(shadow.querySelector('.ak-progress').dataset.show, 'true');
+  api.setLoading(false);
+  assert.equal(shadow.querySelector('.ak-pill').dataset.refreshing, 'false');
+  api.open();
+  assert.equal(api.handleBack(), true, 'back closes the sheet');
+  assert.equal(api.isOpen(), false);
+  assert.equal(api.handleBack(), false, 'nothing open → not consumed');
+  assert.equal(typeof api.setMenuProvider, 'function');
+  const p = api.confirm({ title: '刷新页面？', message: 'x' });
+  assert.equal(shadow.querySelector('.ak-dialog').dataset.show, 'true');
+  assert.equal(api.handleBack(), true, 'back cancels the dialog');
+  assert.equal(await p, false);
   // second mount is a no-op (idempotent across re-injection)
   assert.equal(mount(win), false);
   assert.equal(doc.body.children.length, 1);
@@ -211,60 +296,72 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(byId['ak-status'].textContent, '就绪（内嵌模式）');
   assert.ok(listeners['arenakit://trace'] && listeners['arenakit://page'], 'dock subscribed to both Rust events');
   const emit = (name, payload) => listeners[name]({ payload });
-  const top = shadow.querySelector('.ak-fab-top');
-  const bottom = shadow.querySelector('.ak-fab-bottom');
-  const fab = shadow.querySelector('.ak-fab');
-  const arc = shadow.querySelector('.ak-ring-arc');
+  const pct = shadow.querySelector('.ak-pill-pct');
+  const label = shadow.querySelector('.ak-pill-label');
+  const pill = shadow.querySelector('.ak-pill');
+  const arc = shadow.querySelector('.ak-pill-arc');
 
-  // quota → header text + ball centre percent (default ballCenter = percent + model)
+  // quota → header right column + ring (arc = 72 %, number inside)
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 72, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
-  assert.match(byId['ak-hud-pulse'].textContent, /^剩余额度 72%/);
-  assert.equal(top.textContent, '72%');
-  assert.equal(arc.attr_stroke, '#2563FF');
-  assert.equal(fab.dataset.dim, 'false');
+  assert.equal(byId['ak-hud-percent'].textContent, '72%');
+  assert.equal(byId['ak-hud-percent'].dataset.band, 'ok');
+  assert.match(byId['ak-hud-pulse'].textContent, /后重置$/);
+  assert.equal(pct.textContent, '72');
+  assert.equal(arc.dataset.band, 'ok');
+  assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.72 * RING_C).toFixed(3)));
 
-  // turn 1: token → status line; model → header (green) + ball bottom line
+  // turn 1: token → status line + "识别中…" on the pill; model → header + pill label
   emit('arenakit://trace', { stage: 'token', sessionId: 's1', runId: 'run_1' });
   assert.equal(byId['ak-hud-status'].textContent, '第 1 轮 · 已截获令牌，正在识别模型…');
+  assert.equal(label.textContent, '识别中…');
+  assert.equal(label.dataset.tone, 'muted');
   emit('arenakit://trace', { stage: 'model', sessionId: 's1', runId: 'run_1', complete: true, models: [{ model: 'claude-opus-4-1', provider: 'anthropic' }], spans: [] });
   await settle();
   assert.equal(byId['ak-hud-model'].textContent, 'claude-opus-4-1');
   assert.equal(byId['ak-hud-model'].dataset.known, 'true');
   assert.equal(byId['ak-hud-model'].dataset.routed, 'false');
   assert.equal(byId['ak-hud-status'].textContent, '第 1 轮 · claude-opus-4-1'); // reference TurnTracker wording
-  assert.equal(top.textContent, '72%');
-  assert.equal(bottom.textContent, 'claude-opus'); // 'claude-opus 4-1' is > 12 chars → name part only
-  assert.equal(fab.dataset.model, 'mixed');
-  assert.equal(fab.dataset.routed, 'false');
+  assert.equal(label.textContent, 'claude-opus-4-1');
+  assert.equal(label.dataset.tone, 'normal');
+  assert.equal(byId['ak-turn-head'].textContent, '共 1 轮 · 首轮 claude-opus-4-1');
+  assert.ok(byId['ak-turn-list'].innerHTML.includes('R1') && byId['ak-turn-list'].innerHTML.includes('ak-turn-ok'));
 
-  // turn 2 routed to another model → orange-yellow flag on header + ball
+  // turn 2 routed to another model → warn tone on header + pill, 已切换 tag, newest first
   emit('arenakit://trace', { stage: 'token', sessionId: 's1', runId: 'run_2' });
   emit('arenakit://trace', { stage: 'model', sessionId: 's1', runId: 'run_2', complete: true, models: [{ model: 'gpt-5', provider: 'openai' }], spans: [] });
   await settle();
   assert.equal(byId['ak-hud-model'].dataset.routed, 'true');
   assert.match(byId['ak-hud-status'].textContent, /^第 2 轮 · 已切换模型 → gpt-5/);
-  assert.equal(bottom.textContent, 'gpt 5');
-  assert.equal(fab.dataset.routed, 'true');
+  assert.equal(label.textContent, 'gpt-5');
+  assert.equal(label.dataset.tone, 'routed');
+  assert.equal(byId['ak-turn-head'].textContent, '共 2 轮 · 首轮 claude-opus-4-1 · 当前已切换');
+  const rows = byId['ak-turn-list'].innerHTML;
+  assert.ok(rows.indexOf('R2') < rows.indexOf('R1'), 'newest turn first');
+  assert.ok(rows.includes('已切换'));
 
-  // low quota → red ring
+  // low quota → danger band on ring + header
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 6, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
-  assert.equal(arc.attr_stroke, '#E11D2A');
-  assert.equal(top.textContent, '6%');
+  assert.equal(arc.dataset.band, 'danger');
+  assert.equal(pct.textContent, '6');
+  assert.equal(byId['ak-hud-percent'].dataset.band, 'danger');
 
-  // reply anomaly → alert rim
+  // reply anomaly → alert outline
   emit('arenakit://page', { name: 'reply-monitor', payload: { sessionId: 's1', runId: 'run_2', frames: 3, textChars: 0, errorFrames: 0, ended: 'done', durationMs: 1200, at: Date.now() } });
-  assert.equal(fab.dataset.alert, 'true');
+  assert.equal(pill.dataset.alert, 'true');
 
-  // new conversation → placeholder again
+  // new conversation → placeholder again, pill says 新对话
   emit('arenakit://page', { name: 'nav', payload: { sessionId: null, path: '/agent', title: '', agentPath: true } });
   assert.equal(byId['ak-hud-model'].textContent, '模型待确认');
   assert.equal(byId['ak-hud-status'].textContent, '等待会话流…');
-  assert.equal(top.textContent, '6%');
-  assert.equal(bottom.textContent, '');
+  assert.equal(pct.textContent, '6');
+  assert.equal(label.textContent, '新对话');
+  assert.ok(byId['ak-turn-list'].innerHTML.includes('暂无轮次记录'));
 
   // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
   assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true }));
-  assert.equal(byId['ak-ball-field'].hidden, false, 'ball centre picker shown in embedded mode');
+  assert.equal(byId['ak-pill-refresh'].checked, true, 'pill ⟳ switch defaults on');
+  assert.equal(byId['ak-auto-refresh'].checked, true, 'auto-refresh switch defaults on');
+  assert.equal(sandbox.__ARENAKIT_EMBED__.host.dataset.embed, 'true');
   const capture = byId['ak-capture-on'];
   capture.checked = false;
   capture.listeners.change[0]();
@@ -276,4 +373,32 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   monitor.checked = false;
   monitor.listeners.change[0]();
   assert.equal(byId['ak-monitor-head'].textContent, '回复监控已关闭（设置 → 回复监控）。');
+
+  // tabs: click 探针 → page switch persisted in prefs
+  const tabs = {};
+  // fake querySelectorAll returns [], so drive showTab through the exported state instead
+  assert.equal(typeof sandbox.__ARENAKIT_EMBED__.handleBack, 'function');
+  void tabs;
+
+  // status pill ⟳ → requestReload marks sessionStorage + reloads the page, pill spins
+  let reloaded = 0;
+  sandbox.location.reload = () => { reloaded++; };
+  sandbox.sessionStorage = { data: {}, setItem(k, v) { this.data[k] = v; }, getItem(k) { return this.data[k] ?? null; }, removeItem(k) { delete this.data[k]; } };
+  const wrapEl = shadow.querySelector('.ak-pill-wrap');
+  wrapEl.listeners.pointerdown[0]({ pointerId: 1, clientX: 340, clientY: 130, button: 0 });
+  wrapEl.listeners.pointerup[0]({ pointerId: 1, clientX: 340, clientY: 130 });
+  await settle();
+  // the fake refresh zone rect spans x 10..56, so this tap opened the panel instead
+  assert.equal(sandbox.__ARENAKIT_EMBED__.isOpen(), true);
+  sandbox.__ARENAKIT_EMBED__.close();
+  wrapEl.listeners.pointerdown[0]({ pointerId: 2, clientX: 30, clientY: 130, button: 0 });
+  wrapEl.listeners.pointerup[0]({ pointerId: 2, clientX: 30, clientY: 130 });
+  await settle();
+  assert.equal(reloaded, 1, 'tap on the ⟳ zone reloads');
+  assert.ok(sandbox.sessionStorage.data['arenakit.reloading'], 'reload stamped for the boot progress bar');
+  assert.equal(pill.dataset.refreshing, 'true');
+  wrapEl.listeners.pointerdown[0]({ pointerId: 3, clientX: 30, clientY: 130, button: 0 });
+  wrapEl.listeners.pointerup[0]({ pointerId: 3, clientX: 30, clientY: 130 });
+  await settle();
+  assert.equal(reloaded, 1, '800 ms debounce swallows the second tap');
 });
