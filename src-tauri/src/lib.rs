@@ -130,11 +130,14 @@ fn is_live(app: &tauri::AppHandle, session_id: &str, generation: u64) -> bool {
 /// `lastToken` whenever a lookup ends).
 fn forget_token(app: &tauri::AppHandle, token: &str) {
     let state = app.state::<TraceState>();
-    if let Ok(mut last) = state.last_token.lock() {
+    // Bind the lock result so its temporary is dropped before `state`
+    // (tail-expression temporaries outlive locals otherwise — E0597).
+    let guard = state.last_token.lock();
+    if let Ok(mut last) = guard {
         if *last == token {
             last.clear();
         }
-    }
+    };
 }
 
 /// Called when snoop.js hands back a {sessionId, token}. Validates the token,
