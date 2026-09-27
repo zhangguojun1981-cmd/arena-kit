@@ -2622,6 +2622,10 @@ const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn'
 function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
   page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
+  // ENI prefs are pushed on every page load (and again on every change) so
+  // the injected eni.js stays in sync with the dock even after a SPA
+  // navigation that wipes page context.
+  page('eniSet', !!state.prefs.eniOn, state.prefs.eniText || '');
 }
 // (桌面布局 option removed: macOS uses the split-view dock exclusively now;
 // the embedded pill + bottom sheet is Android-only. Historical
@@ -3183,6 +3187,13 @@ function restoreFromHistory(sessionId) {
 // ── module: navigation (restore per-conversation display) ───────────────
 onPage('probe-result', (r) => { if (state.rpc) state.rpc.deliver(r); });
 
+// Page event sent by the ENI badge (injected/eni.js) — open the dock 更多
+// tab so the user can edit the prompt.
+onPage('openDock', (p) => {
+  const tab = (p && typeof p === 'object' && p.tab) || 'more';
+  showTab(tab);
+});
+
 onPage('nav', (n) => {
   if (!n || typeof n !== 'object') return;
   if (n.reason === 'init') applyPageFlags(); // fresh page load: injected scripts start with flags unset
@@ -3667,6 +3678,14 @@ function wireControls() {
   bind('ak-plus', 'plus', (v) => page('plusSet', v));
   q('ak-eni-on').checked = !!state.prefs.eniOn;
   q('ak-eni-text').value = state.prefs.eniText || '';
+  // Push on every toggle so the page hook flips immediately (the textarea
+  // save still re-pushes; this just makes the switch live).
+  q('ak-eni-on').addEventListener('change', () => {
+    const v = q('ak-eni-on').checked;
+    const t = q('ak-eni-text').value;
+    savePrefs({ eniOn: v, eniText: t });
+    page('eniSet', v, t);
+  });
 }
 
 // ── boot ────────────────────────────────────────────────────────────────
