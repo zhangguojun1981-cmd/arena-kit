@@ -192,34 +192,9 @@ function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
   page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
 }
-// 桌面布局: 'pill' (page-embedded status pill + bottom sheet, same as Android,
-// default) | 'dock' (split view with the dock in its own webview on the right).
-// Rust reads prefs.desktopLayout at startup (lib.rs desktop_layout), so a
-// change applies after a restart.
-const LAYOUTS = ['pill', 'dock'];
-// What is actually running (a saved preference applies only after a restart).
-const currentLayout = () => (EMBED ? 'pill' : 'dock');
-function wireLayout() {
-  const row = q('ak-layout-row');
-  if (!row) return;
-  if (!DESKTOP) { row.hidden = true; return; }
-  row.hidden = false;
-  const running = currentLayout();
-  const render = (picked) => {
-    root.querySelectorAll('[data-layout-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.layoutPick === picked)));
-    const note = q('ak-layout-note');
-    if (note) note.textContent = picked === running
-      ? (picked === 'pill' ? '胶囊贴在页面边缘：单击开面板、右键 / 长按快捷菜单、拖动自动贴边；⌘R 刷新、Esc 关闭。' : '面板固定在窗口右侧；切到胶囊布局可获得与安卓一致的体验。')
-      : '已保存，重启 ArenaKit 后生效。';
-  };
-  render(LAYOUTS.includes(state.prefs.desktopLayout) ? state.prefs.desktopLayout : running);
-  root.querySelectorAll('[data-layout-pick]').forEach((b) => b.addEventListener('click', () => {
-    const picked = LAYOUTS.includes(b.dataset.layoutPick) ? b.dataset.layoutPick : 'pill';
-    savePrefs({ desktopLayout: picked });
-    render(picked);
-    setStatus(picked === running ? '布局未变' : `桌面布局已设为「${picked === 'pill' ? '悬浮胶囊' : '右侧面板'}」，重启 ArenaKit 后生效`);
-  }));
-}
+// (桌面布局 option removed: macOS uses the split-view dock exclusively now;
+// the embedded pill + bottom sheet is Android-only. Historical
+// `prefs.desktopLayout` values are ignored.)
 
 // 悬浮球显示 (embedded pill only — the desktop dock has no pill, the row is
 // hidden via CSS). Three modes:
@@ -249,7 +224,6 @@ function wireBallCenter() {
 }
 
 function wireSettings() {
-  wireLayout();
   wireBallCenter();
   for (const [flag, key, id] of FLAG_PREFS) {
     const el = q(id);

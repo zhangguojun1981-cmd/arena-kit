@@ -59,23 +59,22 @@ const LEADERBOARD_JS: &str = include_str!("../../injected/leaderboard.js");
 // the default "pill" layout on desktop (same status pill + bottom sheet UI).
 const DOCK_EMBED_JS: &str = include_str!("../../src/embed/dock-embedded.gen.js");
 
-/// Desktop window layout (设置 → 桌面布局, `prefs.desktopLayout`), read from the
-/// store at startup. `Pill` = one webview, the embedded pill + bottom sheet
-/// (Android parity, default); `Dock` = split view with the dock in its own
-/// webview on the right.
+/// Desktop window layout: macOS uses a fixed split-view (`arena.ai` webview
+/// on the left, native dock in its own webview on the right). The
+/// `prefs.desktopLayout` setting is no longer honoured — the embedded pill
+/// is Android-only.
 #[cfg(any(desktop, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DesktopLayout {
-    Pill,
     Dock,
 }
 
 #[cfg(any(desktop, test))]
 fn desktop_layout(prefs: &Value) -> DesktopLayout {
-    match prefs.get("desktopLayout").and_then(|v| v.as_str()) {
-        Some("dock") => DesktopLayout::Dock,
-        _ => DesktopLayout::Pill,
-    }
+    // Historical `desktopLayout` prefs are accepted but ignored: the dock
+    // split view is the only macOS layout now.
+    let _ = prefs.get("desktopLayout");
+    DesktopLayout::Dock
 }
 
 /// Trace polling: 8 attempts, 3 s apart (extension background.js parity).
@@ -625,36 +624,14 @@ pub fn run() {
             app.manage(store::Store::open(data_dir.join("arenakit-store.json")));
             app.manage(TraceState::default());
 
-            // Desktop, default "pill" layout: ONE webview — the arena.ai page
-            // with the dock embedded as a status pill + bottom sheet, exactly
-            // like Android (设置 → 桌面布局 switches to the split view below).
+            // Desktop: split-view window. `arena.ai` webview on the left,
+            // ArenaKit native dock webview on the right. The dock lives in
+            // its own webview (not injected into the page), so arena redesigns
+            // can't break it. The embedded pill is Android-only now; the
+            // `prefs.desktopLayout` setting was removed.
             #[cfg(desktop)]
-            let layout = desktop_layout(&app.state::<store::Store>().get("prefs"));
-            #[cfg(desktop)]
-            if layout == DesktopLayout::Pill {
-                let init = build_init_script(Some(DOCK_EMBED_JS), "desktop");
-                let nav_app = app.handle().clone();
-                let _arena = tauri::WebviewWindowBuilder::new(
-                    app,
-                    "arena",
-                    WebviewUrl::External("https://arena.ai".parse().unwrap()),
-                )
-                .title("ArenaKit")
-                .inner_size(1280.0, 860.0)
-                .min_inner_size(480.0, 600.0)
-                .initialization_script(&init)
-                // Links to other sites open in a separate window, never over
-                // the conversation (links.rs).
-                .on_navigation(move |url| route_navigation(&nav_app, url))
-                .build()?;
-            }
-
-            // Desktop, "dock" layout: split-view window: arena.ai webview on
-            // the left, ArenaKit native dock webview on the right. The dock
-            // lives in its own webview (not injected into the page), so arena
-            // redesigns can't break it.
-            #[cfg(desktop)]
-            if layout == DesktopLayout::Dock {
+            {
+                let _ = desktop_layout(&app.state::<store::Store>().get("prefs"));
                 let init = build_init_script(None, "desktop");
                 let width = 1360.0_f64;
                 let height = 900.0_f64;
@@ -762,12 +739,15 @@ mod tests {
     }
 
     #[test]
-    fn desktop_layout_defaults_to_the_pill() {
+    fn desktop_layout_is_always_dock_on_macos() {
+        // macOS / desktop only ships the split-view (Dock) layout now — the
+        // embedded pill is Android-only. Historical `desktopLayout` prefs are
+        // accepted but ignored.
         assert_eq!(desktop_layout(&json!({"desktopLayout": "dock"})), DesktopLayout::Dock);
-        assert_eq!(desktop_layout(&json!({"desktopLayout": "pill"})), DesktopLayout::Pill);
-        assert_eq!(desktop_layout(&json!({"desktopLayout": 3})), DesktopLayout::Pill);
-        assert_eq!(desktop_layout(&json!({})), DesktopLayout::Pill);
-        assert_eq!(desktop_layout(&Value::Null), DesktopLayout::Pill);
+        assert_eq!(desktop_layout(&json!({"desktopLayout": "pill"})), DesktopLayout::Dock);
+        assert_eq!(desktop_layout(&json!({"desktopLayout": 3})), DesktopLayout::Dock);
+        assert_eq!(desktop_layout(&json!({})), DesktopLayout::Dock);
+        assert_eq!(desktop_layout(&Value::Null), DesktopLayout::Dock);
     }
 
     #[test]

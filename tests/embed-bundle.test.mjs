@@ -448,11 +448,11 @@ test('the whole bundle boots the dock inside a page without a Tauri runtime', as
   assert.equal(byId['ak-status'].textContent, '浏览器预览模式(无 Tauri 运行时)');
   assert.ok(byId['ak-history-list'].innerHTML.includes('暂无记录'));
   assert.equal(byId['ak-unlock-opus'].checked, true); // DEFAULT_PREFS applied through the shadow root
-  // no platform stamp (Android / preview): the 桌面布局 row stays hidden
-  assert.equal(byId['ak-layout-row'].hidden, true);
+  // no platform stamp (Android / preview): nothing platform-specific to assert.
+  // The dock is the same markup either way — only the runtime hint differs.
 });
 
-test('embedded dock on desktop (platform stamp): 桌面布局 row is shown and the hints talk keyboard, not touch', async () => {
+test('embedded dock on desktop (platform stamp): keyboard refresh hint replaces the touch one', async () => {
   const { doc, byId } = fakeDom();
   const store = new Map();
   const sandbox = {
@@ -468,9 +468,9 @@ test('embedded dock on desktop (platform stamp): 桌面布局 row is shown and t
   vm.createContext(sandbox);
   vm.runInContext(read('src/embed/dock-embedded.gen.js'), sandbox, { filename: 'dock-embedded.gen.js' });
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-  assert.equal(byId['ak-layout-row'].hidden, false);
-  assert.ok(byId['ak-layout-note'].textContent.includes('⌘R'), 'running layout (pill) explained');
-  assert.ok(byId['ak-refresh-note'].textContent.includes('F5'), 'touch-only hint replaced by the shortcuts');
+  // The dock split-view is the only macOS layout now; the 桌面布局 row was
+  // removed. The keyboard refresh hint still replaces the touch one.
+  assert.equal(byId['ak-refresh-note'].textContent.includes('F5'), true, 'touch-only hint replaced by the shortcuts');
 });
 
 /* Runtime-mode boot with a Tauri stand-in (like src/embed/preview.html):
