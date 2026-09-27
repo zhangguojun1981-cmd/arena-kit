@@ -58,8 +58,9 @@ jobs:
           name: arenakit-macos-dmg
           path: src-tauri/target/release/bundle/dmg/*.dmg
 
-  # Android .apk — mirrors arena-trace-android's signing approach
-  # (keystore in secrets; unsigned debug apk when secrets absent).
+  # Android .apk — debug-signed arm64 apk (installable on a device without a
+  # release keystore). gen/android is not committed; `tauri android init`
+  # regenerates it here.
   android-apk:
     needs: [rust-test, node-test]
     runs-on: ubuntu-latest
@@ -67,26 +68,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: android
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - name: Install NDK
-        run: sdkmanager "ndk;26.1.10909125"
+      # setup-android v3 tried to install the removed legacy "tools" package and
+      # failed; v4 takes an explicit package list (NDK included).
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
       - name: Android init + build
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
         run: |
-          cargo tauri android init || true
-          cargo tauri android build --apk
+          export NDK_HOME="$ANDROID_HOME/ndk/26.1.10909125"
+          export ANDROID_NDK_HOME="$NDK_HOME"
+          echo "NDK_HOME=$NDK_HOME"
+          cargo tauri android init --ci --skip-targets-install
+          cargo tauri icon src-tauri/icons/icon.png || true
+          cargo tauri android build --apk --debug --target aarch64
       - uses: actions/upload-artifact@v4
         with:
           name: arenakit-android-apk
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
