@@ -102,6 +102,7 @@
 - `cargo tauri android build --apk --target aarch64` 出 release arm64 apk(优化 + strip,debug 包带符号约 190 MB),CI 再用 `zipalign` + `apksigner` 以仓库内固定的调试密钥 `.github/android/debug.keystore`(PKCS12,别名 `arenakitdebug`,密码 `android`)签名——每次构建签名一致,可覆盖安装。这不是商店密钥;正式发布时换成 secrets 里的密钥。
 - **dock 内嵌模式**:mobile Tauri 一窗一 webview(`Window::add_child` 仅桌面),所以安卓不建第二个 webview,而是 `node scripts/bundle-dock.mjs` 把 `src/dock.js` + `src/lib/*` + `src/embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`(已提交,CI `--check` 防过期),Rust `include_str!` 并追加到 init 脚本末尾;页面加载后挂载状态胶囊 + 底部面板(shadow DOM,样式互不干扰)。改了 `src/` 记得重新跑 bundler(测试 `embed-bundle.test.mjs` 会提示)。
 - **桌面布局(macOS 与安卓同一套 UI)**:桌面默认也走内嵌模式——`lib.rs` 启动时 `desktop_layout(store.get("prefs"))` 读 `prefs.desktopLayout`:`pill`(默认)= 单个 `WebviewWindow "arena"`(1280×860,init 脚本含 `DOCK_EMBED_JS`,平台标记 `__ARENAKIT_PLATFORM__="desktop"`);`dock` = 原分栏(main 窗口 + arena / dock 子 webview,dock 320 px)。dock「更多 → 设置 → 桌面布局」写入该偏好,重启生效(dock.js `wireLayout`,行只在桌面显示)。`shell.js` 桌面补齐:胶囊 `contextmenu` = 长按菜单、window 捕获阶段 `keydown`:Esc → `handleBack()`(对话框 → 菜单 → 面板,无层打开则不拦截)、⌘/Ctrl+R / F5 → `fire('refresh')`(dock `requestReload`:防抖、忙碌确认、进度条)、⌘[ / ⌘] → `history.back/forward`(编辑框内不拦截);`@media (hover: hover)` 悬停样式。桌面 `capabilities/arena.json` 需 `core:event:allow-listen/unlisten`(内嵌 dock 订阅 `arenakit://trace` / `arenakit://page`)。
+- **桌面菜单栏「页面」**(`src-tauri/src/menu.rs`,`Menu::default` + 追加子菜单,保留 Edit 复制粘贴 / Window ⌘W 关窗):刷新 ⌘R、后退 ⌘[、前进 ⌘]、在浏览器中打开 ⌘⇧O、复制链接 ⌘⇧C —— 安卓链接页工具栏(⟳ / 在浏览器中打开 / 复制 / ✕)的桌面对应。分发:焦点在 `tab-*` 链接窗口 → 直接 `eval` / `url()` 处理;否则针对 arena 页面:刷新 / 前进 / 后退经 `arenakit://page` 事件 `menu` 交给 dock(与胶囊 ⟳ 同一条 `requestReload` 路径:防抖、忙碌确认、进度条),在浏览器中打开 / 复制链接用 `get_webview("arena").url()` 原生完成(macOS `pbcopy`,文本走 stdin 不经 shell)。macOS 上菜单快捷键先于网页 keydown,所以 ⌘R 由菜单处理;shell.js 里的 ⌘R / F5 是 Windows / Linux 与无菜单场景的兜底。
 - 验收:真机安装,登录、截令牌、额度、注入脚本、抽屉里的全部模块可用。
 
 ---
@@ -225,6 +226,7 @@ Rust → dock 事件:
 | `reply-monitor` | monitor.js | `{sessionId, ended:'done'|'abort'|'stalled'|'http', frames, bytes, textChars, errorFrames, lastError, durationMs, idleMs, generating, at}` |
 | `watch` | watchdog.js | `{k:'empty'|'error:<≤40 字>', path, generating, len, at, act}`(仅 `/agent*` `/c/*`;dock 侧再截到 24 字) |
 | `link-tab` | links.js(原生 LinkTab 经 `setOpen` 回写) | `{open}` |
+| `menu` | Rust `menu.rs`(桌面菜单栏「页面」,非页面发出) | `{action: 'reload' \| 'back' \| 'forward'}` → dock `requestReload('menu')` / `navBack` / `navForward` |
 | `pulse` | pulse.js | `{ok:true, percent, refreshedAt, at}` / `{ok:false, error, retryAfterMs, at}` |
 
 dock → 页面:`arena_command` eval;约定入口 `window.__ARENAKIT__.dispatch(name, payload)`(如 `pulse-refresh`)、`window.ArenaProbe.call(action, argsJson, reqId)`(探针 RPC)、`__AK_*_SET__`(增强脚本开关)。

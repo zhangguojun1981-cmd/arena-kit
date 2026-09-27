@@ -982,6 +982,15 @@ onPage('reply-monitor', (summary) => {
 });
 
 // ── in-app link tab (native layer on Android; injected/links.js reports its state) ──
+// Desktop menu bar 「页面」 (src-tauri/src/menu.rs): reload goes through the
+// same requestReload as the pill ⟳ (debounce · busy confirm · progress bar).
+onPage('menu', (p) => {
+  const action = p && p.action;
+  if (action === 'reload') requestReload('menu');
+  else if (action === 'back') page('navBack');
+  else if (action === 'forward') page('navForward');
+});
+
 onPage('link-tab', (p) => {
   const open = !!(p && p.open);
   setStatus(open ? '链接页已打开（返回键 / ✕ 关闭）' : '链接页已关闭');

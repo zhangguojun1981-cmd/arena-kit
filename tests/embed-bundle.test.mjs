@@ -507,6 +507,23 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
     watch(t0 + 123_000);
     await settle();
     assert.equal(reloaded, 2, 'auto refresh off');
+
+    // desktop menu bar 「页面」 (menu.rs emits the page event `menu`): reload
+    // goes through requestReload (same debounce), back / forward hit history.
+    let back = 0, forward = 0;
+    sandbox.history.back = () => { back++; };
+    sandbox.history.forward = () => { forward++; };
+    Date.now = () => t0 + 200_000;
+    emit('arenakit://page', { name: 'menu', payload: { action: 'reload' } });
+    await settle();
+    assert.equal(reloaded, 3, '菜单 → 刷新');
+    emit('arenakit://page', { name: 'menu', payload: { action: 'reload' } });
+    await settle();
+    assert.equal(reloaded, 3, 'debounced like every other reload source');
+    emit('arenakit://page', { name: 'menu', payload: { action: 'back' } });
+    emit('arenakit://page', { name: 'menu', payload: { action: 'forward' } });
+    emit('arenakit://page', { name: 'menu', payload: { action: 'bogus' } });
+    assert.deepEqual([back, forward], [1, 1]);
   } finally {
     Date.now = realNow;
   }

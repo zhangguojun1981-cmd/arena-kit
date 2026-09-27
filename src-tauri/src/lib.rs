@@ -13,6 +13,8 @@
 //! through the same commands/events as the desktop dock.
 
 pub mod links;
+#[cfg(desktop)]
+mod menu;
 pub mod pulse;
 pub mod store;
 pub mod trace;
@@ -697,6 +699,12 @@ pub fn run() {
             // Mobile: one full-screen webview ("arena", also the window label —
             // capabilities/arena*.json match the webview label). The dock is
             // part of the init script and mounts itself inside the page.
+            // Desktop menu bar: 「页面」 (刷新 ⌘R · 后退 ⌘[ · 前进 ⌘] · 在浏览器中打开
+            // · 复制链接) on top of Tauri's default Edit / Window menus — the
+            // desktop counterpart of the Android link tab toolbar.
+            #[cfg(desktop)]
+            menu::install(app)?;
+
             #[cfg(mobile)]
             {
                 let init = build_init_script(Some(DOCK_EMBED_JS), "mobile");

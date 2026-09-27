@@ -28,7 +28,7 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | **刷新**:胶囊 ⟳ / 表头 ⟳ / 工具页 / 快捷菜单 / 对话滚到底后按住上拉,刷新时顶部进度条;**回复出错或空白时自动刷新**(看门狗,可关) | arena-trace-android (requestReload / ReplyWatchdog) | B 取证 |
 | **页面链接标签**:点到其他站点的链接、target=_blank、window.open 在应用内「链接页」打开(安卓原生 WebView 图层:✕ / 标题 / 域名 / ⟳ / 在浏览器中打开 / 复制 / 分享;桌面独立窗口),对话不被替换;登录 / 验证域名留在原地,mailto / tel 交给其他应用 | arena-trace-android (LinkPolicy / LinkTab) | B 取证 |
 | **设置**:主题(跟随系统 / 亮色 / 暗色)、桌面布局(悬浮胶囊 / 右侧面板,仅桌面)、截获会话流 / 额度轮询 / 回复监控 / 悬浮窗刷新按钮 / 自动刷新开关 | arena-trace-android (DayNight) / arena-trace-inspector(监听开关) | 通用 |
-| **macOS 键鼠**:胶囊右键 = 长按快捷菜单、Esc 逐层关闭(对话框 → 菜单 → 面板)、⌘R / F5 经 dock 刷新(防抖 + 忙碌确认 + 进度条)、⌘[ / ⌘] 页面前进后退、悬停高亮 | ArenaKit 新增(桌面对齐安卓) | 通用 |
+| **macOS 键鼠 + 菜单栏**:胶囊右键 = 长按快捷菜单、Esc 逐层关闭(对话框 → 菜单 → 面板)、悬停高亮;菜单栏「页面」:刷新 ⌘R(经 dock:防抖 + 忙碌确认 + 进度条)、后退 ⌘[ / 前进 ⌘]、在浏览器中打开 ⌘⇧O、复制链接 ⌘⇧C,对焦点所在的链接标签窗口同样生效(对应安卓链接页工具栏) | ArenaKit 新增(桌面对齐安卓) | 通用 |
 
 完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 
