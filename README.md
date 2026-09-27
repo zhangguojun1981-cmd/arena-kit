@@ -44,8 +44,9 @@ cargo install tauri-cli --version "^2"
 # 桌面开发
 cargo tauri dev
 
-# 出 macOS dmg
+# 出 macOS dmg（当前机器架构；CI 同时出 Apple 芯片 *_aarch64.dmg 与 Intel *_x64.dmg）
 cargo tauri build
+cargo tauri build --target x86_64-apple-darwin   # 在 Apple 芯片机器上交叉出 Intel 包（先 rustup target add x86_64-apple-darwin）
 
 # 出 Android apk(需 Android SDK/NDK;dock 以内嵌模式装进页面,见 docs/ARCHITECTURE.md)
 node scripts/bundle-dock.mjs   # 改过 src/ 后重新生成 src/embed/dock-embedded.gen.js
@@ -71,7 +72,7 @@ arena-kit/
 ├── tests/              node:test 单测(逻辑库直接 import;注入脚本用 node:vm 跑)
 ├── scripts/            check-syntax.mjs、bundle-dock.mjs(安卓内嵌 dock 打包)、make-icons.py(图标渲染)
 ├── vendor/             上游项目来源与许可说明
-└── .github/workflows/  CI:node-test → rust-test → dmg + apk → Release(附件为 .dmg/.apk 原文件)
+└── .github/workflows/  CI:node-test → rust-test → dmg(aarch64 + x64)+ apk → Release(附件为 .dmg/.apk 原文件)
 ```
 
 ## 上游与许可

@@ -46,29 +46,46 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib
 
-  # macOS .dmg (Apple Silicon). The artifact is only the hand-over to the
-  # release job below — download the .dmg from the Release, not from here.
+  # macOS .dmg — one per CPU architecture: Apple Silicon (aarch64) and Intel
+  # (x86_64, cross-compiled on the same arm64 runner). Tauri names the files
+  # ArenaKit_<version>_aarch64.dmg / ArenaKit_<version>_x64.dmg. The artifact
+  # is only the hand-over to the release job below — download the .dmg from
+  # the Release, not from here.
   macos-dmg:
     needs: [rust-test, node-test]
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: apple-silicon
+          - target: x86_64-apple-darwin
+            arch: intel
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.target }}
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
-      - name: Build dmg
-        run: cargo tauri build
+      - name: Build dmg (${{ matrix.target }})
+        run: cargo tauri build --target ${{ matrix.target }}
       - name: Collect
         run: |
           mkdir -p out
-          cp src-tauri/target/release/bundle/dmg/*.dmg out/
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg out/
           ls -la out
+          # Sanity: the binary inside the .app is built for the requested CPU.
+          app=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -name '*.app' -maxdepth 1 | head -n 1)
+          lipo -archs "$app/Contents/MacOS/"* || file "$app/Contents/MacOS/"*
       - uses: actions/upload-artifact@v4
         with:
-          name: transfer-dmg
+          name: transfer-dmg-${{ matrix.arch }}
           path: out/*.dmg
           if-no-files-found: error
           retention-days: 1
@@ -177,16 +194,16 @@ jobs:
         run: |
           ls -la dist
           tag="build-${RUN}"
-          notes="自动构建 #${RUN} · 分支 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。Android 为 arm64 release 包，用仓库内固定的调试密钥签名（每次构建签名一致，可覆盖安装）；macOS dmg 未做 Apple 签名/公证，首次打开若提示已损坏请执行 xattr -cr /Applications/ArenaKit.app。"
+          notes="自动构建 #${RUN} · 分支 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。macOS 有两个 dmg：Apple 芯片（M 系列）用 *_aarch64.dmg，Intel 芯片用 *_x64.dmg。Android 为 arm64 release 包，用仓库内固定的调试密钥签名（每次构建签名一致，可覆盖安装）；macOS dmg 未做 Apple 签名/公证，首次打开若提示已损坏请执行 xattr -cr /Applications/ArenaKit.app。"
           gh release create "$tag" dist/* \
             --repo "$REPO" --target "$SHA" --prerelease \
             --title "ArenaKit build #${RUN}" --notes "$notes"
           url="https://github.com/${REPO}/releases/tag/${tag}"
           echo "release=$url" >> "$GITHUB_OUTPUT"
-          # Keep the 3 newest build-* prereleases; every push makes one.
+          # Keep only the newest build-* prerelease (this one); every push makes one.
           gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
             --jq '.[] | select(.isPrerelease and (.tagName|startswith("build-"))) | .tagName' \
-            | sort -t- -k2,2nr | tail -n +4 \
+            | sort -t- -k2,2nr | tail -n +2 \
             | while read -r old; do gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true; done
           {
             echo "## 构建产物（直接下载，不是 zip）"

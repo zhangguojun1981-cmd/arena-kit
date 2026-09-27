@@ -242,4 +242,4 @@ cargo test --manifest-path src-tauri/Cargo.toml   # trace/usage/store/pulse 单�
 node scripts/bundle-dock.mjs          # 重新生成安卓内嵌 dock 包(src/embed/*.gen.js);--check 只校验
 ```
 
-CI(`.github/workflows/build.yml`):`node-test`(含 bundler `--check`)→ `rust-test` → `macos-dmg` / `android-apk` → `release`(把 `.dmg` / `.apk` 原文件作为 `build-<run>` 预发布的附件发布,需 `permissions: contents: write`);`main` 与 `arena/**` 分支推送即触发,也可 `gh workflow run build.yml --ref <branch>` 手动触发。
+CI(`.github/workflows/build.yml`):`node-test`(含 bundler `--check`)→ `rust-test` → `macos-dmg`(矩阵:`aarch64-apple-darwin` + `x86_64-apple-darwin`,同一台 arm64 runner 交叉编译 Intel 包,产物 `*_aarch64.dmg` / `*_x64.dmg`)/ `android-apk` → `release`(把 `.dmg` / `.apk` 原文件作为 `build-<run>` 预发布的附件发布,只保留最新一个 `build-*`,需 `permissions: contents: write`);`main` 与 `arena/**` 分支推送即触发,也可 `gh workflow run build.yml --ref <branch>` 手动触发。
