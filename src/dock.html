@@ -78,7 +78,7 @@
   <section class="ak-mod">
     <div class="ak-mod-head"><span>自动探针（抽卡）</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">
-      <div class="ak-sub">探针会新建对话并发送真实的算式消息（消耗额度），直到命中目标模型；命中的对话按「前缀 + 模型-序号」重命名。</div>
+      <div class="ak-sub">探针会新建对话并发送真实的算式消息（消耗额度），直到命中目标模型；命中的对话按「前缀 + 模型-序号」重命名。「自动抽卡」则不看目标：固定抽满轮数，每个对话按「前缀 + 模型」命名。</div>
       <label class="ak-field"><span>目标模型（逗号分隔；别名 opus5 / fable5 / gpt6，或 /正则/）</span>
         <input id="ak-probe-targets" class="ak-input" type="text" placeholder="opus5, fable5, gpt6" autocomplete="off" />
       </label>
@@ -89,6 +89,7 @@
       </div>
       <div class="ak-btns">
         <button class="ak-btn ak-btn-sm" data-action="probe-start">开始探针</button>
+        <button class="ak-btn ak-btn-sm" data-action="draw-start" title="按「最多轮数」连抽：每轮新建对话、发一条算式、识别模型；勾选「命中后重命名」时每个对话都按模型名重命名（不加序号），不看目标、不提前停">自动抽卡</button>
         <button class="ak-btn ak-btn-sm" data-action="probe-stop" disabled>停止</button>
       </div>
       <div id="ak-probe-state" class="ak-sub"></div>

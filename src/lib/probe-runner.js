@@ -35,7 +35,7 @@ function makeToken() {
 
 /* Resolve a title for a probe hit: "<model>-<NNN>" (Android) or, via the
  * dock, "<prefix><model>-<NNN>" (rename.js buildTitle). */
-const defaultTitle = (model, suffix) => `${model}-${suffix}`;
+const defaultTitle = (model, suffix) => (suffix ? `${model}-${suffix}` : String(model));
 
 export function createProbeController({
   rpc,                                  // { call(action, args) → Promise<data> }
@@ -118,26 +118,48 @@ export function createProbeController({
     }
   }
 
-  /* cfg: { targets: string[], maxRounds, findAll, autoRename } */
+  /* Draw mode (extension "自动抽卡"): name the round's chat after its model,
+   * no suffix counter, never stops early. */
+  async function renameDraw(tok, sessionId, model) {
+    const title = buildTitle(model, '');
+    try {
+      await call(tok, 'rename', { sessionId, title });
+      onProgress(`已重命名为 ${title}`);
+      return title;
+    } catch (e) {
+      if (isCancelled(e)) throw e;
+      onProgress(`重命名失败：${e.message || e}`);
+      return null;
+    }
+  }
+
+  /* cfg: { mode: 'probe' | 'draw', targets: string[], maxRounds, findAll, autoRename }
+   *   probe — until the target models are hit (extension "自动探针" / Android probe)
+   *   draw  — fixed number of rounds, every round's chat renamed to its model
+   *           (extension "自动抽卡"); targets are ignored, misses don't exist. */
   async function start(cfg) {
     const tok = begin('probe');
     if (!tok) { onProgress(mode === 'cleanup' ? '清理进行中，请先停止' : '探针已在运行'); return null; }
-    const targets = [...(cfg.targets || [])];
+    const draw = cfg.mode === 'draw';
+    const targets = draw ? [] : [...(cfg.targets || [])];
     const maxRounds = Math.min(100, Math.max(1, Number(cfg.maxRounds) || 5));
     const findAll = cfg.findAll !== false;
     const hits = [];
     const sessions = [];
+    const drawn = [];      // draw mode: { round, sessionId, models, title }
     let renamedAny = false;
     let summary = '';
     onProbeState(0, maxRounds, 0, true);
     try {
-      if (!targets.length) throw new Error('请填写至少一个目标');
-      onProgress(`开始探针 · 目标 ${targets.join('、')} · ${findAll ? '命中全部才停' : '命中即停'} · 最多 ${maxRounds} 轮`);
+      if (!draw && !targets.length) throw new Error('请填写至少一个目标');
+      onProgress(draw
+        ? `开始抽卡 · ${maxRounds} 轮 · 每轮新建对话并${cfg.autoRename ? '按模型名重命名' : '记录模型'}`
+        : `开始探针 · 目标 ${targets.join('、')} · ${findAll ? '命中全部才停' : '命中即停'} · 最多 ${maxRounds} 轮`);
       for (let round = 1; round <= maxRounds; round++) {
         if (tok.cancelled) throw new Cancelled();
-        onProbeState(round, maxRounds, hits.length, true);
+        onProbeState(round, maxRounds, draw ? drawn.length : hits.length, true);
         const outstanding = remainingTargets(targets, hits);
-        const pacingLabel = findAll ? `待命中 ${outstanding.join('、')}` : '命中即停';
+        const pacingLabel = draw ? `抽卡 ${round}/${maxRounds}` : findAll ? `待命中 ${outstanding.join('、')}` : '命中即停';
         const prompt = randomPrompt();
         onProgress(`第 ${round} 轮 · 发送 "${prompt}" · ${pacingLabel}`);
 
@@ -154,6 +176,15 @@ export function createProbeController({
         if (!models.length) { onProgress(`第 ${round} 轮未识别模型，继续`); await wait(tok, roundPacingMs); continue; }
         onProgress(`识别到：${models.join(' / ')}`);
 
+        if (draw) {
+          let title = null;
+          if (cfg.autoRename) { title = await renameDraw(tok, sessionId, models[0]); renamedAny = renamedAny || !!title; }
+          drawn.push({ round, sessionId, models, title });
+          onProbeState(round, maxRounds, drawn.length, true);
+          await wait(tok, roundPacingMs);
+          continue;
+        }
+
         // 5) match against the FULL target list every round (non-draining).
         const roundHits = matchTargets(models, targets);
         for (const h of roundHits) { hits.push({ ...h, sessionId, round }); onProgress(`命中目标 ${h.target} → ${h.model}`); }
@@ -169,19 +200,28 @@ export function createProbeController({
         } else if (roundHits.length) { onProgress('命中，按设置停止'); break; }
         await wait(tok, roundPacingMs);
       }
-      const hitStr = hits.length ? hits.map((h) => `${h.target}→${h.model}`).join('、') : '无';
-      summary = `探针结束 · 命中：${hitStr}`;
+      if (draw) {
+        const tally = new Map();
+        for (const d of drawn) for (const m of d.models.slice(0, 1)) tally.set(m, (tally.get(m) || 0) + 1);
+        const dist = [...tally].map(([m, n]) => `${m}×${n}`).join('、') || '无';
+        summary = `抽卡结束 · ${drawn.length}/${maxRounds} 轮识别到模型 · ${dist}`;
+      } else {
+        const hitStr = hits.length ? hits.map((h) => `${h.target}→${h.model}`).join('、') : '无';
+        summary = `探针结束 · 命中：${hitStr}`;
+      }
     } catch (e) {
-      summary = isCancelled(e) ? `探针已停止（命中 ${hits.length} 个）` : `探针中断：${e.message || e}`;
+      summary = isCancelled(e)
+        ? (draw ? `抽卡已停止（完成 ${drawn.length} 轮）` : `探针已停止（命中 ${hits.length} 个）`)
+        : `${draw ? '抽卡' : '探针'}中断：${e.message || e}`;
     } finally {
       // Auto-rename opens the sidebar to reach a chat's ⋯ menu; close it once
       // here so the probe doesn't leave the sidebar open at the end.
       if (renamedAny) { try { await rpc.call('collapseSidebar'); } catch { /* best effort */ } }
       end(tok);
-      onProbeState(0, maxRounds, hits.length, false);
+      onProbeState(0, maxRounds, draw ? drawn.length : hits.length, false);
       onFinished(summary);
     }
-    return { hits, sessions, cancelled: tok.cancelled, summary };
+    return { mode: draw ? 'draw' : 'probe', hits, drawn, sessions, cancelled: tok.cancelled, summary };
   }
 
   /* One-off: fill the CURRENTLY open conversation's composer with text and

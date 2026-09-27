@@ -249,3 +249,29 @@ test('cleanup and probe are mutually exclusive and stoppable', async () => {
   assert.ok(log.includes('探针运行中，请先停止再清理'));
   ctl2.stop(); await p2; rel2({});
 });
+
+test('draw mode: fixed rounds, no targets, every chat renamed to its bare model name, never stops early', async () => {
+  const h = harness({ modelsBySend: [['gpt-4o'], ['claude-opus-5'], ['gpt-4o']] });
+  const r = await h.ctl.start({ mode: 'draw', targets: [], maxRounds: 3, findAll: true, autoRename: true });
+  assert.equal(r.mode, 'draw');
+  assert.equal(r.hits.length, 0);
+  assert.equal(r.drawn.length, 3);
+  assert.deepEqual(r.drawn.map((d) => d.title), ['gpt-4o', 'claude-opus-5', 'gpt-4o']);
+  const renames = h.calls.filter((c) => c.action === 'rename').map((c) => c.args);
+  assert.deepEqual(renames, [
+    { sessionId: 'sess-1', title: 'gpt-4o' }, { sessionId: 'sess-2', title: 'claude-opus-5' }, { sessionId: 'sess-3', title: 'gpt-4o' },
+  ]);
+  assert.deepEqual(h.ctl.suffixCounters, {}); // draw never consumes the -NNN counters
+  assert.equal(h.log.at(-1), 'FIN 抽卡结束 · 3/3 轮识别到模型 · gpt-4o×2、claude-opus-5×1');
+  assert.deepEqual(h.states.at(-1), [0, 3, 3, false]);
+  assert.equal(h.calls.at(-1).action, 'collapseSidebar');
+});
+
+test('draw mode without rename only records models; unidentified rounds are counted as misses', async () => {
+  const h = harness({ modelsBySend: [['gpt-4o'], []] });
+  const r = await h.ctl.start({ mode: 'draw', maxRounds: 2, autoRename: false });
+  assert.equal(h.calls.filter((c) => c.action === 'rename').length, 0);
+  assert.deepEqual(r.drawn.map((d) => d.models), [['gpt-4o']]);
+  assert.equal(r.summary, '抽卡结束 · 1/2 轮识别到模型 · gpt-4o×1');
+  assert.ok(h.log.some((l) => l === '第 2 轮未识别模型，继续'));
+});

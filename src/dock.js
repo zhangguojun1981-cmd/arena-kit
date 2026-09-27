@@ -52,6 +52,7 @@ const state = {
   renameGate: null,         // createRenameGate() — auto-rename once per conversation
   renaming: false,          // a rename dialog is being driven right now
   probe: null,              // createProbeController() — auto probe / cleanup / quick send
+  probeDraw: false,         // current probe run is a draw (自动抽卡) rather than a target probe
   quickBusy: false,         // a session probe is in flight
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
@@ -401,18 +402,21 @@ function persistProbePanel() {
 }
 function setProbeRunningUi(running, what = '探针') {
   root.querySelector('[data-action="probe-start"]').disabled = running;
+  root.querySelector('[data-action="draw-start"]').disabled = running;
   root.querySelector('[data-action="probe-stop"]').disabled = !running;
   root.querySelector('[data-action="probe-stop"]').textContent = running ? `停止${what}` : '停止';
 }
 
-async function startProbe() {
+/* mode 'probe' (until targets hit) or 'draw' (extension 自动抽卡: N rounds,
+ * every chat renamed to its model, no targets). */
+async function startProbe(mode = 'probe') {
   if (!state.probe) { probeLog('无 Tauri 运行时'); return; }
   if (state.probe.isRunning) { probeLog(state.probe.mode === 'cleanup' ? '清理进行中，请先停止' : '探针已在运行'); return; }
   await persistProbePanel();
-  const cfg = probeConfigFromPanel();
-  if (!cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
+  const cfg = { ...probeConfigFromPanel(), mode };
+  if (mode !== 'draw' && !cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
   q('ak-probe-log').textContent = '';
-  setProbeRunningUi(true);
+  setProbeRunningUi(true, mode === 'draw' ? '抽卡' : '探针');
   let result = null;
   try {
     result = await state.probe.start(cfg);
@@ -464,7 +468,10 @@ function createDockProbe() {
       else q('ak-probe-state').textContent = summary;
     },
     onProbeState: (round, max, hits, active) => {
-      q('ak-probe-state').textContent = active ? `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}` : (q('ak-probe-state').textContent || '');
+      const draw = !!state.probeDraw;
+      q('ak-probe-state').textContent = active
+        ? (draw ? `抽卡进行中 · 第 ${round}/${max} 轮 · 已识别 ${hits}` : `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}`)
+        : (q('ak-probe-state').textContent || '');
     },
     onCleanupState: (archived, active) => {
       q('ak-cleanup-state').textContent = active ? `清理中 · 已归档 ${archived}` : `上次清理已归档 ${archived}`;
@@ -677,7 +684,11 @@ function wireControls() {
       } else if (a === 'rename-now') {
         renameNow();
       } else if (a === 'probe-start') {
-        startProbe();
+        state.probeDraw = false;
+        startProbe('probe');
+      } else if (a === 'draw-start') {
+        state.probeDraw = true;
+        startProbe('draw');
       } else if (a === 'probe-stop') {
         if (state.probe?.stop()) probeLog('正在停止…');
       } else if (a === 'pulse-refresh') {
