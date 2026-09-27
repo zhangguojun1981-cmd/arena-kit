@@ -138,3 +138,15 @@ html, body {
 .ak-log { margin: 6px 0 0; padding: 6px 8px; max-height: 160px; overflow: auto; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; background: var(--ak-bg); border: 1px solid var(--ak-line); border-radius: 6px; color: var(--ak-sub); }
 .ak-btn[disabled] { opacity: .45; cursor: default; }
 .ak-sub.ak-warn { color: #fde68a; }
+
+/* usage view: run picker / evidence fold (extension popup parity) */
+.ak-fold { margin-top: 6px; font-size: 12px; }
+.ak-fold summary { cursor: pointer; color: var(--ak-sub); user-select: none; }
+.ak-fold[open] summary { color: var(--ak-fg); }
+.ak-ev { border-left: 2px solid var(--ak-line); padding: 2px 0 2px 8px; margin: 6px 0; font-size: 11px; }
+.ak-ev .ak-ev-title { font-weight: 600; margin-bottom: 2px; }
+.ak-ev .ak-path { color: var(--ak-sub); font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.ak-ev .ak-legacy { color: #fde68a; }
+.ak-call .ak-span { color: var(--ak-sub); font-family: ui-monospace, Menlo, monospace; font-size: 10px; }
+.ak-call .ak-copy { margin-left: 4px; }
+select.ak-input { appearance: auto; }

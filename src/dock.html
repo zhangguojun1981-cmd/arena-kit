@@ -39,10 +39,19 @@
   <section class="ak-mod" data-open="true">
     <div class="ak-mod-head"><span>使用额度（Token / 费用）</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">
+      <div class="ak-row"><span id="ak-usage-ctx" class="ak-sub">当前会话</span><button class="ak-link" data-action="usage-back" hidden>返回当前会话</button></div>
+      <label class="ak-field" id="ak-usage-pick-field" hidden><span>查看运行</span>
+        <select id="ak-usage-pick" class="ak-input"></select>
+      </label>
+      <div id="ak-usage-meta" class="ak-sub"></div>
       <div class="ak-kv"><span class="ak-k">本轮</span><span id="ak-usage-run" class="ak-v">未提供</span></div>
       <div class="ak-kv"><span class="ak-k">本会话</span><span id="ak-usage-session" class="ak-v">未提供</span></div>
       <div class="ak-kv"><span class="ak-k">累计</span><span id="ak-usage-total" class="ak-v">未提供</span></div>
       <div id="ak-usage-calls" class="ak-sub ak-calls"></div>
+      <details class="ak-fold"><summary>证据来源 <span id="ak-evidence-count"></span></summary>
+        <div class="ak-sub">只读来源：Trigger.dev run events → ai.streamText.doStream，按 runId + spanId 对齐，不混入其他运行。</div>
+        <div id="ak-evidence"></div>
+      </details>
       <div class="ak-btns">
         <button class="ak-btn ak-btn-sm" data-action="export-evidence">导出证据 JSON</button>
       </div>

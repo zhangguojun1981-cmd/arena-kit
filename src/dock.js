@@ -16,6 +16,7 @@
 import { getTauri, createStore } from './lib/tauri-api.js';
 import { createPageActions } from './lib/page-actions.js';
 import { usageFromReport, mergeUsage, summarizeUsage, formatUsage, formatTokens, formatMoney, completion, exportEvidence } from './lib/usage.js';
+import { runsFor, buildRunView, runLabel, evidenceRows } from './lib/usage-view.js';
 import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTotals, exportHistory } from './lib/history.js';
 import { createTurnTracker } from './lib/turns.js';
 import { createRpc } from './lib/rpc.js';
@@ -43,6 +44,8 @@ const state = {
   sessions: new Map(),
   // the run currently shown in the model/usage modules
   current: { sessionId: null, runId: null },
+  // usage module override: a saved session (history 查看) and/or a picked run
+  view: { sessionId: null, runId: null },
   tracker: createTurnTracker(), // per-conversation turn → model (Android TurnTracker port)
   turnHead: '',             // latest "第 N 轮 · …" headline from tracker.record()
   history: null,            // createHistoryStore()
@@ -120,6 +123,8 @@ function onTrace(p) {
   const tracker = state.tracker;
   if (p.stage === 'token') {
     state.current = { sessionId: p.sessionId, runId: p.runId || null };
+    // A new run supersedes any picked run of the live conversation (extension: selectedRunId reset).
+    if (!state.view.sessionId || state.view.sessionId === p.sessionId) state.view = { sessionId: null, runId: null };
     // A fresh run token = a new turn; a different session = conversation switch.
     const { turn, switched, repeat } = tracker.onToken(p.sessionId, p.runId || '');
     if (switched) { sessionRecord(p.sessionId).historical = false; state.turnHead = ''; }
@@ -202,26 +207,87 @@ function rebuildTrackerFromRecord(sessionId, record) {
 }
 
 // ── module: Token / trace cost ──────────────────────────────────────────
-function renderUsage() {
-  const { sessionId, runId } = state.current;
+/* What the usage module looks at: the live conversation, or a saved session
+ * picked from the history list (state.view.sessionId). In-memory runs win for
+ * sessions seen this session; otherwise the stored record. */
+function usageSource() {
+  const sessionId = state.view.sessionId || state.current.sessionId || null;
   const rec = sessionId ? state.sessions.get(sessionId) : null;
-  const run = rec?.runs.find((r) => r.runId === runId) || null;
+  const record = sessionId ? state.historyIndex.get(sessionId) : null;
+  const other = !!state.view.sessionId && state.view.sessionId !== state.current.sessionId;
+  return {
+    sessionId, other, rec, record,
+    title: record?.title || rec?.title || '',
+    runs: rec ? rec.runs : (record?.runs || []),
+    observations: record?.observations || [],
+  };
+}
+const fmtWhen = (iso) => { const d = new Date(iso); return Number.isFinite(d.getTime()) ? d.toLocaleString('zh-CN', { hour12: false }) : ''; };
+function renderUsage() {
+  const src = usageSource();
+  const list = runsFor(src);
+  const live = !src.other && !state.view.runId && !!state.current.runId && !(src.rec && src.rec.historical);
+  const selected = state.view.runId || (src.other ? '' : (state.current.runId || ''));
+  const v = buildRunView({ runs: src.runs, observations: src.observations, runId: selected, live });
+
+  // context line + run picker (extension popup "查看运行")
+  q('ak-usage-ctx').textContent = src.other ? `查看已保存会话：${src.title || src.sessionId}` : '当前会话';
+  root.querySelector('[data-action="usage-back"]').hidden = !src.other;
+  const pick = q('ak-usage-pick');
+  const options = [`<option value="">${live ? '本次捕获' : '最近保存的运行'}</option>`]
+    .concat(list.map((r) => `<option value="${esc(r.runId)}">${esc(runLabel(r, src.observations))}</option>`));
+  pick.innerHTML = options.join('');
+  pick.value = state.view.runId && list.some((r) => r.runId === state.view.runId) ? state.view.runId : '';
+  q('ak-usage-pick-field').hidden = !list.length;
+  q('ak-usage-meta').textContent = v.runId
+    ? [v.completion, `Token 覆盖 ${v.tokenCoverage}`, `费用覆盖 ${v.costCoverage}`, v.source, v.checkedAt ? '记录时间 ' + fmtWhen(v.checkedAt) : ''].filter(Boolean).join(' · ')
+    : '';
+
+  const run = v.runId ? list.find((r) => r.runId === v.runId) : null;
   q('ak-usage-run').textContent = formatUsage(run ? summarizeUsage([run]) : null);
-  const st = rec ? summarizeUsage(rec.runs) : null;
+  const st = src.runs.length ? summarizeUsage(src.runs) : null;
   q('ak-usage-session').textContent = st && st.spanCount ? formatUsage(st) + ` · ${st.runCount} 轮` : '未提供';
   const tt = grandTotals([...state.historyIndex.values()], state.historyCarry);
   q('ak-usage-total').textContent = tt.spanCount ? formatUsage(tt) + ` · ${tt.runCount} 轮 / ${tt.sessions} 会话` : (tt.sessions ? `${tt.sessions} 会话 · 无用量标签` : '未提供');
-  const calls = run?.spans || [];
-  q('ak-usage-calls').innerHTML = calls.map((c) => {
+
+  const calls = v.calls;
+  q('ak-usage-calls').innerHTML = calls.map((c, i) => {
     const flags = [c.partial === true ? '<span class="ak-flag">进行中</span>' : '', c.error === true ? '<span class="ak-err">报错</span>' : '', c.cancelled === true ? '<span class="ak-flag">已取消</span>' : ''].filter(Boolean).join(' ');
-    return `<div class="ak-call"><span>${esc(c.model || '未知模型')}${c.provider ? ' <span class="ak-sub">' + esc(c.provider) + '</span>' : ''}</span><span>${esc(formatTokens(c.tokens, c.tokensApproximate))} · ${esc(formatMoney(c.costUsd))} ${flags}</span></div>`;
+    const span = c.spanId ? `<span class="ak-span">span ${esc(String(c.spanId).slice(0, 10))}<button class="ak-link ak-copy" data-copy="${esc(c.spanId)}" title="复制 spanId">复制</button></span>` : '';
+    return `<div class="ak-call"><span>${String(i + 1).padStart(2, '0')} ${esc(c.model || '未知模型')}${c.provider ? ' <span class="ak-sub">' + esc(c.provider) + '</span>' : ''} ${span}</span><span>${esc(formatTokens(c.tokens, c.tokensApproximate))} · ${esc(formatMoney(c.costUsd))} ${flags}</span></div>`;
   }).join('') + (calls.length ? `<div class="ak-sub">共 ${calls.length} 次模型调用 · 仅统计 trace 标签，不推算价格</div>` : '');
+
+  // 证据来源 fold: raw label values + their trace paths and observation times.
+  const rows = evidenceRows(v);
+  q('ak-evidence-count').textContent = calls.length ? `${v.evidenceCount}/${calls.length} 次保留原始标签` : '未保存原始标签';
+  q('ak-evidence').innerHTML = rows.map((r) => r.legacy
+    ? `<div class="ak-ev"><div class="ak-ev-title">调用 ${String(r.index).padStart(2, '0')} · ${esc(r.model)}</div><div class="ak-legacy">旧记录未保存原始标签；不会补造证据。</div></div>`
+    : `<div class="ak-ev"><div class="ak-ev-title">调用 ${String(r.index).padStart(2, '0')} · ${esc(r.model)}</div><div class="ak-path">spanId: ${esc(r.spanId)}</div>`
+      + r.fields.map((f) => `<div>${esc(f.label)}：<span class="ak-mono">${esc(f.value)}</span>${f.path ? `<div class="ak-path">${esc(f.path)}${f.observedAt ? ' · 观测于 ' + esc(f.observedAt) : ''}</div>` : ''}</div>`).join('')
+      + (r.flags ? `<div class="ak-path">状态原始字段：${esc(r.flags)}</div>` : '') + '</div>'
+  ).join('') || '<div class="ak-sub">尚无可展示的证据。</div>';
+}
+function viewSavedSession(sessionId) {
+  state.view = { sessionId, runId: null };
+  renderUsage();
+  const mod = q('ak-usage-pick').closest('.ak-mod');
+  if (mod) mod.dataset.open = 'true';
+  setStatus('正在查看已保存会话的记录（本地记录，非重新验证）');
+}
+function wireUsageView() {
+  q('ak-usage-pick').addEventListener('change', (e) => { state.view.runId = e.target.value || null; renderUsage(); });
+  q('ak-usage-calls').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]');
+    if (!b) return;
+    try { await navigator.clipboard.writeText(b.dataset.copy); setStatus('spanId 已复制'); } catch { setStatus('复制失败：' + b.dataset.copy); }
+  });
 }
 async function exportCurrentEvidence() {
-  const { sessionId } = state.current;
-  const rec = sessionId ? state.sessions.get(sessionId) : null;
-  if (!rec || !rec.runs.length) { setStatus('当前会话还没有可导出的记录'); return; }
-  const text = JSON.stringify(exportEvidence({ sessionId, title: rec.title || state.nav.title, runs: rec.runs }), null, 2);
+  // Exports whatever the usage module is looking at (live conversation or a
+  // saved session picked from the history list).
+  const src = usageSource();
+  if (!src.sessionId || !src.runs.length) { setStatus('当前会话还没有可导出的记录'); return; }
+  const text = JSON.stringify(exportEvidence({ sessionId: src.sessionId, title: src.title || (src.other ? '' : state.nav.title), runs: src.runs }), null, 2);
   const box = q('ak-export');
   box.value = text;
   box.hidden = false;
@@ -270,7 +336,7 @@ function renderHistory() {
       <div class="ak-item-title${cur}">${esc(r.title || 'Arena 会话')}</div>
       <div class="ak-item-models">${models || '—'}</div>
       <div class="ak-sub">${esc(fmtDate(r.lastSeen))}${usage ? ' · ' + esc(usage) : ''}</div>
-      <div class="ak-item-actions"><button class="ak-link" data-open="${esc(r.sessionId)}">打开</button><button class="ak-link ak-danger" data-del="${esc(r.sessionId)}">删除</button></div>
+      <div class="ak-item-actions"><button class="ak-link" data-open="${esc(r.sessionId)}">打开</button><button class="ak-link" data-view="${esc(r.sessionId)}">查看运行</button><button class="ak-link ak-danger" data-del="${esc(r.sessionId)}">删除</button></div>
     </div>`;
   }).join('') || '<div class="ak-sub">暂无记录：识别到模型后自动保存（仅本机）</div>';
   const total = state.historyIndex.size;
@@ -280,13 +346,17 @@ function wireHistory() {
   q('ak-history-q').addEventListener('input', renderHistory);
   q('ak-history-list').addEventListener('click', async (e) => {
     const open = e.target.closest('[data-open]');
+    const view = e.target.closest('[data-view]');
     const del = e.target.closest('[data-del]');
     if (open) {
       openConversation(open.dataset.open);
+    } else if (view) {
+      viewSavedSession(view.dataset.view);
     } else if (del && state.history) {
       const sid = del.dataset.del;
       await state.history.remove(sid).catch((err) => setStatus('删除失败: ' + err));
       state.historyIndex.delete(sid);
+      if (state.view.sessionId === sid) state.view = { sessionId: null, runId: null };
       renderHistory();
       renderUsage();
       setStatus('已删除该会话的本地记录（Arena 上的对话不受影响）');
@@ -677,6 +747,9 @@ function wireControls() {
         if (EMBED) EMBED.close();
       } else if (a === 'export-evidence') {
         exportCurrentEvidence();
+      } else if (a === 'usage-back') {
+        state.view = { sessionId: null, runId: null };
+        renderUsage();
       } else if (a === 'history-export') {
         exportAllHistory();
       } else if (a === 'history-clear') {
@@ -744,6 +817,7 @@ async function boot() {
   state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
   wireControls();
+  wireUsageView();
   wireHistory();
   wireRename();
   wireProbe();
