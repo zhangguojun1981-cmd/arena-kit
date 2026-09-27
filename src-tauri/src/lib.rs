@@ -24,6 +24,7 @@ pub mod trace;
 
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
@@ -445,7 +446,11 @@ fn page_event(app: AppHandle, webview: tauri::Webview, kind: String, payload: Va
             Ok(())
         }
         "home" => go_home(&app, &webview),
-        _ => app
+        _ => {
+            if kind == "state" {
+                LAST_STATE_TAB.store(tab_id_from_label(webview.label()).unwrap_or(u32::MAX), Ordering::Relaxed);
+            }
+            app
             .emit(
                 &format!("arenakit://{kind}"),
                 Tagged {
@@ -453,9 +458,14 @@ fn page_event(app: AppHandle, webview: tauri::Webview, kind: String, payload: Va
                     data: payload,
                 },
             )
-            .map_err(|e| e.to_string()),
+            .map_err(|e| e.to_string())
+        }
     }
 }
+
+/// Tab id of the most recent `page_event{kind:"state"}` (u32::MAX = mobile /
+/// none yet). Lets the smoke test prove the remote-origin IPC path works.
+static LAST_STATE_TAB: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Leave arena.ai: on mobile navigate the single webview back to the shell;
 /// on desktop just show the home (deactivate the tab, keep it open).
@@ -810,6 +820,97 @@ mod desktop {
         }
     }
 
+    /// `ARENAKIT_SMOKE=1`: headless self-test used on real machines where no
+    /// one can click. Seeds a throw-away account (not saved), opens a tab,
+    /// waits for arena.ai to load and for the page bootstrap to report its
+    /// state through the remote-origin IPC, prints `SMOKE OK` and exits 0
+    /// (or `SMOKE FAIL …` and exits 2).
+    pub fn smoke_test(app: &AppHandle) {
+        if std::env::var("ARENAKIT_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let opened = std::sync::Arc::new(Mutex::new(None::<Result<(u32, String), String>>));
+            let (o2, a2) = (opened.clone(), app.clone());
+            // Webview creation + the session lock must happen on the main
+            // thread, exactly like the IPC commands do.
+            let _ = app.run_on_main_thread(move || {
+                let state = a2.state::<SessionState>();
+                let mut s = lock(&state);
+                let res = match s.accounts.upsert(AccountInput { name: "smoke".into(), ..Default::default() }) {
+                    Err(e) => Err(format!("upsert: {e}")),
+                    Ok(acc) => match open_tab_impl(&a2, &mut s, &acc.id) {
+                        Ok(id) => {
+                            emit_tabs(&a2, &s);
+                            Ok((id, acc.id))
+                        }
+                        Err(e) => Err(e),
+                    },
+                };
+                *o2.lock().unwrap_or_else(|p| p.into_inner()) = Some(res);
+            });
+            let mut waited = 0;
+            let (tab, acc_id) = loop {
+                let snapshot = opened.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                if let Some(r) = snapshot {
+                    match r {
+                        Ok(v) => break v,
+                        Err(e) => {
+                            println!("SMOKE FAIL {e}");
+                            app.exit(2);
+                            return;
+                        }
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                waited += 1;
+                if waited > 100 {
+                    println!("SMOKE FAIL open_tab never returned");
+                    app.exit(2);
+                    return;
+                }
+            };
+            let label = format!("{}{}", sessions::TAB_LABEL_PREFIX, tab);
+            println!("SMOKE tab={tab} label={label}");
+            let mut ok_url = false;
+            let mut ok_state = false;
+            for i in 0..40 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let url = app.get_webview(&label).and_then(|w| w.url().ok()).map(|u| u.to_string()).unwrap_or_default();
+                if i % 5 == 0 || !ok_url {
+                    println!("SMOKE t={i}s url={url}");
+                }
+                ok_url = url.contains("arena.ai");
+                ok_state = LAST_STATE_TAB.load(Ordering::Relaxed) == tab;
+                if ok_url && ok_state {
+                    break;
+                }
+            }
+            println!("SMOKE arena_loaded={ok_url} page_state_via_ipc={ok_state}");
+            // Close it again through the same path the UI uses.
+            let a3 = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                let state = a3.state::<SessionState>();
+                let mut s = lock(&state);
+                close_tab_impl(&a3, &mut s, tab);
+                apply_visibility(&a3, &s);
+                s.accounts.remove(&acc_id);
+                emit_tabs(&a3, &s);
+                println!("SMOKE tabs_after_close={}", s.tabs.tabs.len());
+            });
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if ok_url && ok_state {
+                println!("SMOKE OK");
+                app.exit(0);
+            } else {
+                println!("SMOKE FAIL");
+                app.exit(2);
+            }
+        });
+    }
+
     /// One window; the shell fills it, tabs are added later on demand.
     pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         let width = 1400.0_f64;
@@ -835,6 +936,7 @@ mod desktop {
         });
         // The window may have been created at a different size than asked.
         relayout(app.handle());
+        smoke_test(app.handle());
         Ok(())
     }
 }

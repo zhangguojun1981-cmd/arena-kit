@@ -71,3 +71,10 @@ test('mobile home and desktop home are both present and gated by data-mode', () 
   assert.match(css, /\.shell\[data-mode="mobile"\] \.topbar/);
   assert.match(css, /\.shell\[data-view="dock"\] \.stage/);
 });
+
+test('dock.js keeps its browser preview path (no Tauri runtime)', () => {
+  const dock = read('src/dock.js');
+  assert.match(dock, /\nfunction preview\(\) \{/, 'preview() must exist — the gallery and npm run preview depend on it');
+  assert.ok(dock.trimEnd().endsWith('boot();'), 'boot() must be the last statement');
+  assert.ok(dock.indexOf('function preview()') < dock.lastIndexOf('boot();'));
+});

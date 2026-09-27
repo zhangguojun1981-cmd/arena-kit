@@ -420,4 +420,38 @@ async function boot() {
   pageCall(`${AK}reportState()`);
 }
 
+// ── preview (no Tauri runtime) ───────────────────────────────────────────
+function preview() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('theme') === 'light' || params.get('theme') === 'dark') {
+    themeMode = params.get('theme');
+    applyTheme();
+  }
+  setConn('preview', '预览模式');
+  setStatus('浏览器预览 · 无 Tauri 运行时');
+  $('app-info').textContent = 'v0.1.0 · preview';
+
+  if (params.get('empty') === '1') return;
+
+  // Sample data so the layout can be judged with real content.
+  recent = [
+    { name: 'gpt-5-chat', provider: 'openai', at: Date.now() - 12 * 60_000 },
+    { name: 'gemini-2.5-pro', provider: 'google', at: Date.now() - 48 * 60_000 },
+    { name: 'claude-sonnet-4', provider: 'anthropic', at: Date.now() - 3 * 3_600_000 },
+  ];
+  showModels({
+    run_id: 'run_0f3a9c2d7e1b',
+    models: [{ model: 'claude-opus-4-1', provider: 'anthropic', partial: false }],
+  });
+  showCredits({ remaining: 72, total: 100, resetAt: Date.now() + (2 * 60 + 15) * 60_000 });
+  applyPageState({
+    modules: { manager: true, unlock: true, plus: true, leaderboard: false, eni: false },
+    unlock: { opus: true, hidden: false },
+    hud: false,
+    eni: { on: false, text: '' },
+  });
+  if (params.get('band') === 'warning') showCredits({ remaining: 15, total: 100, resetAt: Date.now() + 40 * 60_000 });
+  if (params.get('band') === 'danger') showCredits({ remaining: 4, total: 100, resetAt: Date.now() + 9 * 60_000 });
+}
+
 boot();
