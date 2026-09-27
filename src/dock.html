@@ -77,6 +77,7 @@
       <div id="ak-history-list" class="ak-list"></div>
       <div class="ak-btns">
         <button class="ak-btn ak-btn-sm" data-action="history-export">导出全部</button>
+        <button class="ak-btn ak-btn-sm ak-danger" data-action="archive-current" title="归档 Arena 上当前打开的对话（走 Arena 自带的归档菜单，可在归档中找回），并删除它的本地记录">归档当前对话并删除记录</button>
         <button class="ak-btn ak-btn-sm ak-danger" data-action="history-clear">清空历史</button>
       </div>
       <div id="ak-history-sub" class="ak-sub"></div>
@@ -109,7 +110,7 @@
   <section class="ak-mod">
     <div class="ak-mod-head"><span>自动清理</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">
-      <div class="ak-sub">归档侧栏中标题为「纯算式」的对话（探针残留，如 1+1=）。只走 Arena 自带的归档菜单，仅归档不删除；当前打开的对话和人工命名的对话不会被触碰。</div>
+      <div class="ak-sub">归档侧栏中标题为「纯算式」的对话（探针残留，如 1+1=），并删除它们的本地记录。只走 Arena 自带的归档菜单，仅归档不删除；当前打开的对话和人工命名的对话不会被触碰。</div>
       <label class="ak-switch"><input type="checkbox" id="ak-cleanup-after" /> 探针结束后自动清理</label>
       <div class="ak-btns">
         <button class="ak-btn ak-btn-sm" data-action="cleanup-start">立即清理</button>

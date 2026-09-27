@@ -381,6 +381,48 @@ async function clearHistory(btn) {
   setStatus('本地历史已清空');
 }
 
+/* Remove a conversation's local record everywhere the dock caches it. */
+async function dropLocalRecord(sessionId) {
+  if (!state.history || !state.historyIndex.has(sessionId)) return false;
+  await state.history.remove(sessionId);
+  state.historyIndex.delete(sessionId);
+  if (state.view.sessionId === sessionId) state.view = { sessionId: null, runId: null };
+  renderHistory();
+  renderUsage();
+  return true;
+}
+
+/* Extension HUD "归档聊天及删除记录": archive the OPEN conversation through
+ * Arena's own ⋯ → Archive menu (never a delete), then drop its local record.
+ * Two clicks within 4 s to confirm, like 清空历史. */
+let archiveArmed = 0;
+const ARCHIVE_LABEL = '归档当前对话并删除记录';
+async function archiveCurrent(btn) {
+  const sid = state.nav.sessionId;
+  if (!sid) { setStatus('当前没有打开的对话'); return; }
+  if (!state.rpc) { setStatus('无 Tauri 运行时'); return; }
+  if (state.probe?.isRunning) { setStatus('探针 / 清理进行中，请先停止'); return; }
+  if (Date.now() - archiveArmed > 4000) {
+    archiveArmed = Date.now(); btn.textContent = '再点一次确认归档';
+    setTimeout(() => { btn.textContent = ARCHIVE_LABEL; }, 4000);
+    return;
+  }
+  archiveArmed = 0; btn.textContent = ARCHIVE_LABEL; btn.disabled = true;
+  try {
+    setStatus('正在归档当前对话…');
+    const r = await state.rpc.call('archive', { sessionId: sid, requireCurrentUrl: true, manageSidebar: true });
+    if (r && r.archived === false) throw new Error('未确认归档，本地记录保留');
+    let msg = '对话已归档';
+    try { msg += (await dropLocalRecord(sid)) ? '，本地记录已删除' : '（无本地记录）'; }
+    catch (e) { msg += '，但本地记录删除失败：' + (e?.message || e); }
+    setStatus(msg + ' · 归档不是永久删除，可在 Arena 归档中找回');
+  } catch (e) {
+    setStatus('归档失败：' + (e?.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // Populate the in-memory session view from a stored record (restore on switch).
 function restoreFromHistory(sessionId) {
   const record = state.historyIndex.get(sessionId);
@@ -546,6 +588,8 @@ function createDockProbe() {
     onCleanupState: (archived, active) => {
       q('ak-cleanup-state').textContent = active ? `清理中 · 已归档 ${archived}` : `上次清理已归档 ${archived}`;
     },
+    // Extension parity: an archived probe chat also loses its local record.
+    onArchived: (sid) => { dropLocalRecord(sid).catch(() => {}); },
     buildTitle: (model, suffix) => buildTitle({ prefix: state.prefs.renamePrefix, model, suffix }),
     suffixCounters: counters,
     onSuffixes: (c) => savePrefs({ probeSuffixes: c }),
@@ -754,6 +798,8 @@ function wireControls() {
         exportAllHistory();
       } else if (a === 'history-clear') {
         clearHistory(el);
+      } else if (a === 'archive-current') {
+        archiveCurrent(el);
       } else if (a === 'rename-now') {
         renameNow();
       } else if (a === 'probe-start') {

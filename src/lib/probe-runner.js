@@ -44,6 +44,7 @@ export function createProbeController({
   onFinished = () => {},                // (summary) → void
   onProbeState = () => {},              // (round, maxRounds, hits, active)
   onCleanupState = () => {},            // (archived, active)
+  onArchived = () => {},                // (sessionId) → void — a chat was archived (dock drops its local record)
   buildTitle = defaultTitle,            // (model, suffix) → title
   suffixCounters = {},                  // persisted per-model counter map (mutated copy returned via onSuffixes)
   onSuffixes = () => {},                // (counters) → void  — persist hook
@@ -272,6 +273,7 @@ export function createProbeController({
     let ok = 0, failed = 0, remaining = -1;
     let sidebarOpened = false;
     let summary = '';
+    const archivedIds = [];
     onCleanupState(0, true);
     try {
       onProgress('扫描侧栏算式标题…');
@@ -297,7 +299,8 @@ export function createProbeController({
         if (ok + failed === 0) onProgress('发现算式标题对话，开始归档');
         try {
           await archiveCandidate(tok, candidate);
-          ok++; done.add(candidate.sessionId); archived.add(candidate.sessionId);
+          ok++; done.add(candidate.sessionId); archived.add(candidate.sessionId); archivedIds.push(candidate.sessionId);
+          try { onArchived(candidate.sessionId); } catch { /* record cleanup must not break the sweep */ }
           consecutiveFailures = 0;
           onProgress(`已归档 ${candidate.title}`);
           onCleanupState(ok, true);
@@ -322,7 +325,7 @@ export function createProbeController({
       onCleanupState(ok, false);
       onFinished(summary);
     }
-    return { archived: ok, failed, remaining, cancelled: tok.cancelled, summary };
+    return { archived: ok, failed, remaining, cancelled: tok.cancelled, summary, archivedIds: [...archivedIds] };
   }
 
   return {

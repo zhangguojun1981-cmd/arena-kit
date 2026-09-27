@@ -166,13 +166,15 @@ function cleanupHarness({ sidebar, failArchive = () => false } = {}) {
       return {};
     },
   };
+  const archivedEvents = [];
   const ctl = createProbeController({
     rpc, modelForSession: () => null,
     onProgress: (l) => log.push(l), onFinished: (s) => log.push('FIN ' + s),
     onCleanupState: (n, active) => states.push([n, active]),
+    onArchived: (sid) => { archivedEvents.push(sid); if (sid === 'boom') throw new Error('record hook failed'); },
     sleep: () => Promise.resolve(), cleanupPacingMs: 0, archiveRetryMs: 0,
   });
-  return { ctl, calls, log, states, items: () => items };
+  return { ctl, calls, log, states, items: () => items, archivedEvents };
 }
 
 test('cleanup archives only arithmetic titles, keeps the open chat, never deletes', async () => {
@@ -200,6 +202,15 @@ test('cleanup archives only arithmetic titles, keeps the open chat, never delete
   assert.equal(h.log.at(-1), 'FIN 清理完成 · 已归档 2（仅归档，未删除）');
   assert.deepEqual(h.states, [[0, true], [1, true], [2, true], [2, false]]);
   assert.equal(h.calls.some((c) => c.action === 'openConversation'), false, 'archived from the ⋯ menu without opening');
+  assert.deepEqual(r.archivedIds, ['a', 'c'], 'the dock drops these local records');
+  assert.deepEqual(h.archivedEvents, ['a', 'c']);
+});
+
+test('cleanup keeps sweeping when the local-record hook throws', async () => {
+  const h = cleanupHarness({ sidebar: [{ sessionId: 'boom', title: '3+3=' }, { sessionId: 'x', title: '4+4=' }] });
+  const r = await h.ctl.cleanup(null);
+  assert.equal(r.archived, 2);
+  assert.deepEqual(r.archivedIds, ['boom', 'x']);
 });
 
 test('cleanup with nothing to do reports so; failures retry once and abort after 3 in a row', async () => {
