@@ -10,6 +10,7 @@
 import { getTauri, createStore, jsString } from './lib/tauri-api.js';
 import { usageFromReport, mergeUsage, summarizeUsage, formatUsage, formatTokens, formatMoney, completion, exportEvidence } from './lib/usage.js';
 import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTotals, exportHistory } from './lib/history.js';
+import { createTurnTracker } from './lib/turns.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -24,6 +25,8 @@ const state = {
   sessions: new Map(),
   // the run currently shown in the model/usage modules
   current: { sessionId: null, runId: null },
+  tracker: createTurnTracker(), // per-conversation turn → model (Android TurnTracker port)
+  turnHead: '',             // latest "第 N 轮 · …" headline from tracker.record()
   history: null,            // createHistoryStore()
   historyIndex: new Map(),  // sessionId → record (mirror of the store, newest first on render)
   historyCarry: null,       // evicted totals bucket
@@ -70,10 +73,28 @@ async function savePrefs(patch) {
 function onTrace(p) {
   if (!p || typeof p !== 'object' || typeof p.sessionId !== 'string') return;
   const sub = q('ak-model-sub');
+  const tracker = state.tracker;
   if (p.stage === 'token') {
     state.current = { sessionId: p.sessionId, runId: p.runId || null };
-    q('ak-model').textContent = '识别中…';
-    sub.textContent = 'run ' + String(p.runId || '').slice(0, 14);
+    // A fresh run token = a new turn; a different session = conversation switch.
+    const { turn, switched, repeat } = tracker.onToken(p.sessionId, p.runId || '');
+    if (switched) { sessionRecord(p.sessionId).historical = false; state.turnHead = ''; }
+    if (!repeat) q('ak-model').textContent = '识别中…';
+    q('ak-model').dataset.routed = 'false';
+    sub.textContent = `第 ${turn} 轮 · run ` + String(p.runId || '').slice(0, 14);
+    renderTurns();
+  } else if (p.stage === 'poll') {
+    const turn = tracker.turnOf(p.runId);
+    if (turn) tracker.setStatus(turn, `读取中 ${p.attempt || ''}/${p.max || ''}`.trim());
+    renderTurns();
+  } else if (p.stage === 'error') {
+    const turn = tracker.turnOf(p.runId);
+    if (turn) { tracker.setStatus(turn, p.fatal ? '失败' : '未识别'); if (p.fatal) tracker.mark(turn, 'trace-error', '读取失败'); }
+    renderTurns();
+  } else if (p.stage === 'done') {
+    const turn = tracker.turnOf(p.runId);
+    if (turn) { const e = tracker.turns.find((x) => x.turn === turn); if (e && e.model) tracker.setStatus(turn, '完成'); }
+    renderTurns();
   } else if (p.stage === 'model') {
     const rec = sessionRecord(p.sessionId);
     const models = (p.models || []).filter((m) => m && typeof m.model === 'string' && m.model.trim())
@@ -87,12 +108,52 @@ function onTrace(p) {
     q('ak-model').textContent = models.map((m) => m.model).join(' / ') || '未识别';
     const providers = [...new Set(models.map((m) => m.provider).filter(Boolean))];
     const run = rec.runs.find((r) => r.runId === p.runId);
+    // Per-turn model resolution (routed = differs from this conversation's first model).
+    let turn = tracker.turnOf(p.runId);
+    if (!turn && models.length) turn = tracker.onToken(p.sessionId, p.runId || '').turn; // model without a seen token stage
+    let head = '';
+    if (turn && models.length) {
+      head = tracker.record(turn, models[0].model, models.map((m) => m.model));
+      if (!p.complete) tracker.setStatus(turn, completion(run?.spans || []));
+      else tracker.setStatus(turn, run?.spans?.length ? completion(run.spans) : '已识别');
+    }
+    q('ak-model').dataset.routed = String(!!tracker.routed);
     sub.textContent = ['run ' + String(p.runId || '').slice(0, 14), providers.join(', '), completion(run?.spans || [])].filter(Boolean).join(' · ');
+    if (head) state.turnHead = head.split('\n')[0];
+    renderTurns();
     renderUsage();
   } else if (p.stage === 'error' && p.fatal) {
     q('ak-model-sub').textContent = p.status || '错误';
   }
   if (p.status) setStatus(p.status);
+}
+
+// ── module: turns (per-turn model timeline) ─────────────────────────────
+function renderTurns() {
+  const t = state.tracker;
+  const list = q('ak-turn-list');
+  if (!t.turns.length) { list.innerHTML = ''; q('ak-turn-head').textContent = ''; state.turnHead = ''; return; }
+  q('ak-turn-head').textContent = [state.turnHead, t.historyLine()].filter(Boolean).join('\n');
+  list.innerHTML = t.turns.slice(-12).map((e) => {
+    const marks = e.marks.map((m) => `<span class="ak-badge ${/error|fail|empty|trunc/.test(m.kind) ? 'ak-badge-err' : 'ak-badge-warn'}">${esc(m.label)}</span>`).join('');
+    const routed = e.routed ? '<span class="ak-badge ak-badge-warn">非首轮模型</span>' : '';
+    return `<div class="ak-turn"><span class="ak-turn-n">R${e.turn}</span><span class="ak-turn-m${e.routed ? ' ak-routed' : ''}">${esc(e.models.join(' / ') || e.model || '—')}${routed}${marks}</span><span class="ak-turn-s">${esc(e.status || '')}</span></div>`;
+  }).join('');
+}
+
+/* Rebuild the tracker from a stored record so numbering continues when the
+ * user comes back to an old conversation (turns seen by ArenaKit only). */
+function rebuildTrackerFromRecord(sessionId, record) {
+  const t = state.tracker;
+  t.reset(sessionId);
+  state.turnHead = '';
+  for (const r of recordTurns(record)) {
+    const { turn } = t.onToken(sessionId, r.runId);
+    if (r.models.length) t.record(turn, r.models[0], r.models);
+    t.setStatus(turn, '历史');
+  }
+  t.clearRouted();
+  renderTurns();
 }
 
 // ── module: Token / trace cost ──────────────────────────────────────────
@@ -127,7 +188,8 @@ async function saveHistory(sessionId, runId, models, usage) {
   if (!state.history) return;
   const title = state.nav.sessionId === sessionId ? state.nav.title : undefined;
   try {
-    const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: sessionRecord(sessionId).turnOf?.(runId) });
+    const turn = state.tracker.sessionId === sessionId ? state.tracker.turnOf(runId) : undefined;
+    const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: turn ?? undefined });
     state.historyIndex.set(sessionId, record);
     renderHistory();
     renderUsage();
@@ -227,23 +289,37 @@ onPage('nav', (n) => {
   if (switched) renderHistory();
   if (switched && !state.nav.sessionId) {
     // Fresh /agent composer: nothing identified yet for this conversation.
+    // (Best-effort reset; the next token's session id is the authoritative one.)
     state.current = { sessionId: null, runId: null };
+    state.tracker.reset();
     q('ak-model').textContent = '—';
+    q('ak-model').dataset.routed = 'false';
     q('ak-model-sub').textContent = '发一条消息后自动识别';
+    renderTurns();
     renderUsage();
+  } else if (switched && state.nav.sessionId === state.tracker.sessionId) {
+    // Same conversation the tracker is already following (e.g. URL caught up
+    // after the token) — keep the live turn state.
+    state.current = { sessionId: state.nav.sessionId, runId: state.current.runId };
   } else if (switched && (state.sessions.has(state.nav.sessionId) || restoreFromHistory(state.nav.sessionId))) {
     // Back to a known conversation: show its remembered model (local record,
     // not re-verified) until a new turn produces a fresh trace.
     const rec = state.sessions.get(state.nav.sessionId);
     const last = rec.runs.at(-1);
     state.current = { sessionId: state.nav.sessionId, runId: last?.runId || null };
+    const record = state.historyIndex.get(state.nav.sessionId);
+    if (record) rebuildTrackerFromRecord(state.nav.sessionId, record); else { state.tracker.reset(state.nav.sessionId); renderTurns(); }
     q('ak-model').textContent = rec.models.map((m) => m.model).join(' / ') || '—';
+    q('ak-model').dataset.routed = 'false';
     q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', rec.historical ? '本地记录 · 非重新验证' : ''].filter(Boolean).join(' · ');
     renderUsage();
   } else if (switched) {
     state.current = { sessionId: state.nav.sessionId, runId: null };
+    state.tracker.reset(state.nav.sessionId);
     q('ak-model').textContent = '—';
+    q('ak-model').dataset.routed = 'false';
     q('ak-model-sub').textContent = '此对话尚无本地记录';
+    renderTurns();
     renderUsage();
   }
 });

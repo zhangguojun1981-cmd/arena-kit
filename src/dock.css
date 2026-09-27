@@ -115,3 +115,14 @@ html, body {
 .ak-link { background: none; border: none; color: #a5b4fc; cursor: pointer; padding: 0; font-size: 12px; }
 .ak-link:hover { text-decoration: underline; }
 .ak-danger { color: #fca5a5; }
+.ak-big[data-routed="true"] { color: #fbbf24; }
+.ak-turn-head { margin-top: 6px; font-size: 12px; white-space: pre-line; }
+.ak-turns { margin-top: 4px; font-size: 12px; }
+.ak-turn { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; border-top: 1px dashed var(--ak-line); }
+.ak-turn .ak-turn-n { color: var(--ak-sub); min-width: 26px; font-family: ui-monospace, Menlo, monospace; }
+.ak-turn .ak-turn-m { flex: 1; word-break: break-word; }
+.ak-turn .ak-turn-m.ak-routed { color: #fbbf24; }
+.ak-turn .ak-turn-s { color: var(--ak-sub); white-space: nowrap; }
+.ak-badge { display: inline-block; padding: 0 5px; border-radius: 6px; font-size: 11px; line-height: 16px; margin-left: 4px; background: #3f3f46; color: #e4e4e7; }
+.ak-badge.ak-badge-warn { background: #78350f; color: #fde68a; }
+.ak-badge.ak-badge-err { background: #7f1d1d; color: #fecaca; }
