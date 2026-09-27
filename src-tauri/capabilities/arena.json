@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "arena-page",
-  "description": "The remote arena.ai page (desktop child webview `arena`, mobile window `main`). Only the narrow bridge commands used by injected/bootstrap.js — never arena_command.",
+  "description": "The remote arena.ai page: desktop tab webviews `arena-<n>`, the mobile `main` webview after it navigates to arena.ai. Only the narrow bridge commands used by injected/bootstrap.js — never arena_command or the account/tab commands.",
   "local": false,
   "remote": {
     "urls": [
@@ -15,7 +15,7 @@
     "main"
   ],
   "webviews": [
-    "arena",
+    "arena-*",
     "main"
   ],
   "permissions": [

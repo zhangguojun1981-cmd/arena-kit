@@ -116,6 +116,10 @@ jobs:
           echo "NDK_HOME=$NDK_HOME"
           npm run tauri -- android init --ci --skip-targets-install
           npm run tauri -- icon src-tauri/icons/icon.png
+          # Apply Android overlay: our MainActivity (system-bar insets) over
+          # the generated template. gen/android is not committed, so the
+          # overlay is the single source of truth for native customisations.
+          bash scripts/apply-android-overlay.sh
           npm run tauri -- android build --apk --debug --target aarch64
       - uses: actions/upload-artifact@v5
         with:

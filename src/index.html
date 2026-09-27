@@ -13,6 +13,9 @@
     h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
     .sub { color: var(--fg-3); font-size: 13px; margin-top: 4px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 28px; align-items: start; }
+    .wide { grid-column: 1 / -1; }
+    .wide iframe { width: 100%; max-width: 1120px; height: 720px; }
+    .phone iframe { width: 390px; height: 760px; }
     figure { margin: 0; }
     figcaption { font-size: 12px; color: var(--fg-3); margin-bottom: 10px; letter-spacing: 0.02em; text-transform: uppercase; font-weight: 600; }
     iframe { width: 340px; height: 720px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); display: block; }
@@ -34,19 +37,31 @@
     <header class="top">
       <div>
         <h1>ArenaKit 界面预览</h1>
-        <div class="sub">浏览器中的静态预览:侧栏(亮/暗)与页内 HUD。真实数据来自 Tauri 事件,这里使用示例数据。</div>
+        <div class="sub">浏览器中的静态预览:桌面壳(标签页 + 首页 + 侧栏)、侧栏(亮/暗)、手机首页与页内 HUD。真实数据来自 Tauri 事件,这里使用示例数据。</div>
       </div>
       <label class="toggle"><input type="checkbox" id="page-dark" /> 页面暗色</label>
     </header>
 
     <section class="grid">
+      <figure class="wide">
+        <figcaption>Shell · 首页(无标签页,桌面 1400×920 缩放)</figcaption>
+        <iframe src="shell.html?theme=light" title="shell home"></iframe>
+      </figure>
+      <figure class="wide">
+        <figcaption>Shell · 3 个标签页(暗色;中间区域在真机上由 arena.ai 原生 webview 覆盖)</figcaption>
+        <iframe class="frame-dark" src="shell.html?theme=dark&tabs=1" title="shell tabs"></iframe>
+      </figure>
       <figure>
         <figcaption>Dock · Light</figcaption>
-        <iframe src="dock.html?demo=1&theme=light" title="dock light"></iframe>
+        <iframe src="shell.html?view=dock&theme=light" title="dock light"></iframe>
       </figure>
       <figure>
         <figcaption>Dock · Dark</figcaption>
-        <iframe class="frame-dark" src="dock.html?demo=1&theme=dark" title="dock dark"></iframe>
+        <iframe class="frame-dark" src="shell.html?view=dock&theme=dark" title="dock dark"></iframe>
+      </figure>
+      <figure class="phone">
+        <figcaption>手机首页(Android 启动页)</figcaption>
+        <iframe src="shell.html?mode=mobile&theme=light" title="mobile home"></iframe>
       </figure>
       <figure>
         <figcaption>HUD · 页内悬浮</figcaption>

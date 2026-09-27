@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <title>ArenaKit</title>
+  <link rel="stylesheet" href="theme.css" />
+  <link rel="stylesheet" href="dock.css" />
+  <link rel="stylesheet" href="shell.css" />
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try {
+      var t = localStorage.getItem('ak_theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <!--
+    ArenaKit shell. On desktop this page fills the window: a tab strip on top,
+    the home page (accounts) in the middle and the dock on the right. Every
+    open arena.ai tab is a native child webview that the Rust side lays over
+    the stage area — the shell never embeds arena.ai itself.
+    On mobile the same page is the start page; "打开 Arena" navigates the
+    single webview to arena.ai and the in-page HUD brings you back.
+  -->
+  <div class="shell" id="shell" data-mode="desktop" data-view="full">
+
+    <header class="topbar" id="topbar">
+      <span class="topbar-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20">
+          <path d="M6.6 17.2 12 6.8l5.4 10.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="12" cy="14.6" r="1.7" class="mark-dot"/>
+        </svg>
+      </span>
+      <button class="top-btn" id="home-btn" type="button" aria-pressed="true" title="首页 · 账号">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5V13a.5.5 0 0 1-.5.5H9.5V10h-3v3.5H3a.5.5 0 0 1-.5-.5Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <span>首页</span>
+      </button>
+      <nav class="tabs" id="tabs" role="tablist" aria-label="打开的 arena 页面"></nav>
+      <button class="tab-add" id="tab-add" type="button" title="新开 arena 页面(选择账号)" aria-label="新开 arena 页面">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      </button>
+      <span class="topbar-spacer"></span>
+      <span class="topbar-hint" id="topbar-hint"></span>
+    </header>
+
+    <div class="shell-row">
+      <main class="stage" id="stage">
+
+        <!-- Desktop home: accounts -->
+        <section class="home" id="home" aria-label="账号">
+          <header class="home-head">
+            <div>
+              <h1 class="home-title">账号</h1>
+              <p class="home-sub">每个账号是一份独立的 arena.ai 登录态,可绑定各自的代理节点;同一账号可以开多个页面。</p>
+            </div>
+            <button class="btn btn-primary" type="button" id="add-account">添加账号</button>
+          </header>
+
+          <div class="acct-grid" id="acct-grid"></div>
+
+          <section class="home-notes">
+            <h2 class="notes-title">说明</h2>
+            <ul class="notes">
+              <li><b>隔离</b> · Cookie、localStorage、IndexedDB 按账号分开存放,账号之间互不可见;首次打开需要登录一次。</li>
+              <li><b>代理</b> · 填 <code>http://</code> 或 <code>socks5://</code> 的本地端口(如 Clash / xray 为每个节点单独开的入站),暂不支持带密码的代理;留空为直连。识别模型等后台请求也走同一节点。</li>
+              <li><b>平台</b> · macOS 14+ 完整支持;Windows 上多个页面共用第一个代理;Android 只有一份系统 WebView 登录态,多账号请用系统"应用分身",代理由 Clash 等 VPN 接管。</li>
+            </ul>
+          </section>
+        </section>
+
+        <!-- Mobile home -->
+        <section class="m-home" id="m-home" hidden aria-label="首页">
+          <div class="m-brand">
+            <span class="mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="28" height="28"><path d="M6.6 17.2 12 6.8l5.4 10.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="14.6" r="1.7" class="mark-dot"/></svg>
+            </span>
+            <div>
+              <div class="m-title">ArenaKit</div>
+              <div class="m-sub">arena.ai 增强客户端</div>
+            </div>
+          </div>
+          <button class="cta" type="button" id="m-open">打开 Arena</button>
+          <p class="m-hint">页面右下角的 ArenaKit 胶囊可展开服务端模型 / 额度,并从那里返回首页。</p>
+          <ul class="m-features">
+            <li><b>服务端模型识别</b><span>每次对话后显示真正回答你的模型</span></li>
+            <li><b>解锁 Opus / 隐藏模型</b><span>Direct 模式可直选,盲测模型可见</span></li>
+            <li><b>模型管理面板</b><span>70+ 厂商识别、分组、排序</span></li>
+            <li><b>提示词注入</b><span>为每个新对话前置系统提示词</span></li>
+          </ul>
+          <p class="m-note">Android 的系统 WebView 只有一份登录态,多账号请使用系统的"应用分身";代理由 Clash 等 VPN 接管。</p>
+          <p class="m-version mono" id="m-version"></p>
+        </section>
+
+      </main>
+
+      <aside class="dock-col" id="dock-col">
+        <!-- ArenaKit dock: mirrors the active arena.ai tab. Same markup that
+             dock.js drives; kept inside the shell so tabs, home and dock share
+             one document (popovers, theme, toasts). -->
+        <div class="dock" id="dock">
+
+          <header class="head">
+            <div class="brand">
+              <span class="mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="24" height="24">
+                  <path d="M6.6 17.2 12 6.8l5.4 10.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+                  <circle cx="12" cy="14.6" r="1.7" class="mark-dot"/>
+                </svg>
+              </span>
+              <span class="brand-name">ArenaKit</span>
+            </div>
+            <div class="head-actions">
+              <span class="pill pill-status" id="conn" data-state="idle"><i class="dot"></i><span id="conn-text">连接中</span></span>
+              <button class="icon-btn" id="theme-btn" type="button" title="主题:跟随系统" aria-label="切换主题">
+                <svg class="ic ic-sun" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.5 1.5M17.2 17.2l1.5 1.5M5.3 18.7l1.5-1.5M17.2 6.8l1.5-1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                <svg class="ic ic-moon" viewBox="0 0 24 24" width="16" height="16"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                <svg class="ic ic-auto" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.8v16.4A8.2 8.2 0 0 0 12 3.8Z" fill="currentColor"/></svg>
+              </button>
+            </div>
+          </header>
+
+          <div class="dock-tab" id="dock-tab" hidden>
+            <span class="swatch" id="dock-tab-dot"></span>
+            <span class="dock-tab-name" id="dock-tab-name"></span>
+            <span class="dock-tab-proxy mono" id="dock-tab-proxy"></span>
+          </div>
+
+          <main class="body">
+
+            <!-- Module: server-side model (trace forensics) -->
+            <section class="card" data-section="model" data-open="true">
+              <button class="card-head" type="button" aria-expanded="true">
+                <span class="card-title">服务端模型</span>
+                <span class="card-aside" id="model-when"></span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner">
+                  <div class="model" id="model-block" data-empty="true">
+                    <div class="model-name" id="model-name">—</div>
+                    <div class="model-meta">
+                      <span class="provider" id="model-provider"></span>
+                      <span class="run mono" id="model-run"></span>
+                      <button class="link-btn" id="copy-model" type="button" hidden>复制</button>
+                    </div>
+                    <p class="empty-hint" id="model-hint">在左侧发送一条消息,ArenaKit 会截获运行令牌并读取 trace 中的真实模型名。</p>
+                  </div>
+                  <ul class="recent" id="recent" hidden></ul>
+                </div>
+              </div>
+            </section>
+
+            <!-- Module: daily-free-credit gauge -->
+            <section class="card" data-section="credit" data-open="true">
+              <button class="card-head" type="button" aria-expanded="true">
+                <span class="card-title">今日额度</span>
+                <span class="card-aside" id="credit-reset"></span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner">
+                  <div class="gauge" id="gauge" data-band="none">
+                    <div class="gauge-row">
+                      <span class="gauge-value"><span id="credit-pct">—</span><span class="gauge-unit" id="credit-unit" hidden>%</span></span>
+                      <span class="gauge-sub" id="credit-sub">等待数据</span>
+                    </div>
+                    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar">
+                      <div class="bar-fill" id="bar-fill"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Module: enhancement toggles -->
+            <section class="card" data-section="modules" data-open="true">
+              <button class="card-head" type="button" aria-expanded="true">
+                <span class="card-title">功能</span>
+                <span class="card-aside" id="modules-aside"></span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner list">
+                  <button class="row row-btn" type="button" data-action="manager">
+                    <span class="row-main">
+                      <span class="row-label">模型筛选 / 管理面板</span>
+                      <span class="row-desc">Arena-Manager · 70 厂商识别、分组、排序</span>
+                    </span>
+                    <svg class="row-arrow" viewBox="0 0 16 16" width="14" height="14"><path d="M5 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+
+                  <label class="row">
+                    <span class="row-main">
+                      <span class="row-label">解锁 Opus 全系</span>
+                      <span class="row-desc">Direct 模式可直选 Claude Opus</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" data-unlock="opus" /><i></i></span>
+                  </label>
+
+                  <label class="row">
+                    <span class="row-main">
+                      <span class="row-label">解锁隐藏 / 盲测模型</span>
+                      <span class="row-desc">150+ 未公开模型出现在选择器</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" data-unlock="hidden" /><i></i></span>
+                  </label>
+
+                  <label class="row">
+                    <span class="row-main">
+                      <span class="row-label">排行榜性价比列</span>
+                      <span class="row-desc">价格、模型年龄、模态图标</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" data-module="plus" /><i></i></span>
+                  </label>
+
+                  <label class="row">
+                    <span class="row-main">
+                      <span class="row-label">个人投票统计</span>
+                      <span class="row-desc">本地记录每次盲测胜负</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" data-module="leaderboard" /><i></i></span>
+                  </label>
+
+                  <label class="row">
+                    <span class="row-main">
+                      <span class="row-label">页内 HUD</span>
+                      <span class="row-desc">在 arena.ai 页面右下角浮动显示</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" data-module="hud" /><i></i></span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Module: system-prompt injection (ENI) -->
+            <section class="card" data-section="eni" data-open="false">
+              <button class="card-head" type="button" aria-expanded="false">
+                <span class="card-title">提示词注入</span>
+                <span class="card-aside" id="eni-aside">关闭</span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner">
+                  <label class="row row-flush">
+                    <span class="row-main">
+                      <span class="row-label">每个新对话自动注入</span>
+                      <span class="row-desc">作为系统提示词前置到首条消息</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" id="eni-on" /><i></i></span>
+                  </label>
+                  <textarea id="eni-text" class="textarea" rows="5" spellcheck="false" placeholder="在此输入系统提示词…"></textarea>
+                  <div class="actions">
+                    <span class="hint mono" id="eni-count">0 字</span>
+                    <button class="btn btn-primary" type="button" data-action="save-eni">保存</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+          </main>
+
+          <footer class="foot">
+            <span class="status" id="status">就绪</span>
+            <span class="meta mono" id="app-info"></span>
+          </footer>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Add / edit account -->
+  <dialog class="dlg" id="account-dialog">
+    <form method="dialog" class="dlg-form" id="account-form" novalidate>
+      <h2 class="dlg-title" id="dlg-title">添加账号</h2>
+      <input type="hidden" id="f-id" />
+      <label class="field">
+        <span class="field-label">名称</span>
+        <input class="input" id="f-name" type="text" maxlength="40" autocomplete="off" placeholder="例如:主号 / 工作号" required />
+      </label>
+      <label class="field">
+        <span class="field-label">代理节点 <em>可选</em></span>
+        <input class="input mono" id="f-proxy" type="text" autocomplete="off" spellcheck="false" placeholder="socks5://127.0.0.1:1080 或 http://127.0.0.1:7890" />
+        <span class="field-help" id="f-proxy-help">留空 = 直连。支持 http / socks5,不支持带密码。</span>
+      </label>
+      <div class="field">
+        <span class="field-label">颜色</span>
+        <div class="swatches" id="f-colors" role="radiogroup" aria-label="颜色"></div>
+      </div>
+      <label class="field">
+        <span class="field-label">备注 <em>可选</em></span>
+        <input class="input" id="f-note" type="text" maxlength="200" autocomplete="off" placeholder="邮箱、用途…" />
+      </label>
+      <p class="dlg-error" id="f-error" hidden></p>
+      <div class="dlg-actions">
+        <button class="btn btn-danger" type="button" id="f-delete" hidden>删除账号</button>
+        <span class="dlg-spacer"></span>
+        <button class="btn" type="button" id="f-probe">测试代理</button>
+        <button class="btn" type="button" id="f-cancel">取消</button>
+        <button class="btn btn-primary" type="submit" id="f-save">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="shell.js"></script>
+</body>
+</html>

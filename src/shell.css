@@ -1,0 +1,635 @@
+/* ArenaKit shell — tab strip + home (accounts) + dock column.
+ * Layout constants mirror src-tauri/src/lib.rs (TOPBAR_H = 44, DOCK_W = 340):
+ * the Rust side lays each arena.ai tab webview exactly over `.stage`. */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* ── top bar (44px) ─────────────────────────────────────── */
+.topbar {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.topbar-mark {
+  display: inline-flex;
+  color: var(--accent);
+  margin-right: 2px;
+}
+.topbar-mark .mark-dot {
+  fill: var(--accent);
+}
+
+.top-btn,
+.tab-add,
+.tab {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  cursor: default;
+  border-radius: var(--r-ctl);
+  height: 30px;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+
+.top-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.top-btn:hover,
+.tab:hover,
+.tab-add:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.top-btn[aria-pressed="true"] {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--fg);
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  padding: 0 2px;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 96px;
+  max-width: 220px;
+  padding: 0 6px 0 11px;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--fg);
+}
+.tab .dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-3);
+}
+.tab .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab .close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 2px;
+  border-radius: 6px;
+  color: var(--fg-3);
+  opacity: 0;
+  transition: opacity var(--t-fast), background-color var(--t-fast), color var(--t-fast);
+}
+.tab:hover .close,
+.tab[aria-selected="true"] .close,
+.tab:focus-within .close {
+  opacity: 1;
+}
+.tab .close:hover {
+  background: var(--surface-3);
+  color: var(--fg);
+}
+.tab .badge {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: none;
+}
+.tab[data-unread="true"] .badge {
+  display: inline-block;
+}
+
+.tab-add {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+.topbar-hint {
+  font-size: 11.5px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+/* ── row: stage + dock column ───────────────────────────── */
+.shell-row {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+
+.dock-col {
+  flex: none;
+  width: 340px;
+  min-height: 0;
+  border-left: 1px solid var(--line);
+}
+.dock-col .dock {
+  height: 100%;
+}
+
+/* Which arena tab the dock is mirroring. */
+.dock-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--fg-2);
+  background: var(--surface-2);
+}
+.dock-tab .swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dock-tab-name {
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dock-tab-proxy {
+  margin-left: auto;
+  color: var(--fg-3);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+
+/* ── home (accounts) ────────────────────────────────────── */
+.home {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 44px 36px 72px;
+}
+
+.home-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+.home-title {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.home-sub {
+  margin: 0;
+  max-width: 56ch;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.acct-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.acct-card,
+.acct-add {
+  min-height: 132px;
+  border-radius: var(--r-card);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 16px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+.acct-card:hover {
+  border-color: var(--line-strong);
+}
+.acct-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+.acct-name {
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acct-open {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.acct-open[data-n]:not([data-n="0"]) {
+  color: var(--accent);
+  font-weight: 600;
+}
+.acct-proxy {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acct-proxy[data-direct="true"] {
+  color: var(--fg-3);
+}
+.acct-note {
+  font-size: 12px;
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acct-actions {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+  padding-top: 6px;
+}
+.acct-actions .btn {
+  height: 30px;
+  padding: 0 12px;
+}
+
+.acct-add {
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: default;
+  appearance: none;
+  font-family: inherit;
+}
+.acct-add:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.home-notes {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+.notes-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+  text-transform: uppercase;
+}
+.notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.notes b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.notes code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface-2);
+}
+
+/* ── dialog ─────────────────────────────────────────────── */
+.dlg {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0;
+  width: min(460px, 92vw);
+  background: var(--surface);
+  color: var(--fg);
+}
+.dlg::backdrop {
+  background: rgba(0, 0, 0, 0.38);
+}
+.dlg-form {
+  padding: 22px 22px 18px;
+  display: grid;
+  gap: 14px;
+}
+.dlg-title {
+  margin: 0 0 2px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.field {
+  display: grid;
+  gap: 6px;
+}
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.field-label em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--fg-3);
+  margin-left: 4px;
+}
+.field-help {
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+.field-help[data-tone="ok"] {
+  color: var(--ok);
+}
+.field-help[data-tone="error"] {
+  color: var(--danger);
+}
+.input {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.input.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.input::placeholder {
+  color: var(--fg-3);
+}
+.input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+.swatches {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.swatch-btn {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: default;
+  box-shadow: inset 0 0 0 2px var(--surface);
+  transition: transform var(--t-fast) var(--ease), border-color var(--t-fast);
+}
+.swatch-btn[aria-checked="true"] {
+  border-color: var(--fg);
+  transform: scale(1.08);
+}
+.dlg-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+.dlg-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dlg-spacer {
+  flex: 1;
+}
+.btn-danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.btn-danger:hover {
+  filter: brightness(0.96);
+}
+.btn[disabled] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ── mobile home ────────────────────────────────────────── */
+.shell[data-mode="mobile"] .topbar,
+.shell[data-mode="mobile"] .dock-col,
+.shell[data-mode="mobile"] .home {
+  display: none;
+}
+.shell[data-mode="mobile"] .m-home {
+  display: block;
+}
+.m-home {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 28px 22px calc(28px + env(safe-area-inset-bottom));
+}
+.m-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 26px;
+}
+.m-brand .mark {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.m-brand .mark-dot {
+  fill: var(--accent);
+}
+.m-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.m-sub {
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.cta {
+  appearance: none;
+  width: 100%;
+  height: 52px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  transition: transform var(--t-fast) var(--ease), filter var(--t-fast);
+}
+.cta:active {
+  transform: scale(0.985);
+  filter: brightness(0.94);
+}
+.m-hint {
+  margin: 12px 2px 26px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg-2);
+}
+.m-features {
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  overflow: hidden;
+}
+.m-features li {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+.m-features li:first-child {
+  border-top: 0;
+}
+.m-features b {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.m-features span {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.m-note {
+  margin: 0 2px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-3);
+}
+.m-version {
+  margin: 0 2px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* ── dock-only preview (index.html gallery) ─────────────── */
+.shell[data-view="dock"] .topbar,
+.shell[data-view="dock"] .stage {
+  display: none;
+}
+.shell[data-view="dock"] .dock-col {
+  width: 100%;
+  border-left: 0;
+}
+
+@media (max-width: 640px) {
+  .home {
+    padding: 28px 18px 56px;
+  }
+  .home-head {
+    flex-direction: column;
+    gap: 14px;
+  }
+}

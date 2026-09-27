@@ -15,7 +15,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": [
+      "dmg",
+      "app"
+    ],
     "category": "Productivity",
     "shortDescription": "arena.ai enhancement client",
     "icon": [
@@ -26,7 +29,7 @@
       "icons/icon.png"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "14.0"
     },
     "android": {
       "minSdkVersion": 26

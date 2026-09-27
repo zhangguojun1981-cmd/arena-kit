@@ -48,7 +48,10 @@ const wrap = (name, src) =>
 console.log('assembled init bundle');
 {
   const css = readFileSync(join(root, 'src', 'hud.css'), 'utf8');
-  let bundle = `window.__ARENAKIT_ENV__=${JSON.stringify({ platform: 'test', version: '0.0.0', mobile: false })};\n`;
+  // Mirror of lib.rs::build_init_script — the whole bundle is guarded to
+  // arena.ai hosts because the same webview also shows the bundled shell.
+  let bundle = "(function(){if(!/(^|\\.)(arena|lmarena)\\.ai$/.test(location.hostname))return;\n";
+  bundle += `window.__ARENAKIT_ENV__=${JSON.stringify({ platform: 'test', version: '0.0.0', mobile: false })};\n`;
   bundle += `window.__ARENAKIT_HUD_CSS__=${JSON.stringify(css)};\n`;
   bundle += sources['bootstrap.js'] + '\n;';
   bundle += sources['gm-shim.js'] + '\n;';
@@ -61,6 +64,7 @@ console.log('assembled init bundle');
   bundle += wrap('leaderboard', sources['leaderboard.js']);
   bundle += wrap('hud', sources['hud.js']);
   bundle += "};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run);}else{run();}})();\n";
+  bundle += '})();\n';
   try {
     new vm.Script(bundle, { filename: 'init-bundle.js' });
     ok(`bundle parses (${(bundle.length / 1024).toFixed(0)} KB)`);
@@ -70,7 +74,7 @@ console.log('assembled init bundle');
 }
 
 console.log('ES modules');
-for (const f of ['src/dock.js', 'src/lib/format.js']) {
+for (const f of ['src/shell.js', 'src/dock.js', 'src/lib/format.js']) {
   try {
     execFileSync(process.execPath, ['--check', join(root, f)], { stdio: 'pipe' });
     ok(f);
@@ -90,7 +94,7 @@ for (const f of ['src-tauri/tauri.conf.json', 'src-tauri/capabilities/default.js
 }
 
 console.log('HTML references');
-for (const html of ['src/dock.html', 'src/index.html']) {
+for (const html of ['src/shell.html', 'src/index.html']) {
   const text = readFileSync(join(root, html), 'utf8');
   const refs = [...text.matchAll(/(?:src|href)="([^"?#]+)/g)].map((m) => m[1]).filter((r) => !/^https?:/.test(r));
   for (const r of refs) {

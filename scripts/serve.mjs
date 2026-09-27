@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* Tiny static server for reviewing the UI in a browser without Tauri:
- *   npm run preview  →  http://localhost:4173/  (gallery)  /dock.html?demo=1
+ *   npm run preview  →  http://localhost:4173/  (gallery)  /shell.html?tabs=1  /shell.html?mode=mobile
  * Zero dependencies on purpose (the project has no bundler). */
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';

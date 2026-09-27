@@ -23,12 +23,16 @@
 ├──────────────── IPC (window.__ARENAKIT__ / invoke) ───────────┤
 │  Rust 核心 (src-tauri/src/lib.rs) —— 两端共用                 │
 │   ├── build_init_script  组装 env + bootstrap + shim + 各模块(按开关) │
+│   ├── sessions.rs  账号簿 accounts.json / 代理校验 / 标签列表   │
 │   ├── trace.rs   validate_token → poll Trigger.dev → 抽模型名  │
 │   ├── pulse.rs   额度阈值 / 退避(轮询循环待接入)              │
-│   └── broadcast  事件同时 emit 给 Dock + eval 进页内 HUD        │
+│   └── broadcast  事件带 tab 标签 emit 给 Shell + eval 进对应页面 HUD │
 ├─────────────────────────────────────────────────────────────┤
-│  桌面 Dock (src/dock.html) —— 独立本地 WebView,窗口右侧 340px │
-│   模型卡 / 额度仪表 / 功能开关 / 提示词注入 / 主题切换          │
+│  桌面 Shell (src/shell.html) —— 唯一本地 WebView,铺满窗口     │
+│   ├── 顶栏 44px:标签(每个 arena 页面)/ + 选账号 / 首页        │
+│   ├── 首页(账号管理);激活标签时被原生子 WebView 覆盖          │
+│   └── 右列 340px Dock:模型卡 / 额度 / 开关 / 提示词 / 主题     │
+│  arena 标签页 = 子 WebView(arena-<n>):账号数据存储 + 代理节点 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -36,8 +40,17 @@
 
 - **令牌化**:`src/theme.css` 定义颜色、字体、圆角、动效的 CSS 变量;亮/暗由 `<html data-theme="light|dark">` 驱动,缺省跟随 `prefers-color-scheme`。Dock 的主题偏好存 `localStorage.ak_theme`,首屏前内联脚本先行应用避免闪烁。
 - **扁平极简**:无渐变、无投影,层次全部来自表面色阶(`--bg` → `--surface` → `--surface-2/3`)与 1px 发丝线;单一强调色(iris),状态色只用于状态(ok / warn / danger)。
-- **两套壳,一套语言**:Dock(桌面,独立 WebView)与 HUD(页内 Shadow DOM,不受 arena 样式影响)共享同一组令牌值与排版规则;HUD 自动跟随 arena 的 `html.dark`。
-- **可预览**:`npm run preview` 起静态服务,`src/index.html` 用 iframe 并排展示亮/暗 Dock 与 HUD,均使用示例数据,无需 Tauri。
+- **两套壳,一套语言**:Shell(桌面本地 WebView:标签栏 + 首页 + Dock)与 HUD(页内 Shadow DOM,不受 arena 样式影响)共享同一组令牌值与排版规则;HUD 自动跟随 arena 的 `html.dark`。
+- **可预览**:`npm run preview` 起静态服务,`src/index.html` 用 iframe 并排展示 Shell(首页 / 多标签)、亮/暗 Dock、手机首页与 HUD,均使用示例数据,无需 Tauri。
+
+## 账号 / 标签 / 代理(桌面)
+
+- **默认首页**:窗口启动只创建 `shell` 子 WebView(铺满窗口),不加载 arena.ai。用户在首页(或顶栏 `+` 的原生菜单)选一个账号才创建标签。
+- **标签 = 子 WebView**:`open_tab(account_id)` 用 `Window::add_child` 创建 `arena-<n>`,位置/尺寸恰好覆盖 Shell 的中间区域(`TOPBAR_H = 44`,`DOCK_W = 340`,与 `shell.css` 一致);窗口 `Resized` 时 Rust 重算所有子 WebView 的 bounds(不用 `auto_resize`,它会按比例拉伸 Dock 列)。切换标签 = `show()/hide()`;关闭 = `close()`;没有激活标签时首页可见。
+- **账号隔离**:每个标签用账号的 16 字节 `data_store_identifier`(macOS 14+,`WKWebsiteDataStore(forIdentifier:)`)或独立 `data_directory`(Windows / Linux)。同一账号的多个标签共享登录态(像浏览器多开同一站点)。
+- **代理节点**:`WebviewBuilder::proxy_url`(`http://` / `socks5://`,需 Cargo feature `macos-proxy`,因此 `minimumSystemVersion = 14.0`)。Rust 侧替页面发出的请求(`fetch_trace` 轮询 Trigger.dev、`proxy_get`)用调用方 WebView 的标签查到账号,构造带同一代理的 reqwest Client,保证页面与后台请求同一出口。
+- **事件归属**:所有 `arenakit://*` 事件的 payload 为 `{ tab, data }`;`page_event` / `fetch_trace` 的 `Webview` 参数给出来源标签。Dock 只渲染激活标签,后台标签的事件进缓存,切回时回放;`arenakit://tabs` 通知 Shell 重绘标签栏。
+- **ACL**:`capabilities/default.json`(`local: true`,webviews `shell` + `main`)拥有全部命令;`capabilities/arena.json`(远程 `arena.ai`,webviews `arena-*` + `main`)只有 `fetch_trace / proxy_get / page_event / get_app_info`。原生弹出菜单(`Window::popup_menu`)用于选账号,因为 HTML 弹层会被子 WebView 遮住。
 
 ## 令牌截获数据流(核心取证链)
 
@@ -63,7 +76,9 @@ Tauri 里用 `WebviewWindowBuilder::initialization_script`(MAIN world 等价,页
 | WebView 初始化 | Tauri 默认 | 需 `minSdk 26`,启用 `mixedContent`/DOM storage |
 | 注入 MAIN world 脚本 | `initialization_script` | 同,Tauri 2 mobile 支持 |
 | 原生 HTTP 带 Cookie | reqwest + WKHTTPCookieStore 导出 | reqwest + CookieManager 导出 |
-| 界面 | 窗口内两个 WebView:arena.ai + 右侧 Dock(`add_child`) | 单个全屏 WebView(`WebviewWindowBuilder`),页内 HUD 默认开启 |
+| 界面 | Shell(标签栏 + 首页 + Dock)+ N 个 arena 标签子 WebView(`add_child`) | 单个 WebView(`WebviewWindowBuilder`):启动在 `shell.html` 手机首页,"打开 Arena"导航到 arena.ai,HUD 的"首页"按钮经 `page_event{kind:"home"}` 导航回来 |
+| 多账号 / 代理 | 每标签独立数据存储 + 代理节点 | **单账号**:系统 WebView 只有一份 Cookie 存储、代理为进程级(`ProxyController`);多账号用系统"应用分身",节点交给 Clash 等 VPN |
+| 系统栏 | — | Tauri 模板 `enableEdgeToEdge()` 让页面顶到状态栏下;`android-overlay/.../MainActivity.kt` 给内容根加 systemBars + cutout + IME 的 padding(CI 在 `android init` 后覆盖) |
 | 悬浮 HUD | 可在 Dock 里打开(默认关) | 默认开;如需系统级悬浮球再加 `SYSTEM_ALERT_WINDOW`(二期) |
 | 签名 | Apple 开发者证书(或自签本地用) | keystore(复用 arena-trace-android 的 CI 方案) |
 

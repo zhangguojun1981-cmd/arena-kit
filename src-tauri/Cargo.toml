@@ -15,10 +15,16 @@ tauri-build = { version = "2.7", features = [] }
 [dependencies]
 # `unstable` is required for multi-webview windows (Window::add_child) and
 # Manager::get_webview, which the desktop split view relies on.
-tauri = { version = "2.12", features = ["unstable"] }
+# `macos-proxy` enables WebviewBuilder::proxy_url on macOS (WKWebsiteDataStore
+# proxyConfigurations, macOS 14+) — per-account proxy nodes.
+tauri = { version = "2.12", features = ["unstable", "macos-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# `socks` so Rust-side requests made on behalf of a tab (trace polling,
+# proxy_get) can exit through the same socks5 node as the page.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "socks"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
 

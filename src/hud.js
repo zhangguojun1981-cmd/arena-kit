@@ -74,7 +74,7 @@
           '<div class="bar"><div class="fill" id="fill"></div></div>' +
         '</div>' +
         '<div class="error" id="error"></div>' +
-        '<div class="foot"><span>ArenaKit</span><span id="ver"></span></div>' +
+        '<div class="foot"><span>ArenaKit</span><button class="home" id="home" type="button" hidden>首页</button><span id="ver"></span></div>' +
       '</div>' +
       '<button class="chip empty no-pct" id="chip" aria-label="ArenaKit HUD">' +
         '<span class="mark">' + MARK + '</span>' +
@@ -90,6 +90,14 @@
   var chip = $('chip');
   var card = $('card');
   $('ver').textContent = env.version ? 'v' + env.version : '';
+  // Mobile has no tab strip: the HUD is the way back to the app's home page.
+  if (env.mobile) {
+    $('home').hidden = false;
+    $('home').addEventListener('click', function () {
+      var ak = window.__ARENAKIT__;
+      if (ak && ak.invoke) ak.invoke('page_event', { kind: 'home', payload: {} }).catch(function () {});
+    });
+  }
 
   // ── theme: follow arena's html.dark, else the OS ────────────────────
   var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;

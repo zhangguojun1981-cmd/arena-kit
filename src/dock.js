@@ -52,7 +52,7 @@ function applyTheme() {
   else html.dataset.theme = themeMode;
   themeBtn.dataset.mode = themeMode;
   themeBtn.title = themeLabel(themeMode);
-  // Keep the pre-paint snippet in dock.html in sync.
+  // Keep the pre-paint snippet in shell.html in sync.
   try {
     if (themeMode === 'system') localStorage.removeItem('ak_theme');
     else localStorage.setItem('ak_theme', themeMode);
@@ -88,7 +88,7 @@ document.querySelectorAll('.card[data-section]').forEach((card) => {
 
 // ── small UI helpers ─────────────────────────────────────────────────────
 let toastTimer = 0;
-function toast(text) {
+export function toast(text) {
   const el = $('toast');
   el.textContent = text;
   el.classList.add('show');
@@ -96,7 +96,7 @@ function toast(text) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
 }
 
-function setStatus(text, tone = '') {
+export function setStatus(text, tone = '') {
   const el = $('status');
   el.textContent = text;
   if (tone) el.dataset.tone = tone;
@@ -131,12 +131,12 @@ function renderRecent() {
   }
 }
 
-function showModels(payload) {
+function showModels(payload, opts = {}) {
   const info = describeModels(payload?.models);
   const block = $('model-block');
   if (!info.name) {
     block.dataset.empty = 'true';
-    $('model-name').textContent = '未识别';
+    $('model-name').textContent = payload ? '未识别' : '—';
     $('model-provider').textContent = '';
     $('model-run').textContent = '';
     $('copy-model').hidden = true;
@@ -150,6 +150,10 @@ function showModels(payload) {
   $('copy-model').hidden = false;
   $('model-when').textContent = info.partial ? '部分结果' : '刚刚识别';
   lastModel = info.name;
+  if (opts.replay) {
+    renderRecent();
+    return;
+  }
   recent = pushRecent(recent, { name: info.name, provider: info.provider, at: Date.now() });
   store.set('ak_recent', recent);
   renderRecent();
@@ -292,6 +296,80 @@ function wireControls() {
   });
 }
 
+// ── tabs: the dock mirrors ONE arena tab at a time ───────────────────────
+// Core events arrive tagged `{ tab, data }` (tab = null on mobile / unknown).
+// Events for background tabs are cached and replayed when that tab becomes
+// active, so switching tabs never shows another account's model or credits.
+const perTab = new Map(); // tab id -> { models, credits, state }
+let activeTab = null; // number | null (null = home / mobile)
+let tabsKnown = false; // desktop shell told us about tabs at least once
+
+export function unwrapEvent(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload) && 'data' in payload && 'tab' in payload) {
+    return { tab: payload.tab ?? null, data: payload.data };
+  }
+  return { tab: null, data: payload };
+}
+
+function cacheFor(tab) {
+  const key = tab ?? 'mobile';
+  if (!perTab.has(key)) perTab.set(key, { models: null, credits: null, state: null });
+  return perTab.get(key);
+}
+
+function isCurrent(tab) {
+  // Mobile / untagged events always render; on desktop only the active tab does.
+  return tab === null || !tabsKnown || tab === activeTab;
+}
+
+function resetCards() {
+  showModels(null);
+  showCredits(null);
+  $('model-when').textContent = '';
+  setStatus('就绪');
+}
+
+function replay(tab) {
+  const c = perTab.get(tab ?? 'mobile');
+  if (!c) {
+    resetCards();
+    return;
+  }
+  if (c.models) showModels(c.models, { replay: true });
+  else showModels(null);
+  if (c.credits) showCredits(c.credits);
+  else showCredits(null);
+  if (c.state) applyPageState(c.state);
+}
+
+/** Called by the shell whenever tabs change. */
+export function setActiveTab(view) {
+  tabsKnown = true;
+  const next = view && view.active != null ? Number(view.active) : null;
+  const tab = view && next != null ? (view.tabs || []).find((t) => Number(t.id) === next) : null;
+  const header = $('dock-tab');
+  if (header) {
+    header.hidden = !tab;
+    if (tab) {
+      $('dock-tab-dot').style.background = tab.color || 'var(--fg-3)';
+      $('dock-tab-name').textContent = tab.name || '';
+      $('dock-tab-proxy').textContent = tab.proxy || '直连';
+    }
+  }
+  if (next === activeTab) return;
+  activeTab = next;
+  if (next === null) {
+    replay(null);
+    resetCards();
+    setConn('idle', '未打开页面');
+    return;
+  }
+  replay(next);
+  setConn('idle', '等待页面');
+  // Ask the now-visible page for its switches (it also reports on load).
+  pageCall(`${AK}reportState()`);
+}
+
 async function boot() {
   wireControls();
   renderRecent();
@@ -303,14 +381,28 @@ async function boot() {
   }
 
   const { listen } = tauri.event;
-  await listen('arenakit://models', (e) => showModels(e.payload));
-  await listen('arenakit://credits', (e) => showCredits(e.payload));
+  await listen('arenakit://models', (e) => {
+    const { tab, data } = unwrapEvent(e.payload);
+    cacheFor(tab).models = data;
+    if (isCurrent(tab)) showModels(data);
+  });
+  await listen('arenakit://credits', (e) => {
+    const { tab, data } = unwrapEvent(e.payload);
+    cacheFor(tab).credits = data;
+    if (isCurrent(tab)) showCredits(data);
+  });
   await listen('arenakit://state', (e) => {
-    applyPageState(e.payload);
-    setConn('live', '已连接');
+    const { tab, data } = unwrapEvent(e.payload);
+    cacheFor(tab).state = data;
+    if (isCurrent(tab)) {
+      applyPageState(data);
+      setConn('live', '已连接');
+    }
   });
   await listen('arenakit://error', (e) => {
-    const msg = e.payload?.message || '未知错误';
+    const { tab, data } = unwrapEvent(e.payload);
+    if (!isCurrent(tab)) return;
+    const msg = data?.message || '未知错误';
     setStatus('错误: ' + msg, 'error');
     setConn('error', '出错');
   });
@@ -326,40 +418,6 @@ async function boot() {
   setStatus('就绪');
   // Ask the page for its current switches; it also reports on every load.
   pageCall(`${AK}reportState()`);
-}
-
-// ── preview (no Tauri runtime) ───────────────────────────────────────────
-function preview() {
-  const params = new URLSearchParams(location.search);
-  if (params.get('theme') === 'light' || params.get('theme') === 'dark') {
-    themeMode = params.get('theme');
-    applyTheme();
-  }
-  setConn('preview', '预览模式');
-  setStatus('浏览器预览 · 无 Tauri 运行时');
-  $('app-info').textContent = 'v0.1.0 · preview';
-
-  if (params.get('empty') === '1') return;
-
-  // Sample data so the layout can be judged with real content.
-  recent = [
-    { name: 'gpt-5-chat', provider: 'openai', at: Date.now() - 12 * 60_000 },
-    { name: 'gemini-2.5-pro', provider: 'google', at: Date.now() - 48 * 60_000 },
-    { name: 'claude-sonnet-4', provider: 'anthropic', at: Date.now() - 3 * 3_600_000 },
-  ];
-  showModels({
-    run_id: 'run_0f3a9c2d7e1b',
-    models: [{ model: 'claude-opus-4-1', provider: 'anthropic', partial: false }],
-  });
-  showCredits({ remaining: 72, total: 100, resetAt: Date.now() + (2 * 60 + 15) * 60_000 });
-  applyPageState({
-    modules: { manager: true, unlock: true, plus: true, leaderboard: false, eni: false },
-    unlock: { opus: true, hidden: false },
-    hud: false,
-    eni: { on: false, text: '' },
-  });
-  if (params.get('band') === 'warning') showCredits({ remaining: 15, total: 100, resetAt: Date.now() + 40 * 60_000 });
-  if (params.get('band') === 'danger') showCredits({ remaining: 4, total: 100, resetAt: Date.now() + 9 * 60_000 });
 }
 
 boot();

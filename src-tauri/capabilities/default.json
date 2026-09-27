@@ -1,20 +1,31 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Local (bundled) webviews: the native dock on desktop. Full command surface, including arena_command which evals into the arena.ai page.",
+  "description": "The bundled shell (tab strip, home, dock) — desktop child webview `shell`, and the mobile `main` webview while it shows the bundled home page (local URLs only). Full command surface, including arena_command which evals into the active arena.ai tab.",
   "local": true,
   "windows": [
     "main"
   ],
   "webviews": [
-    "dock"
+    "shell",
+    "main"
   ],
   "permissions": [
     "core:default",
+    "core:event:default",
     "allow-arena-command",
     "allow-get-app-info",
     "allow-fetch-trace",
     "allow-proxy-get",
-    "allow-page-event"
+    "allow-page-event",
+    "allow-list-accounts",
+    "allow-save-account",
+    "allow-delete-account",
+    "allow-list-tabs",
+    "allow-open-tab",
+    "allow-close-tab",
+    "allow-activate-tab",
+    "allow-pick-account",
+    "allow-probe-proxy"
   ]
 }

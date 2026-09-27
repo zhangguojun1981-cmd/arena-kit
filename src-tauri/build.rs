@@ -4,11 +4,22 @@
 use tauri_build::{AppManifest, Attributes};
 
 const COMMANDS: &[&str] = &[
+    // page bridge (remote arena.ai origin may call these)
     "fetch_trace",
     "proxy_get",
-    "arena_command",
     "get_app_info",
     "page_event",
+    // shell only
+    "arena_command",
+    "list_accounts",
+    "save_account",
+    "delete_account",
+    "list_tabs",
+    "open_tab",
+    "close_tab",
+    "activate_tab",
+    "pick_account",
+    "probe_proxy",
 ];
 
 fn main() {
