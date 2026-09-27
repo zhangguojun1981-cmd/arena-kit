@@ -83,6 +83,10 @@ const DEFAULT_PREFS = {
   quickText: '',            // session probe text ('' = random arithmetic)
   quickRename: false,       // rename the conversation after the session probe identifies its model
   theme: 'auto',            // 'auto' (follow system, like the reference DayNight theme) | 'light' | 'dark'
+  ballCenter: 'percent-model', // floating ball centre (Android): 'percent-model' | 'percent' | 'model'
+  capture: true,            // 截获会话流 (extension 监听 toggle): hand run tokens to Rust
+  pulseOn: true,            // 额度轮询: periodic /api/me/pulse reads (manual 刷新 always works)
+  monitorOn: true,          // 回复监控: reply-stream anomaly detection
 };
 
 // ── theme ───────────────────────────────────────────────────────────────
@@ -98,6 +102,39 @@ function wireTheme() {
   applyTheme(state.prefs.theme);
   root.querySelectorAll('[data-theme-pick]').forEach((b) => b.addEventListener('click', () => {
     savePrefs({ theme: applyTheme(b.dataset.themePick) });
+  }));
+}
+
+// ── settings: page-side feature flags + ball centre ─────────────────────
+const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn', 'ak-pulse-on'], ['monitor', 'monitorOn', 'ak-monitor-on']];
+/* Push the three switches into the arena page (injected snoop / pulse /
+ * monitor read window.__ARENAKIT_FLAGS__). Re-applied on every page load. */
+function applyPageFlags() {
+  for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
+}
+function wireSettings() {
+  for (const [flag, key, id] of FLAG_PREFS) {
+    const el = q(id);
+    el.checked = state.prefs[key] !== false;
+    el.addEventListener('change', () => {
+      savePrefs({ [key]: el.checked });
+      page('flagSet', flag, el.checked);
+      if (flag === 'capture') setStatus(el.checked ? '已开启截获会话流' : '已关闭截获会话流：不再识别模型，直到重新开启');
+      if (flag === 'pulse') { setStatus(el.checked ? '已开启额度轮询' : '已关闭额度轮询（可手动刷新）'); if (el.checked) dispatchToPage('pulse-refresh', null); }
+      if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
+    });
+  }
+  const field = q('ak-ball-field');
+  if (field) field.hidden = !EMBED;
+  const pickBall = (mode) => {
+    const m = ['percent-model', 'percent', 'model'].includes(mode) ? mode : 'percent-model';
+    root.querySelectorAll('[data-ball-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.ballPick === m)));
+    return m;
+  };
+  pickBall(state.prefs.ballCenter);
+  root.querySelectorAll('[data-ball-pick]').forEach((b) => b.addEventListener('click', () => {
+    savePrefs({ ballCenter: pickBall(b.dataset.ballPick) });
+    renderBall();
   }));
 }
 
@@ -200,6 +237,7 @@ async function savePrefs(patch) {
 // ── module: server-side model (trace pipeline) ──────────────────────────
 function onTrace(p) {
   if (!p || typeof p !== 'object' || typeof p.sessionId !== 'string') return;
+  if (state.prefs.capture === false) return; // 设置 → 截获会话流 off
   const sub = q('ak-model-sub');
   const tracker = state.tracker;
   if (p.stage === 'token') {
@@ -534,6 +572,7 @@ onPage('probe-result', (r) => { if (state.rpc) state.rpc.deliver(r); });
 
 onPage('nav', (n) => {
   if (!n || typeof n !== 'object') return;
+  if (n.reason === 'init') applyPageFlags(); // fresh page load: injected scripts start with flags unset
   const switched = n.sessionId !== state.nav.sessionId;
   state.nav = { sessionId: n.sessionId || null, path: n.path || '/', title: n.title || '' };
   q('ak-session').textContent = state.nav.sessionId ? '会话 ' + state.nav.sessionId.slice(0, 8) + '…' : (n.agentPath ? '新对话' : n.path || '');
@@ -739,6 +778,7 @@ function renderMonitor() {
   const entries = m.entries.slice().reverse();
   const head = q('ak-monitor-head');
   const last = m.last;
+  if (state.prefs.monitorOn === false) { head.textContent = '回复监控已关闭（设置 → 回复监控）。'; head.classList.remove('ak-warn'); q('ak-monitor-list').innerHTML = ''; return; }
   if (!last) { head.textContent = '监听回复流：空回复 / 报错 / 中断 / 停滞会自动标记到对应轮次。'; q('ak-monitor-list').innerHTML = ''; return; }
   head.textContent = (last.turn ? `第 ${last.turn} 轮 · ` : '') + last.line;
   head.classList.toggle('ak-warn', last.anomalies.length > 0);
@@ -750,7 +790,7 @@ function renderMonitor() {
   }).join('');
 }
 onPage('reply-monitor', (summary) => {
-  if (!state.monitor) return;
+  if (!state.monitor || state.prefs.monitorOn === false) return;
   const entry = state.monitor.ingest(summary);
   if (!entry) return;
   renderMonitor();
@@ -987,6 +1027,7 @@ async function boot() {
   state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
   wireTheme();
+  wireSettings();
   wireControls();
   wireUsageView();
   wireHistory();
@@ -1030,6 +1071,8 @@ async function boot() {
     const h = pageHandlers.get('nav');
     if (h) { try { h({ ...globalThis.__ARENAKIT__.navState(), reason: 'init' }); } catch (err) { console.warn('[dock] nav seed', err); } }
   }
+  applyPageFlags();
+  renderMonitor();
   setStatus(EMBED ? '就绪（内嵌模式）' : '就绪');
 }
 

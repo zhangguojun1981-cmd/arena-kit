@@ -39,6 +39,12 @@ export const PAGE_ACTIONS = {
     js: (on) => `window.__AK_PLUS_SET__ && window.__AK_PLUS_SET__(${!!on})`,
     run: (w, on) => (w.__AK_PLUS_SET__ ? w.__AK_PLUS_SET__(!!on) : undefined),
   },
+  // Feature flags read by the injected scripts (snoop capture / pulse polling /
+  // reply monitor): window.__ARENAKIT_FLAGS__[name] = on.
+  flagSet: {
+    js: (name, on) => `window.__ARENAKIT_FLAGS__=window.__ARENAKIT_FLAGS__||{};window.__ARENAKIT_FLAGS__[${jsString(name)}]=${!!on}`,
+    run: (w, name, on) => { w.__ARENAKIT_FLAGS__ = w.__ARENAKIT_FLAGS__ || {}; w.__ARENAKIT_FLAGS__[String(name)] = !!on; },
+  },
   // Browser controls (reference app panel: ‹ 后退 / 前进 › / 刷新).
   navBack: {
     js: () => 'window.history&&window.history.back()',

@@ -68,6 +68,8 @@
   function tick(now = Date.now()) {
     if (inFlight) return false;
     if (location.origin !== 'https://arena.ai') return false;
+    // ArenaKit 设置 → 额度轮询 off: no periodic reads (an explicit 刷新 still goes through).
+    if (!wanted && window.__ARENAKIT_FLAGS__ && window.__ARENAKIT_FLAGS__.pulse === false) return false;
     const cookieSig = sig(String(document.cookie || ''));
     const accountChanged = cookieSig !== lastCookieSig;
     const minGap = accountChanged || wanted ? ACCOUNT_GAP_MS : NORMAL_GAP_MS;

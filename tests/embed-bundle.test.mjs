@@ -193,7 +193,9 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
     navigator: { clipboard: { writeText: async () => {} } },
     location: { pathname: '/agent/s1', href: 'https://arena.ai/agent/s1', assign() {}, reload() {} },
     history: { back() {}, forward() {} },
-    console, setTimeout, clearTimeout, clearInterval, URL, JSON, Math, Date, Promise, Map, Set, Number, String, Object, Array, Error,
+    console, clearTimeout, clearInterval, URL, JSON, Math, Date, Promise, Map, Set, Number, String, Object, Array, Error,
+    // ball transients / alert timers must not keep the test process alive
+    setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); t.unref(); return t; },
     setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; },
     __TAURI__: {
       core: { invoke: async (cmd, args) => (cmd === 'store_get' ? (store.get('rs.' + args.key) ?? null) : cmd === 'store_set' ? void store.set('rs.' + args.key, args.value) : cmd === 'store_keys' ? [] : null) },
@@ -259,4 +261,19 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(byId['ak-hud-status'].textContent, '等待会话流…');
   assert.equal(top.textContent, '6%');
   assert.equal(bottom.textContent, '');
+
+  // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
+  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true }));
+  assert.equal(byId['ak-ball-field'].hidden, false, 'ball centre picker shown in embedded mode');
+  const capture = byId['ak-capture-on'];
+  capture.checked = false;
+  capture.listeners.change[0]();
+  await settle();
+  assert.equal(sandbox.__ARENAKIT_FLAGS__.capture, false);
+  emit('arenakit://trace', { stage: 'token', sessionId: 's9', runId: 'run_9' });
+  assert.equal(byId['ak-hud-status'].textContent, '等待会话流…', 'trace ignored while capture is off');
+  const monitor = byId['ak-monitor-on'];
+  monitor.checked = false;
+  monitor.listeners.change[0]();
+  assert.equal(byId['ak-monitor-head'].textContent, '回复监控已关闭（设置 → 回复监控）。');
 });

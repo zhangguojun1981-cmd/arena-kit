@@ -27,7 +27,8 @@
 
   const streams = new Map(); // sessionId → stat
 
-  const send = (payload) => { try { window.__ARENAKIT__ && window.__ARENAKIT__.send('reply-monitor', payload); } catch { } };
+  // ArenaKit 设置 → 回复监控 off: observe nothing outward (the tap stays passive).
+  const send = (payload) => { try { if (window.__ARENAKIT_FLAGS__ && window.__ARENAKIT_FLAGS__.monitor === false) return; window.__ARENAKIT__ && window.__ARENAKIT__.send('reply-monitor', payload); } catch { } };
   const visible = (e) => !!e && e.isConnected && e.getClientRects().length > 0;
   const isGenerating = () => [...document.querySelectorAll('button[aria-label]')].some((b) => visible(b) && STOP_LABEL.test(b.getAttribute('aria-label') || ''));
 

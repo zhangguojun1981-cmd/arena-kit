@@ -27,6 +27,8 @@
   }
   function emit(token, sessionId) {
     if (typeof token !== 'string' || token.length > 16384 || token.split('.').length !== 3) return;
+    // ArenaKit 设置 → 截获会话流 off: keep the tap installed but hand nothing over.
+    if (window.__ARENAKIT_FLAGS__ && window.__ARENAKIT_FLAGS__.capture === false) return;
     // ArenaKit: hand the token to the Rust bridge if present, else fall back to
     // the original postMessage channel (keeps this file usable as a plain userscript).
     if (window.__ARENAKIT__ && typeof window.__ARENAKIT__.onToken === 'function') {
