@@ -57,6 +57,7 @@ const DEFAULT_PREFS = {
   probeRounds: 5,
   probeFindAll: true,
   probeRename: true,
+  cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
 };
 
 // ── page event routing (arena page → dock) ──────────────────────────────
@@ -379,17 +380,49 @@ function setProbeRunningUi(running, what = '探针') {
 
 async function startProbe() {
   if (!state.probe) { probeLog('无 Tauri 运行时'); return; }
-  if (state.probe.isRunning) { probeLog('探针已在运行'); return; }
+  if (state.probe.isRunning) { probeLog(state.probe.mode === 'cleanup' ? '清理进行中，请先停止' : '探针已在运行'); return; }
   await persistProbePanel();
   const cfg = probeConfigFromPanel();
   if (!cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
   q('ak-probe-log').textContent = '';
   setProbeRunningUi(true);
+  let result = null;
   try {
-    await state.probe.start(cfg);
+    result = await state.probe.start(cfg);
   } finally {
     setProbeRunningUi(false);
   }
+  // Optional follow-up sweep: archive the arithmetic-titled chats the run
+  // left behind (hit chats were renamed, so they are not candidates). Skipped
+  // when the user stopped the probe by hand.
+  if (result && !result.cancelled && state.prefs.cleanupAfterProbe) {
+    probeLog('探针结束，开始自动清理…');
+    await startCleanup();
+  }
+}
+
+// ── module: cleanup sweep (archive arithmetic-titled probe residue) ─────
+function setCleanupRunningUi(running) {
+  document.querySelector('[data-action="cleanup-start"]').disabled = running;
+  document.querySelector('[data-action="cleanup-stop"]').disabled = !running;
+}
+async function startCleanup() {
+  if (!state.probe) { setStatus('无 Tauri 运行时'); return null; }
+  if (state.probe.isRunning) { probeLog(state.probe.mode === 'probe' ? '探针运行中，请先停止再清理' : '清理已在进行'); return null; }
+  setCleanupRunningUi(true);
+  q('ak-cleanup-state').textContent = '扫描侧栏算式标题…';
+  try {
+    // keepSessionId = the conversation on screen; it is never archived.
+    return await state.probe.cleanup(state.nav.sessionId || null);
+  } finally {
+    setCleanupRunningUi(false);
+  }
+}
+function wireCleanup() {
+  const after = q('ak-cleanup-after');
+  after.checked = !!state.prefs.cleanupAfterProbe;
+  after.addEventListener('change', () => savePrefs({ cleanupAfterProbe: after.checked }));
+  setCleanupRunningUi(false);
 }
 
 function createDockProbe() {
@@ -398,9 +431,16 @@ function createDockProbe() {
     rpc: state.rpc,
     modelForSession: (sid) => (state.sessions.get(sid)?.models || []).map((m) => m.model),
     onProgress: probeLog,
-    onFinished: (summary) => { probeLog(summary); q('ak-probe-state').textContent = summary; },
+    onFinished: (summary) => {
+      probeLog(summary);
+      if (/^清理|^没有需要归档/.test(summary)) q('ak-cleanup-state').textContent = summary;
+      else q('ak-probe-state').textContent = summary;
+    },
     onProbeState: (round, max, hits, active) => {
       q('ak-probe-state').textContent = active ? `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}` : (q('ak-probe-state').textContent || '');
+    },
+    onCleanupState: (archived, active) => {
+      q('ak-cleanup-state').textContent = active ? `清理中 · 已归档 ${archived}` : `上次清理已归档 ${archived}`;
     },
     buildTitle: (model, suffix) => buildTitle({ prefix: state.prefs.renamePrefix, model, suffix }),
     suffixCounters: counters,
@@ -521,6 +561,10 @@ function wireControls() {
         startProbe();
       } else if (a === 'probe-stop') {
         if (state.probe?.stop()) probeLog('正在停止…');
+      } else if (a === 'cleanup-start') {
+        startCleanup();
+      } else if (a === 'cleanup-stop') {
+        if (state.probe?.mode === 'cleanup' && state.probe.stop()) probeLog('正在停止清理…');
       } else if (a === 'save-eni') {
         const eniText = q('ak-eni-text').value;
         const eniOn = q('ak-eni-on').checked;
@@ -562,6 +606,7 @@ async function boot() {
   wireHistory();
   wireRename();
   wireProbe();
+  wireCleanup();
   if (state.rpc) state.probe = createDockProbe();
   await loadHistoryIndex();
   if (!state.tauri) {

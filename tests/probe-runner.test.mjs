@@ -147,3 +147,105 @@ test('custom title builder and persisted suffix counters', async () => {
   assert.equal(h.calls.find((c) => c.action === 'rename').args.title, 'AK-claude-opus-5-042');
   assert.deepEqual(saved, [{ claudeopus5: 42 }]);
 });
+
+/* ── cleanup sweep ─────────────────────────────────────────────────────── */
+function cleanupHarness({ sidebar, failArchive = () => false } = {}) {
+  const calls = [];
+  const log = [];
+  const states = [];
+  let items = sidebar.map((x) => ({ ...x }));
+  const rpc = {
+    call: async (action, args = {}) => {
+      calls.push({ action, args });
+      if (action === 'sidebarList') return { items: items.map((x) => ({ ...x })) };
+      if (action === 'archive') {
+        if (failArchive(args.sessionId, calls)) throw new Error('未找到唯一的 Archive 入口');
+        items = items.filter((x) => x.sessionId !== args.sessionId);
+        return { archived: true };
+      }
+      return {};
+    },
+  };
+  const ctl = createProbeController({
+    rpc, modelForSession: () => null,
+    onProgress: (l) => log.push(l), onFinished: (s) => log.push('FIN ' + s),
+    onCleanupState: (n, active) => states.push([n, active]),
+    sleep: () => Promise.resolve(), cleanupPacingMs: 0, archiveRetryMs: 0,
+  });
+  return { ctl, calls, log, states, items: () => items };
+}
+
+test('cleanup archives only arithmetic titles, keeps the open chat, never deletes', async () => {
+  const h = cleanupHarness({ sidebar: [
+    { sessionId: 'a', title: '1+1=' }, { sessionId: 'b', title: 'claude-opus-5-001' },
+    { sessionId: 'keep', title: '2+2=' }, { sessionId: 'c', title: ' 12 - 4 = ' }, { sessionId: 'd', title: '1+1=2' },
+  ] });
+  const r = await h.ctl.cleanup('keep');
+  assert.equal(r.archived, 2);
+  assert.equal(r.failed, 0);
+  assert.equal(r.remaining, 0);
+  assert.deepEqual(h.items().map((x) => x.sessionId), ['b', 'keep', 'd']);
+  assert.equal(h.calls[0].action, 'sidebarList');
+  assert.deepEqual(h.calls[0].args, { expand: true }, 'sidebar opened once up front');
+  assert.ok(h.calls.slice(1).filter((c) => c.action === 'sidebarList').every((c) => c.args.expand === false));
+  const archives = h.calls.filter((c) => c.action === 'archive');
+  assert.deepEqual(archives.map((c) => c.args), [
+    { sessionId: 'a', requireCurrentUrl: false, manageSidebar: false },
+    { sessionId: 'c', requireCurrentUrl: false, manageSidebar: false },
+  ]);
+  const reveal = h.calls.filter((c) => c.action === 'revealSidebarItem').map((c) => c.args.sessionId);
+  assert.deepEqual(reveal, ['a', 'c']);
+  assert.equal(h.calls.at(-1).action, 'collapseSidebar');
+  assert.ok(h.log.includes('已归档 1+1='));
+  assert.equal(h.log.at(-1), 'FIN 清理完成 · 已归档 2（仅归档，未删除）');
+  assert.deepEqual(h.states, [[0, true], [1, true], [2, true], [2, false]]);
+  assert.equal(h.calls.some((c) => c.action === 'openConversation'), false, 'archived from the ⋯ menu without opening');
+});
+
+test('cleanup with nothing to do reports so; failures retry once and abort after 3 in a row', async () => {
+  let h = cleanupHarness({ sidebar: [{ sessionId: 'b', title: 'notes' }] });
+  let r = await h.ctl.cleanup(null);
+  assert.equal(r.summary, '没有需要归档的算式标题对话');
+  assert.equal(h.calls.filter((c) => c.action === 'sidebarList').length, 1 + 3 + 1, 'initial + 3 candidate scans + recount');
+
+  h = cleanupHarness({ sidebar: [{ sessionId: 'x', title: '3*3=' }, { sessionId: 'y', title: '4+4=' }], failArchive: (sid, calls) => sid === 'x' && calls.filter((c) => c.action === 'archive' && c.args.sessionId === 'x').length === 1 });
+  r = await h.ctl.cleanup(null);
+  assert.equal(r.archived, 2, 'first attempt on x failed, retry succeeded');
+  assert.equal(h.calls.filter((c) => c.action === 'archive' && c.args.sessionId === 'x').length, 2);
+
+  h = cleanupHarness({ sidebar: [1, 2, 3, 4].map((i) => ({ sessionId: 's' + i, title: `${i}+${i}=` })), failArchive: () => true });
+  r = await h.ctl.cleanup(null);
+  assert.equal(r.archived, 0);
+  assert.equal(r.failed, 3);
+  assert.ok(h.log.includes('连续失败已中止'));
+  assert.equal(r.remaining, 4);
+  assert.equal(r.summary, '清理完成 · 已归档 0，仍有 4 个未归档（可再点一次清理）（仅归档，未删除）');
+});
+
+test('cleanup and probe are mutually exclusive and stoppable', async () => {
+  let release;
+  const h = cleanupHarness({ sidebar: [{ sessionId: 'a', title: '1+1=' }] });
+  const blockingRpc = { call: (action) => action === 'sidebarList' ? new Promise((res) => { release = res; }) : Promise.resolve({}) };
+  const log = [];
+  const ctl = createProbeController({ rpc: blockingRpc, modelForSession: () => null, onProgress: (l) => log.push(l), onFinished: (s) => log.push('FIN ' + s), sleep: () => Promise.resolve() });
+  const p = ctl.cleanup('keep');
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(ctl.mode, 'cleanup');
+  assert.equal(await ctl.start({ targets: ['opus5'] }), null);
+  assert.ok(log.includes('清理进行中，请先停止'));
+  assert.equal(await ctl.cleanup(), null);
+  assert.deepEqual(await ctl.quickSend('x'), { ok: false, message: '探针运行中，请先停止再发送' });
+  ctl.stop();
+  const r = await p;
+  assert.equal(r.cancelled, true);
+  assert.equal(r.summary, '清理已停止（已归档 0）');
+  release({ items: [] });
+  // probe running → cleanup refused
+  let rel2;
+  const ctl2 = createProbeController({ rpc: { call: () => new Promise((res) => { rel2 = res; }) }, modelForSession: () => null, onProgress: (l) => log.push(l), sleep: () => Promise.resolve() });
+  const p2 = ctl2.start({ targets: ['opus5'] });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(await ctl2.cleanup(), null);
+  assert.ok(log.includes('探针运行中，请先停止再清理'));
+  ctl2.stop(); await p2; rel2({});
+});

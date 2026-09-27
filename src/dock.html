@@ -88,6 +88,19 @@
   </section>
 
   <section class="ak-mod">
+    <div class="ak-mod-head"><span>自动清理</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <div class="ak-sub">归档侧栏中标题为「纯算式」的对话（探针残留，如 1+1=）。只走 Arena 自带的归档菜单，仅归档不删除；当前打开的对话和人工命名的对话不会被触碰。</div>
+      <label class="ak-switch"><input type="checkbox" id="ak-cleanup-after" /> 探针结束后自动清理</label>
+      <div class="ak-btns">
+        <button class="ak-btn ak-btn-sm" data-action="cleanup-start">立即清理</button>
+        <button class="ak-btn ak-btn-sm" data-action="cleanup-stop" disabled>停止</button>
+      </div>
+      <div id="ak-cleanup-state" class="ak-sub"></div>
+    </div>
+  </section>
+
+  <section class="ak-mod">
     <div class="ak-mod-head"><span>重命名对话</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">
       <label class="ak-field"><span>标题前缀（可选）</span>
