@@ -59,7 +59,7 @@ const state = {
   quickBusy: false,         // a session probe is in flight
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
-  hud: { model: '', routed: false, status: '', busy: null, busyTimer: 0 }, // header + floating-ball display state
+  hud: { model: '', routed: false, status: '', busy: null, busyTimer: 0, alertTimer: 0 }, // header + floating-ball display state
 };
 
 function sessionRecord(sessionId) {
@@ -140,16 +140,19 @@ function renderBall() {
   } else if (mode === 'percent' || !model) {
     EMBED.setBall({ percent, band: v.band, top: pct, bottom: '', isModel: false, routed: false });
   } else {
-    EMBED.setBall({ percent, band: v.band, top: pct, bottom: short.top + (short.bottom ? ' ' + short.bottom : ''), isModel: true, routed: state.hud.routed });
+    // percent on top, one model line below: the whole id when short, else the name part
+    const both = short.top + (short.bottom ? ' ' + short.bottom : '');
+    EMBED.setBall({ percent, band: v.band, top: pct, bottom: both.length <= 12 ? both : short.top, isModel: true, routed: state.hud.routed });
   }
 }
-/* "claude-opus-4-8" → {top:"claude-opus", bottom:"4-8"}; "gpt-4o" → {top:"gpt", bottom:"4o"} (reference applyBallModel). */
+/* "claude-opus-4-8" → {top:"claude-opus", bottom:"4-8"}; "gpt-4o" → {top:"gpt", bottom:"4o"}
+ * (reference applyBallModel: split at the first numeric token, ≤ 12 chars a line). */
 function shortModel(model) {
   const id = String(model || '').split(' / ')[0].trim();
   if (!id) return { top: '', bottom: '' };
   const parts = id.split(/[-_ /]+/).filter(Boolean);
   const v = parts.findIndex((x) => /^\d/.test(x));
-  const clip = (x) => (x.length > 10 ? x.slice(0, 10) : x);
+  const clip = (x) => (x.length > 12 ? x.slice(0, 11) + '…' : x);
   if (v <= 0) return { top: clip(id), bottom: '' };
   return { top: clip(parts.slice(0, v).join('-')), bottom: clip(parts.slice(v).join('-')) };
 }
@@ -681,9 +684,20 @@ function createDockProbe() {
       q('ak-probe-state').textContent = active
         ? (draw ? `抽卡进行中 · 第 ${round}/${max} 轮 · 已识别 ${hits}` : `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}`)
         : (q('ak-probe-state').textContent || '');
+      // Reference ball transient: "R2/5" + "命中1" while running, "探针完" for 3 s after.
+      if (EMBED) {
+        if (typeof EMBED.setBusy === 'function') EMBED.setBusy('probe', active);
+        if (active) { clearTimeout(state.hud.busyTimer); state.hud.busy = { top: `R${round}/${max}`, bottom: (draw ? '识别' : '命中') + hits }; renderBall(); }
+        else flashBall(draw ? '抽卡完' : '探针完', (draw ? '识别' : '命中') + hits, 3000);
+      }
     },
     onCleanupState: (archived, active) => {
       q('ak-cleanup-state').textContent = active ? `清理中 · 已归档 ${archived}` : `上次清理已归档 ${archived}`;
+      if (EMBED) {
+        if (typeof EMBED.setBusy === 'function') EMBED.setBusy('cleanup', active);
+        if (active) { clearTimeout(state.hud.busyTimer); state.hud.busy = { top: '清理', bottom: String(archived) }; renderBall(); }
+        else flashBall('已归档', String(archived), 3000);
+      }
     },
     // Extension parity: an archived probe chat also loses its local record.
     onArchived: (sid) => { dropLocalRecord(sid).catch(() => {}); },
@@ -742,6 +756,12 @@ onPage('reply-monitor', (summary) => {
   renderMonitor();
   renderTurns();
   if (entry.anomalies.length) setStatus(`回复监控：${entry.turn ? '第 ' + entry.turn + ' 轮 ' : ''}${entry.anomalies.map((a) => a.label).join('、')}`);
+  // Embedded: blink the ball rim red for a while (reference alert ring).
+  if (EMBED && typeof EMBED.alert === 'function') {
+    EMBED.alert(entry.anomalies.length > 0);
+    clearTimeout(state.hud.alertTimer);
+    if (entry.anomalies.length) state.hud.alertTimer = setTimeout(() => EMBED.alert(false), 8000);
+  }
 });
 
 // ── module: session probe (send into the OPEN conversation, identify this turn)
@@ -763,6 +783,7 @@ async function sessionProbe() {
     const sessionId = pre.session || null;
     const afterTurn = sessionId && state.tracker.sessionId === sessionId ? state.tracker.turnCount : 0;
     quickState(`发送 "${text.slice(0, 40)}"…${go.reason ? ' · ' + go.reason : ''}`);
+    if (EMBED) flashBall('探针', '发送中', 2500);
     const sent = await state.probe.quickSend(text);
     if (!sent.ok) { quickState(sent.message); return; }
     quickState('已发送，等待本轮 trace 识别模型…');
@@ -974,6 +995,24 @@ async function boot() {
   wireCleanup();
   wireSessionProbe();
   if (state.rpc) state.probe = createDockProbe();
+  // Floating-ball gestures (reference MainActivity): radial dock buttons, long
+  // press = 会话探针 quick send, double tap = panel (the shell opens it itself).
+  if (EMBED && typeof EMBED.onAction === 'function') {
+    EMBED.onAction((name) => {
+      if (name === 'probe') {
+        if (state.probe?.isRunning && state.probe.mode !== 'cleanup') { state.probe.stop(); probeLog('正在停止…'); return; }
+        state.probeDraw = false;
+        startProbe('probe');
+      } else if (name === 'cleanup') {
+        if (state.probe?.isRunning && state.probe.mode === 'cleanup') { state.probe.stop(); probeLog('正在停止清理…'); return; }
+        startCleanup();
+      } else if (name === 'refresh') {
+        page('reload');
+      } else if (name === 'quick') {
+        sessionProbe();
+      }
+    });
+  }
   await loadHistoryIndex();
   if (!state.tauri) {
     setStatus('浏览器预览模式(无 Tauri 运行时)');
