@@ -213,7 +213,8 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   const api = win.__ARENAKIT_EMBED__;
   assert.equal(api.root, shadow);
   assert.ok(shadow.innerHTML.includes('<style>') && shadow.innerHTML.includes('id="ak-status"') && shadow.innerHTML.includes('class="ak-pill"'));
-  assert.ok(shadow.innerHTML.includes('class="ak-sheet"') && shadow.innerHTML.includes('class="ak-sheet-handle"'), 'bottom sheet with handle');
+  assert.ok(shadow.innerHTML.includes('class="ak-sheet"'), 'bottom sheet');
+  assert.ok(!shadow.innerHTML.includes('ak-sheet-handle'), 'no "一" grabber bar above the header (user request)');
   assert.ok(shadow.innerHTML.includes(':host {') && !shadow.innerHTML.includes('html, body'));
   assert.equal(doc.body.children.length, 1);
   assert.equal(api.isOpen(), false);
