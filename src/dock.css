@@ -157,6 +157,9 @@ body {
 }
 
 .card {
+  /* Never let the column squeeze a card: the body scrolls instead. Without
+     this, short windows (and an expanded ENI card) silently clip content. */
+  flex: none;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-card);
