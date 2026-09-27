@@ -83,14 +83,14 @@
 
 ### M6 — 安卓壳修正 ✅ 代码就位(待真机)
 - 状态栏:`src-tauri/android/.../MainActivity.kt`(CI 覆盖到 gen/android)保留 `enableEdgeToEdge()` 但给 `android.R.id.content` 按 systemBars ∪ displayCutout ∪ ime 加 padding → 页面顶部 = 状态栏底部,键盘弹出页面收缩;状态栏底色 / 图标深浅跟随系统。
-- 图标:`scripts/make-icons.py` 渲染桌面图标集;安卓 API 26+ 自适应图标(`mipmap-anydpi-v26` + 矢量 `ak_launcher_*`),同参考项目图形。
-- 验收(真机):首屏顶部不被状态栏压住;桌面图标为深色底「A」形;悬浮球显示额度环与百分比;发一条消息后球下行与顶部出现模型名,再换模型时变橙黄且状态行为 `已切换模型 → …`。
+- 图标:`scripts/make-icons.py` 渲染桌面图标集并生成安卓 API 26+ 自适应图标的矢量(`mipmap-anydpi-v26` + `drawable/ak_launcher_*`,均由脚本产出,勿手改);图形为「AK」字标(白色单字形:A 的右腿即 K 的竖干,品牌蓝渐变底)。
+- 验收(真机):首屏顶部不被状态栏压住;桌面图标为蓝底白「AK」字标;状态胶囊显示额度环与百分比;发一条消息后胶囊标签与面板表头出现模型名,再换模型时变橙黄且轮次行带「已切换」。
 
 - 验收:探针能跑完设定轮数、命中即停/命中全部才停、命中改名「前缀+模型-序号」;清理只归档算式标题且不碰当前对话;会话探针在当前对话内识别本轮模型;回复流异常在轮次列表出现徽标,正常显示「无异常信号」。**待真机确认。**
 
 ### M6 — Android 出包 ✅ CI 就位
 - 安卓内嵌 UI(`src/embed/shell.js`)按参考安卓应用还原:悬浮球 = 霓虹额度环(弧长 = 剩余额度,≥20% 蓝 / 10–19% 琥珀 / <10% 红,彗星高光扫描 + 呼吸辉光),中心默认「额度百分比 + 模型名」(设置里可切换),本轮与首轮模型不同时橙黄;探针 / 清理运行时中心临时显示 `R2/5`+`命中1`、`清理`+N,结束后 3 秒 `探针完` / `已归档`;回复异常时红圈闪烁。手势:单击 → 径向工具条(探针 / 清理 / 刷新),双击 → 面板,长按 → 会话探针,拖动可移位(位置持久化)。面板为可拖动的圆角卡片 + 遮罩。桌面浏览器可开 `src/embed/preview.html` 预览(带 Tauri 假桩和灌事件按钮)。
-- 图标:`python3 scripts/make-icons.py` 用纯 Python 从矢量数据渲染 `src-tauri/icons/`(icon.png 1024 / 128@2x / 128 / 32 / icon.icns / icon.svg),图形与参考安卓项目的启动图标一致(深色渐变底 + 蓝/翠绿 A 形双翼 + 白色扫描线);安卓 API 26+ 用 `src-tauri/android/.../mipmap-anydpi-v26` 的自适应图标(矢量 `ak_launcher_*`),旧设备回退到 `tauri icon` 生成的 PNG。
+- 图标:`python3 scripts/make-icons.py` 用纯 Python 从矢量数据渲染 `src-tauri/icons/`(icon.png 1024 / 128@2x / 128 / 32 / icon.icns / icon.svg)并写出安卓 `drawable/ak_launcher_foreground.xml` / `ak_launcher_background.xml`;图形是「AK」字标:白色单字形(A 的右腿与 K 的竖干共用,几何笔画,粗 11 / 高 52),品牌蓝 #3B78FF→#2456E6 对角渐变底;`--print-svg-path` 输出同一路径供 `src/dock.html` 表头 logo 使用(测试会核对二者一致)。安卓 API 26+ 用 `mipmap-anydpi-v26` 的自适应图标,旧设备回退到 `tauri icon` 生成的 PNG。
 - `src-tauri/android/` 是覆盖到生成项目 `gen/android/` 上的安卓源码(CI 在 `android init` 之后 `cp -R` 过去):`MainActivity.kt` 保留 edge-to-edge 但按系统栏 / 刘海 / 输入法 insets 给内容加 padding,网页顶部正好与状态栏底部平齐、底部在导航栏之上、键盘弹出时页面收缩(参考项目 targetSdk 34 的原生表现;Tauri 模板 targetSdk 37,Android 15+ 强制 edge-to-edge 不可关闭)。状态栏 / 导航栏底色跟随系统深浅色。
 - `cargo tauri android build --apk --target aarch64` 出 release arm64 apk(优化 + strip,debug 包带符号约 190 MB),CI 再用 `zipalign` + `apksigner` 以仓库内固定的调试密钥 `.github/android/debug.keystore`(PKCS12,别名 `arenakitdebug`,密码 `android`)签名——每次构建签名一致,可覆盖安装。这不是商店密钥;正式发布时换成 secrets 里的密钥。
 - **dock 内嵌模式**:mobile Tauri 一窗一 webview(`Window::add_child` 仅桌面),所以安卓不建第二个 webview,而是 `node scripts/bundle-dock.mjs` 把 `src/dock.js` + `src/lib/*` + `src/embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`(已提交,CI `--check` 防过期),Rust 在 `#[cfg(mobile)]` 下 `include_str!` 并追加到 init 脚本末尾;页面加载后挂载悬浮 AK 按钮 + 底部抽屉(shadow DOM,样式互不干扰)。改了 `src/` 记得重新跑 bundler(测试 `embed-bundle.test.mjs` 会提示)。
