@@ -91,3 +91,5 @@ html, body {
   border-top: 1px solid var(--ak-line);
   position: sticky; bottom: 0; background: var(--ak-bg);
 }
+
+.ak-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }

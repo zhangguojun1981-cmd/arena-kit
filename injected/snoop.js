@@ -1,8 +1,8 @@
 /* ArenaKit injected/snoop.js
  * Source: arena-trace-inspector/snoop.js (private fork)
  * MAIN world, document_start. Taps SSE for Trigger.dev run token.
- * PORT NOTE: replace window.postMessage(...) with window.__ARENAKIT__.onToken({sessionId, token})
- * once the Tauri IPC bridge is wired (see docs/DEVELOPMENT.md §7).
+ * PORT: tokens go to window.__ARENAKIT__.onToken({sessionId, token}) (bridge.js →
+ * Rust `on_token`), falling back to the original postMessage channel outside Tauri.
  */
 /* Page-world SSE tap. No chrome.* — CSP-safe. Never posts conversation text. */
 (() => {

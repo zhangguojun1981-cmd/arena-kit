@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proxy-get"
+description = "Enables the proxy_get command without any pre-configured scope."
+commands.allow = ["proxy_get"]
+
+[[permission]]
+identifier = "deny-proxy-get"
+description = "Denies the proxy_get command without any pre-configured scope."
+commands.deny = ["proxy_get"]

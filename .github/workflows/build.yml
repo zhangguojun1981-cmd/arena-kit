@@ -6,23 +6,49 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Rust core unit tests (trace/pulse logic) — fast gate, runs everywhere.
+  # Pure-JS logic (src/lib) + injected page scripts — zero-dependency node:test.
+  node-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Syntax check (injected bundle + dock)
+        run: node scripts/check-syntax.mjs
+      - name: node --test
+        run: node --test 'tests/**/*.test.mjs'
+
+  # Rust core unit tests (trace/usage/store logic) — fast gate, runs everywhere.
   rust-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # tauri (and thus this crate) links against webkit2gtk on Linux even for
+      # `cargo test --lib`; install the headers the build scripts look for.
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libssl-dev pkg-config libxdo-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
       - name: Cargo test (core logic)
         working-directory: src-tauri
         run: cargo test --lib
 
   # macOS .dmg — real bundle artifact.
   macos-dmg:
-    needs: rust-test
+    needs: [rust-test, node-test]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
       - name: Build dmg
@@ -35,13 +61,16 @@ jobs:
   # Android .apk — mirrors arena-trace-android's signing approach
   # (keystore in secrets; unsigned debug apk when secrets absent).
   android-apk:
-    needs: rust-test
+    needs: [rust-test, node-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
