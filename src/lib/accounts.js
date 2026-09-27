@@ -125,6 +125,9 @@ export function applySnapshot(state, snap, now = Date.now()) {
     st.list = [...st.list, acc];
   }
   const before = JSON.stringify(acc);
+  // Same cookies again (watcher re-announce, dock probe after the watcher):
+  // keep the timestamps so an identical snapshot is a no-op for the store.
+  const sameCookies = !created && acc.sig === str(snap.sig) && acc.cookies.length > 0;
   const next = {
     ...acc,
     userId: str(snap.userId) || acc.userId,
@@ -135,8 +138,8 @@ export function applySnapshot(state, snap, now = Date.now()) {
     cookies: snap.cookies.map((c) => ({ name: c.name, value: c.value })),
     sig: str(snap.sig),
     expiresAt: Number(snap.expiresAt) || acc.expiresAt,
-    capturedAt: now,
-    lastUsedAt: now,
+    capturedAt: sameCookies ? acc.capturedAt : now,
+    lastUsedAt: sameCookies && st.activeId === acc.id ? acc.lastUsedAt : now,
   };
   const changed = created || before !== JSON.stringify(next) || st.activeId !== next.id;
   st.list = st.list.map((a) => (a.id === next.id ? next : a));

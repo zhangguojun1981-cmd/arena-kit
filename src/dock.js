@@ -28,6 +28,9 @@ import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
 import { pillLabel, turnHeadline } from './lib/pill-layout.js';
 import { initialState as watchdogInitialState, parseStatus as watchdogParse, decide as watchdogDecide, applied as watchdogApplied, Reason as WatchdogReason, LOG_RELOADING as WATCHDOG_LOG_RELOADING, LOG_NAG as WATCHDOG_LOG_NAG } from './lib/watchdog.js';
+import { upsertLogin, accountLabel, accountEmail, initialOf, hasSession, hasLogin, loginStageText, sessionAgeText } from './lib/accounts.js';
+import { createAccountFlow } from './lib/account-flow.js';
+import { totpNow, parseOtpSecret } from './lib/totp.js';
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -71,7 +74,7 @@ function wireActivity() {
 }
 
 // ── segmented tabs 对话 / 探针 / 工具 / 更多 (remembered in prefs.panelTab) ──
-const TABS = ['chat', 'probe', 'tools', 'more'];
+const TABS = ['chat', 'probe', 'tools', 'account', 'more'];
 function showTab(name, { persist = true } = {}) {
   const tab = TABS.includes(name) ? name : 'chat';
   root.querySelectorAll('[data-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === tab)));
@@ -116,6 +119,12 @@ const state = {
   loadingAt: 0,             // epoch ms a page reload we asked for started (blocks the watchdog ≤ 30 s)
   taskStartedAt: 0,         // epoch ms the running probe / cleanup / session probe started (0 = none)
   watchdog: watchdogInitialState(), // reply watchdog policy state (src/lib/watchdog.js)
+  // 账号: the flow object (src/lib/account-flow.js: saved sessions, last page
+  // snapshot, switch/add/login orchestration), the dock → account.js RPC and
+  // the editor's target
+  acct: null,
+  accountRpc: null,
+  acctEditId: null,
 };
 
 function sessionRecord(sessionId) {
@@ -295,7 +304,7 @@ async function requestReload(source = 'panel') {
     await new Promise((r) => setTimeout(r, 300));
   }
   if (source === 'watchdog') setStatus(WATCHDOG_LOG_RELOADING);
-  else setStatus(source === 'pull' ? '上拉刷新页面…' : '刷新页面…');
+  else setStatus(source === 'pull' ? '上拉刷新页面…' : source === 'account' ? '切换账号，刷新页面…' : '刷新页面…');
   const btn = root.querySelector('[data-action="page-reload"]');
   if (btn) btn.dataset.loading = 'true';
   state.loadingAt = now;
@@ -1183,6 +1192,193 @@ function wireRename() {
   renderRenamePreview();
 }
 
+// ── module: 账号 (one-click switch between saved sessions, login helper) ──
+/* The orchestration lives in src/lib/account-flow.js (DOM-free, tested end to
+ * end against the real injected/account.js in tests/account-flow.test.mjs);
+ * this block is the UI: list / editor / live 2FA codes / login helper panel.
+ * Snapshots arrive as `account` page events (watcher in account.js) and as
+ * answers to the `snapshot` RPC; the outcome of a switch is judged from the
+ * first snapshot after the reload (pending is persisted, since the embedded
+ * dock on Android dies with the page). */
+const ACCOUNTS_KEY = 'accounts';
+const ACCT_EMPTY = '<div class="ak-empty">还没有保存的账号：登录 Arena 后会自动记录当前账号；再点「添加另一个账号」登录第二个。</div>';
+const acctStatus = (t) => { const el = q('ak-acct-status'); if (el) el.textContent = String(t ?? ''); };
+const acctLoginStatus = (t) => { const el = q('ak-acct-login-status'); if (el) el.textContent = String(t ?? ''); };
+function accountCall(action, args = {}, opts = { timeout: 8000 }) {
+  if (!state.accountRpc) return Promise.reject(new Error('无 Tauri 运行时'));
+  return state.accountRpc.call(action, args, opts);
+}
+function createAccounts() {
+  return createAccountFlow({
+    call: accountCall,
+    loadStore: () => state.store.get(ACCOUNTS_KEY),
+    saveStore: (st) => state.store.set(ACCOUNTS_KEY, st),
+    reload: () => requestReload('account'),
+    invoke: state.tauri ? (cmd, args) => state.tauri.invoke(cmd, args) : null,
+    status: acctStatus,
+    loginStatus: acctLoginStatus,
+    toast: (t) => { setStatus(t); if (EMBED) flashPill(t); },
+    needLogin: (acc) => openAccountEditor(acc.id),
+    onChange: renderAccounts,
+  });
+}
+const acct = () => state.acct;
+
+async function deleteAccount(id) {
+  const a = acct().find(id);
+  if (!a) return;
+  const ok = await confirmDialog({ title: '删除账号？', message: `删除「${accountLabel(a)}」保存的登录状态和登录信息。不会退出该账号在 Arena 的登录。`, ok: '删除', cancel: '取消' });
+  if (!ok) return;
+  await acct().remove(id);
+  if (state.acctEditId === id) { q('ak-acct-edit').hidden = true; state.acctEditId = null; }
+}
+
+function openAccountEditor(id) {
+  const a = id ? acct().find(id) : null;
+  state.acctEditId = a ? a.id : null;
+  q('ak-acct-edit').hidden = false;
+  q('ak-acct-edit-title').textContent = a ? accountLabel(a) : '新账号';
+  q('ak-acct-label').value = a ? a.label : '';
+  q('ak-acct-email').value = a ? (a.login.email || a.email) : '';
+  q('ak-acct-password').value = a ? a.login.password : '';
+  q('ak-acct-totp').value = a ? a.login.totp : '';
+  q('ak-acct-auto').checked = a ? a.login.auto !== false : true;
+  renderTotpPreview();
+  try { q('ak-acct-email').focus(); } catch { /* ignore */ }
+}
+function renderTotpPreview() {
+  const el = q('ak-acct-totp-preview');
+  const raw = String(q('ak-acct-totp').value || '').trim();
+  if (!raw) { el.textContent = ''; return; }
+  const r = totpNow(raw);
+  el.textContent = r.error ? '密钥格式不对：需要 base32（A-Z、2-7）或 otpauth:// 链接' : `当前动态码 ${r.code} · ${r.remaining}s 后刷新`;
+}
+async function saveAccountEditor({ login = false } = {}) {
+  const fields = { label: q('ak-acct-label').value, email: q('ak-acct-email').value, password: q('ak-acct-password').value, totp: String(q('ak-acct-totp').value || '').trim(), auto: q('ak-acct-auto').checked };
+  if (fields.totp) {
+    const parsed = parseOtpSecret(fields.totp);
+    if (!parsed) { acctStatus('2FA 密钥格式不对：需要 base32（A-Z、2-7）或 otpauth:// 链接'); return; }
+    if (!/^otpauth:/i.test(fields.totp)) fields.totp = parsed.secret;
+    if (!fields.email && parsed.account && parsed.account.includes('@')) fields.email = parsed.account;
+  }
+  const r = upsertLogin(acct().accounts, state.acctEditId, fields);
+  if (!r.account) { acctStatus('请至少填写邮箱或备注名'); return; }
+  await acct().save(r.state);
+  q('ak-acct-edit').hidden = true;
+  state.acctEditId = null;
+  acctStatus('登录信息已保存');
+  if (login) {
+    const a = acct().find(r.account.id);
+    if (a) await acct().startLogin(a);
+  }
+}
+async function copyTotp(id) {
+  const a = acct().find(id);
+  if (!a || !a.login.totp) return;
+  const r = totpNow(a.login.totp);
+  if (r.error) { acctStatus(r.error); return; }
+  try { await globalThis.navigator.clipboard.writeText(r.code); acctStatus(`已复制动态码 ${r.code}（${r.remaining}s 内有效）`); } catch { acctStatus('复制失败，动态码: ' + r.code); }
+}
+async function fillLoginCode() {
+  const code = String(q('ak-acct-code').value || '').trim();
+  if (!code) { acctLoginStatus('请先输入验证码'); return; }
+  await accountCall('fill', { code }).then(() => { acctLoginStatus('已把验证码填入页面'); q('ak-acct-code').value = ''; }).catch((e) => acctLoginStatus('填入失败: ' + (e && e.message || e)));
+}
+
+function accountRowHtml(a, active) {
+  const label = accountLabel(a);
+  const email = accountEmail(a);
+  const sub = [
+    email && email !== label ? email : '',
+    hasSession(a) ? sessionAgeText(a) : (hasLogin(a) ? '未保存登录状态 · 可自动登录' : '未保存登录状态'),
+    a.provider === 'google' ? 'Google 登录' : (a.provider ? a.provider + ' 登录' : ''),
+  ].filter(Boolean).join(' · ');
+  const avatar = a.avatar ? ` style="background-image:url(&quot;${esc(a.avatar)}&quot;)"` : '';
+  const totp = a.login.totp
+    ? `<div class="ak-acct-totp" data-totp-id="${esc(a.id)}"><span>2FA</span><b data-code>------</b><span class="ak-acct-left" data-left></span><button class="ak-link" data-acct="copy" data-id="${esc(a.id)}">复制</button></div>`
+    : '';
+  const badge = active ? ' <span class="ak-badge ak-badge-brand">当前</span>' : (!hasSession(a) ? ' <span class="ak-badge ak-badge-warn">需登录</span>' : '');
+  const main = active ? '' : `<button class="ak-btn ak-btn-sm ${hasSession(a) ? 'ak-filled' : 'ak-tonal'}" data-acct="switch" data-id="${esc(a.id)}">${hasSession(a) ? '切换' : '登录'}</button>`;
+  return `<div class="ak-acct" data-id="${esc(a.id)}" data-active="${active ? 'true' : 'false'}">`
+    + `<span class="ak-acct-avatar"${avatar}>${a.avatar ? '' : esc(initialOf(a))}</span>`
+    + `<div class="ak-acct-main"><div class="ak-acct-name">${esc(label)}${badge}</div><div class="ak-acct-sub">${esc(sub)}</div>${totp}</div>`
+    + `<div class="ak-acct-actions">${main}<button class="ak-icon-btn" data-acct="edit" data-id="${esc(a.id)}" title="登录信息 / 2FA" aria-label="编辑">✎</button><button class="ak-icon-btn" data-acct="delete" data-id="${esc(a.id)}" title="删除" aria-label="删除">✕</button></div>`
+    + '</div>';
+}
+function renderAccounts() {
+  if (!state.acct) return;
+  const st = acct().accounts;
+  const snap = acct().snap;
+  const cur = q('ak-acct-current');
+  if (cur) {
+    if (!snap) cur.innerHTML = '<div class="ak-empty">尚未读取到登录状态（打开 Arena 页面后自动读取）</div>';
+    else if (!snap.loggedIn) cur.innerHTML = `<div class="ak-empty">${snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息（请点「保存当前登录」重试）' : '页面当前未登录'}</div>`;
+    else {
+      const active = acct().active();
+      const shown = active || { id: '', label: '', name: snap.name, email: snap.email, avatar: snap.avatar, provider: snap.provider, cookies: snap.cookies || [], capturedAt: 0, login: { email: '', password: '', totp: '', auto: true } };
+      const sub = [accountEmail(shown) !== accountLabel(shown) ? accountEmail(shown) : '', snap.provider === 'google' ? 'Google 登录' : (snap.provider || '')].filter(Boolean).join(' · ');
+      cur.innerHTML = `<div class="ak-acct" data-id="${esc(shown.id)}" data-active="true"><span class="ak-acct-avatar"${shown.avatar ? ` style="background-image:url(&quot;${esc(shown.avatar)}&quot;)"` : ''}>${shown.avatar ? '' : esc(initialOf(shown))}</span>`
+        + `<div class="ak-acct-main"><div class="ak-acct-name">${esc(accountLabel(shown))}${active ? '' : ' <span class="ak-badge ak-badge-warn">未保存</span>'}</div><div class="ak-acct-sub">${esc(sub)}</div></div></div>`;
+    }
+  }
+  const scope = q('ak-acct-scope');
+  if (scope) scope.textContent = snap && snap.scope ? ('Cookie 作用域 ' + (snap.scope === 'domain' ? '.arena.ai' : 'arena.ai')) : '';
+  const count = q('ak-acct-count');
+  if (count) count.textContent = st.list.length ? st.list.length + ' 个账号' : '';
+  const list = q('ak-acct-list');
+  if (list) list.innerHTML = st.list.length ? st.list.map((a) => accountRowHtml(a, a.id === st.activeId)).join('') : ACCT_EMPTY;
+  renderTotpCodes();
+}
+function renderTotpCodes() {
+  if (!state.acct) return;
+  const now = Date.now();
+  root.querySelectorAll('[data-totp-id]').forEach((el) => {
+    const a = acct().find(el.dataset.totpId);
+    const code = el.querySelector('[data-code]');
+    const left = el.querySelector('[data-left]');
+    if (!a || !code || !left) return;
+    const r = totpNow(a.login.totp, now);
+    if (r.error) { code.textContent = '无效密钥'; left.textContent = ''; return; }
+    code.textContent = r.code.length === 6 ? r.code.slice(0, 3) + ' ' + r.code.slice(3) : r.code;
+    left.textContent = r.remaining + 's';
+    left.dataset.low = String(r.remaining <= 5);
+  });
+}
+function wireAccounts() {
+  const list = q('ak-acct-list');
+  if (list) {
+    list.addEventListener('click', (e) => {
+      const t = e.target;
+      const btn = t && typeof t.closest === 'function' ? t.closest('[data-acct]') : (t && t.dataset && t.dataset.acct ? t : null);
+      if (!btn) return;
+      const id = btn.dataset.id;
+      const act = btn.dataset.acct;
+      if (act === 'switch') acct().switchTo(id);
+      else if (act === 'edit') openAccountEditor(id);
+      else if (act === 'delete') deleteAccount(id);
+      else if (act === 'copy') copyTotp(id);
+    });
+  }
+  const totpIn = q('ak-acct-totp');
+  if (totpIn) totpIn.addEventListener('input', renderTotpPreview);
+  const codeIn = q('ak-acct-code');
+  if (codeIn) codeIn.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') fillLoginCode(); });
+  renderAccounts();
+}
+// 1 s ticker for the live 2FA codes (only touches the DOM while the tab shows).
+setInterval(() => {
+  const edit = q('ak-acct-edit');
+  if (root.querySelector('[data-page="account"][data-active="true"]')) { renderTotpCodes(); if (edit && !edit.hidden) renderTotpPreview(); }
+}, 1000);
+
+onPage('account-result', (r) => { if (state.accountRpc) state.accountRpc.deliver(r); });
+onPage('account', (snap) => { if (state.acct) acct().onSnapshot(snap); });
+onPage('login', (p) => {
+  if (!p || typeof p !== 'object') return;
+  acctLoginStatus(loginStageText(p.stage, p));
+  if (p.stage === 'need-code') { showTab('account'); if (EMBED) EMBED.open(); }
+});
+
 // ── module: enhancement toggles + ENI ───────────────────────────────────
 function wireControls() {
   root.querySelectorAll('[data-action]').forEach((el) => {
@@ -1233,6 +1429,23 @@ function wireControls() {
         savePrefs({ eniText, eniOn });
         page('eniSet', eniOn, eniText);
         setStatus('提示词已保存');
+      } else if (a === 'acct-save') {
+        acct().saveCurrent();
+      } else if (a === 'acct-add') {
+        acct().add();
+      } else if (a === 'acct-new') {
+        openAccountEditor(null);
+      } else if (a === 'acct-edit-save') {
+        saveAccountEditor();
+      } else if (a === 'acct-edit-login') {
+        saveAccountEditor({ login: true });
+      } else if (a === 'acct-edit-cancel') {
+        q('ak-acct-edit').hidden = true;
+        state.acctEditId = null;
+      } else if (a === 'acct-fill-code') {
+        fillLoginCode();
+      } else if (a === 'acct-stop-login') {
+        acct().stopLogin();
       }
     });
   });
@@ -1277,7 +1490,11 @@ async function boot() {
       : createPageActions({ evalInPage: (js) => state.tauri.invoke('arena_command', { js }) });
   }
   state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
+  state.accountRpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('accountCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
+  const acctFlow = createAccounts();
+  await acctFlow.load(); // before any page event can reach onSnapshot
+  state.acct = acctFlow;
   if (EMBED && EMBED.host && EMBED.host.dataset) EMBED.host.dataset.embed = 'true';
   wireTheme();
   wireTabs();
@@ -1290,6 +1507,7 @@ async function boot() {
   wireProbe();
   wireCleanup();
   wireSessionProbe();
+  wireAccounts();
   if (state.rpc) state.probe = createDockProbe();
   // Status-pill gestures (reference MainActivity): tap → panel (the shell
   // opens it itself), tap on ⟳ → reload, long press → quick menu, pull-up at
@@ -1303,6 +1521,7 @@ async function boot() {
         { id: 'quick', label: '会话探针', disabled: probeRunning() || cleanupRunning() },
         { id: 'cleanup', label: cleanupRunning() ? '停止清理' : '清理算式标题' },
         { id: 'refresh', label: '刷新页面' },
+        { id: 'account', label: '切换账号' },
         { id: 'panel', label: '打开面板' },
       ]);
     }
@@ -1324,6 +1543,9 @@ async function boot() {
       } else if (id === 'quick') {
         showTab('probe');
         sessionProbe();
+      } else if (id === 'account') {
+        showTab('account');
+        EMBED.open();
       } else if (id === 'panel' && name === 'menu') {
         EMBED.open();
       }
@@ -1348,6 +1570,9 @@ async function boot() {
   }
   applyPageFlags();
   renderMonitor();
+  // The page may have announced its session before our listener existed
+  // (embedded: the dock boots after account.js) — ask once.
+  accountCall('snapshot', {}, { timeout: 10_000 }).then((snap) => state.acct.onSnapshot(snap)).catch(() => {});
   setStatus(EMBED ? '就绪（内嵌模式）' : '就绪');
 }
 
