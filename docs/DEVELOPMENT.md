@@ -77,6 +77,14 @@
 | **自动清理**(归档算式标题残留,`onArchived` 钩子同步删本地记录) | 自动清理 | `probe-runner.cleanup` | `probe.js` sidebarList/revealSidebarItem/archive | android `ProbeController.cleanup`、inspector 归档后删记录 |
 | **会话探针**(向当前对话发探针,识别本轮模型) | 会话探针 | `src/lib/session-probe.js` | `probe.js` sendToCurrent | android `quickSend` + TurnTracker |
 | **回复监控**(空回复/报错/中断/停滞 自动标记轮次) | 回复监控 | `src/lib/monitor.js` | `injected/monitor.js`(snoop 帧钩子) | ArenaKit 新增(用户需求) |
+| **安卓悬浮球 / 径向工具条 / 卡片面板**(额度环、中心额度% + 模型、路由橙黄、探针/清理进度、单击/双击/长按/拖动) | 内嵌壳 | `src/embed/shell.js`(`ringPalette` / `fitFont` 单测)+ `dock.js renderBall` | — | android `FloatingBallView.kt` / `MainActivity.kt`(ball、dock、gestures、applyBallModel、flashBall) |
+| **顶部 HUD**(模型绿色 / 路由橙黄、`第 N 轮 · 已截获令牌…` → `第 N 轮 · 模型` / `已切换模型 → m`、额度倒计时、后退/前进/刷新) | 顶部 | `dock.js setModelDisplay / setHudStatus` | `lib/page-actions.js navBack/navForward/reload` | android `hudModel` / `hudStatus` / `hudPulse` / nav 按钮 |
+| **设置**(主题 / 悬浮球中心 / 截获会话流 / 额度轮询 / 回复监控) | 设置 | `dock.js wireTheme / wireSettings` | `page-actions flagSet` → `window.__ARENAKIT_FLAGS__` | android DayNight、inspector 监听开关 |
+
+### M6 — 安卓壳修正 ✅ 代码就位(待真机)
+- 状态栏:`src-tauri/android/.../MainActivity.kt`(CI 覆盖到 gen/android)保留 `enableEdgeToEdge()` 但给 `android.R.id.content` 按 systemBars ∪ displayCutout ∪ ime 加 padding → 页面顶部 = 状态栏底部,键盘弹出页面收缩;状态栏底色 / 图标深浅跟随系统。
+- 图标:`scripts/make-icons.py` 渲染桌面图标集;安卓 API 26+ 自适应图标(`mipmap-anydpi-v26` + 矢量 `ak_launcher_*`),同参考项目图形。
+- 验收(真机):首屏顶部不被状态栏压住;桌面图标为深色底「A」形;悬浮球显示额度环与百分比;发一条消息后球下行与顶部出现模型名,再换模型时变橙黄且状态行为 `已切换模型 → …`。
 
 - 验收:探针能跑完设定轮数、命中即停/命中全部才停、命中改名「前缀+模型-序号」;清理只归档算式标题且不碰当前对话;会话探针在当前对话内识别本轮模型;回复流异常在轮次列表出现徽标,正常显示「无异常信号」。**待真机确认。**
 

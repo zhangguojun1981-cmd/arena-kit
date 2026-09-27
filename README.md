@@ -24,6 +24,8 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | **自动清理**:归档算式标题的探针残留(仅归档不删除),并同步删除其本地记录 | arena-trace-android / arena-trace-inspector | B 取证 |
 | **会话探针**:向当前对话发一条探针,识别「这一轮」实际模型 | arena-trace-android (quickSend) | B 取证 |
 | **回复监控**:空回复 / 报错 / 中断 / 停滞自动标记到轮次 | ArenaKit 新增 | B 取证 |
+| **安卓悬浮球 + 面板**(按参考安卓应用还原):霓虹额度环(弧长 = 剩余额度,蓝/琥珀/红),中心显示额度百分比与模型名(路由到非首轮模型时橙黄),探针/清理进度临时显示;单击径向工具条(探针/清理/刷新)、双击面板、长按会话探针、可拖动;面板为可拖动圆角卡片,顶部为模型 + 每轮状态 + 额度倒计时 + 后退/前进/刷新 | arena-trace-android (FloatingBallView / MainActivity) | B 取证 |
+| **设置**:主题(跟随系统 / 亮色 / 暗色)、悬浮球中心显示、截获会话流 / 额度轮询 / 回复监控开关 | arena-trace-android (DayNight) / arena-trace-inspector(监听开关) | 通用 |
 
 完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 
@@ -46,7 +48,8 @@ cargo tauri build
 # 出 Android apk(需 Android SDK/NDK;dock 以内嵌模式装进页面,见 docs/ARCHITECTURE.md)
 node scripts/bundle-dock.mjs   # 改过 src/ 后重新生成 src/embed/dock-embedded.gen.js
 cargo tauri android init       # 首次
-cargo tauri android build --apk --debug --target aarch64
+cp -R src-tauri/android/. src-tauri/gen/android/   # 覆盖 MainActivity(状态栏 insets)+ 自适应图标,CI 同样这么做
+cargo tauri android build --apk --target aarch64
 
 # 单测 / 语法检查(无需 Rust 工具链)
 node --test 'tests/**/*.test.mjs'
@@ -62,9 +65,9 @@ arena-kit/
 ├── docs/               开发文档、架构、功能移植清单
 ├── injected/           注入 arena.ai 页面的脚本(MAIN world):bridge/snoop/monitor/pulse/probe/…
 ├── src/                dock 面板(dock.html/js/css)+ src/lib/ 纯逻辑库 + src/embed/ 安卓内嵌 dock(shell + 生成的 bundle)
-├── src-tauri/          Rust 核心(WebView 初始化、trace/用量、store、IPC 中继、capabilities)
+├── src-tauri/          Rust 核心(WebView 初始化、trace/用量、store、IPC 中继、capabilities)+ android/ 覆盖层(MainActivity insets 处理、自适应图标)+ icons/
 ├── tests/              node:test 单测(逻辑库直接 import;注入脚本用 node:vm 跑)
-├── scripts/            check-syntax.mjs、bundle-dock.mjs(安卓内嵌 dock 打包)
+├── scripts/            check-syntax.mjs、bundle-dock.mjs(安卓内嵌 dock 打包)、make-icons.py(图标渲染)
 ├── vendor/             上游项目来源与许可说明
 └── .github/workflows/  CI:node-test → rust-test → dmg + apk → Release(附件为 .dmg/.apk 原文件)
 ```

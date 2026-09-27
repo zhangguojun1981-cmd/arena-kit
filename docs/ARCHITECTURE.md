@@ -71,7 +71,7 @@
 | 注入 MAIN world 脚本 | `initialization_script` | 同,Tauri 2 mobile 支持 |
 | 需要 Cookie 的请求 | 在页面内同源 fetch(`pulse.js`),无需导出 | 同 |
 | 原生 HTTP(trace) | reqwest,只带 Trigger.dev 公开令牌 | 同 |
-| dock 面板 | 右侧子 webview(`Window::add_child`,仅桌面) | **内嵌模式**:mobile 一窗一 webview,`Window::add_child` 不存在;`scripts/bundle-dock.mjs` 把 dock.js + lib + `embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`,init 脚本在 DOMContentLoaded 后把同一套 dock 标记/样式装进页面的 shadow root(悬浮 AK 按钮 + 底部抽屉)。dock.js 通过 `__ARENAKIT_EMBED__` 识别:DOM 查询走 shadow root,页面动作走 `lib/page-actions.js` 的 `run()`(直接调用,不 eval,不受页面 CSP 影响),事件订阅需 `capabilities/arena-mobile.json` 的 `core:event:allow-listen` |
+| dock 面板 | 右侧子 webview(`Window::add_child`,仅桌面) | **内嵌模式**:mobile 一窗一 webview,`Window::add_child` 不存在;`scripts/bundle-dock.mjs` 把 dock.js + lib + `embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`,init 脚本在 DOMContentLoaded 后把同一套 dock 标记/样式装进页面的 shadow root(参考安卓应用的霓虹额度环悬浮球 + 径向工具条 + 可拖动卡片面板;单击工具条 / 双击面板 / 长按会话探针)。原生壳 `src-tauri/android/MainActivity.kt` 按系统栏 / 输入法 insets 给 WebView 内容加 padding,页面顶部与状态栏平齐。dock.js 通过 `__ARENAKIT_EMBED__` 识别:DOM 查询走 shadow root,页面动作走 `lib/page-actions.js` 的 `run()`(直接调用,不 eval,不受页面 CSP 影响),事件订阅需 `capabilities/arena-mobile.json` 的 `core:event:allow-listen` |
 | 签名 | Apple 开发者证书(或自签本地用) | keystore(复用 arena-trace-android 的 CI 方案) |
 
 ## 网络与代理注意
