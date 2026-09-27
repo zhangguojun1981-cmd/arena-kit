@@ -10,9 +10,29 @@
   <!-- ArenaKit native side dock. Lives in its OWN webview (not injected into
        arena.ai), docked to the right of the arena.ai webview. Decoupled from
        the page DOM, so arena redesigns never break it. -->
+  <!-- Header = the reference app's panel top: model name (green; orange-yellow
+       when this turn's model differs from the conversation's first), the
+       per-turn status line, quota % + reset countdown with its bar, and the
+       browser back / forward / reload row. -->
   <header class="ak-head">
-    <span class="ak-logo">AK</span>
-    <span class="ak-title">ArenaKit</span>
+    <div class="ak-head-row">
+      <span class="ak-logo" aria-hidden="true"><svg viewBox="0 0 108 108"><polygon fill="#3A82F7" points="51.44,15.6 18.16,82.16 32.24,82.16 43.76,59.12 51.44,59.12"/><polygon fill="#00E599" points="56.56,15.6 56.56,59.12 64.24,59.12 75.76,82.16 89.84,82.16"/><polygon fill="#FFFFFF" points="39.92,66.8 68.08,66.8 73.2,77.04 34.8,77.04"/><polygon fill="#FFFFFF" points="54,10.48 57.2,19.44 54,28.4 50.8,19.44"/></svg></span>
+      <div class="ak-head-main">
+        <div id="ak-hud-model" class="ak-hud-model" data-known="false" data-routed="false">模型待确认</div>
+        <div id="ak-hud-status" class="ak-hud-status">等待会话流…</div>
+      </div>
+      <span class="ak-head-tools"></span>
+    </div>
+    <div class="ak-hud-pulse-row">
+      <span id="ak-hud-pulse" class="ak-hud-pulse">额度读取中…</span>
+      <button class="ak-link" data-action="pulse-refresh" title="额度接口每 60 秒读取一次；点此立即刷新">刷新额度</button>
+    </div>
+    <div class="ak-bar"><div id="ak-bar-fill"></div></div>
+    <div class="ak-nav">
+      <button class="ak-btn ak-btn-sm" data-action="nav-back">‹ 后退</button>
+      <button class="ak-btn ak-btn-sm" data-action="nav-forward">前进 ›</button>
+      <button class="ak-btn ak-btn-sm" data-action="nav-reload">刷新</button>
+    </div>
   </header>
 
   <!-- Module: server-side model (from the trace forensics pipeline) -->
@@ -56,16 +76,6 @@
         <button class="ak-btn ak-btn-sm" data-action="export-evidence">导出证据 JSON</button>
       </div>
       <textarea id="ak-export" class="ak-textarea" hidden readonly></textarea>
-    </div>
-  </section>
-
-  <!-- Module: daily-free-credit gauge -->
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>额度</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div class="ak-row"><span id="ak-credit" class="ak-big">—</span><span id="ak-reset" class="ak-sub"></span></div>
-      <div class="ak-bar"><div id="ak-bar-fill"></div></div>
-      <div class="ak-row"><span id="ak-pulse-sub" class="ak-sub">额度读取中…</span><button class="ak-link" data-action="pulse-refresh">刷新</button></div>
     </div>
   </section>
 
@@ -148,6 +158,19 @@
         <button class="ak-btn ak-btn-sm" data-action="rename-now">立即重命名为模型名</button>
       </div>
       <div id="ak-rename-status" class="ak-sub"></div>
+    </div>
+  </section>
+
+  <section class="ak-mod" data-open="true">
+    <div class="ak-mod-head"><span>设置</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <label class="ak-field"><span>主题</span>
+        <div class="ak-seg" id="ak-theme" role="group" aria-label="主题">
+          <button type="button" data-theme-pick="auto" aria-pressed="true">跟随系统</button>
+          <button type="button" data-theme-pick="light" aria-pressed="false">亮色</button>
+          <button type="button" data-theme-pick="dark" aria-pressed="false">暗色</button>
+        </div>
+      </label>
     </div>
   </section>
 

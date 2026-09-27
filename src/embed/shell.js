@@ -20,7 +20,10 @@ const FAB_POS_KEY = 'arenakit.fab.pos';
  * the shadow root (`:host` carries the CSS variables, `.ak-shell` is "body"). */
 export function shadowCss(css) {
   return String(css)
-    .replace(/(^|\n):root\s*\{/g, '$1:host {')
+    // :root[data-theme="light"] → :host([data-theme="light"]), :root:not(…) → :host(:not(…))
+    .replace(/:root(\[[^\]]*\])/g, ':host($1)')
+    .replace(/:root:not\(([^)]*)\)/g, ':host(:not($1))')
+    .replace(/(^|[\n\s]):root\s*\{/g, '$1:host {')
     .replace(/(^|\n)html,\s*body\s*\{/g, '$1.ak-shell {');
 }
 
@@ -77,13 +80,13 @@ export function mount(win = globalThis) {
 
   const fab = root.querySelector('.ak-fab');
   const panel = root.querySelector('.ak-panel');
-  const head = root.querySelector('.ak-head');
+  const tools = root.querySelector('.ak-head-tools') || root.querySelector('.ak-head');
   const close = doc.createElement('button');
-  close.className = 'ak-close';
+  close.className = 'ak-icon-btn ak-close';
   close.type = 'button';
-  close.setAttribute('aria-label', '关闭');
+  close.setAttribute('aria-label', '收起');
   close.textContent = '✕';
-  if (head) head.appendChild(close);
+  if (tools) tools.appendChild(close);
 
   const isOpen = () => panel.dataset.open === 'true';
   const setOpen = (v) => { panel.dataset.open = v ? 'true' : 'false'; fab.style.display = v ? 'none' : ''; };

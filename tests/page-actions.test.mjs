@@ -7,7 +7,8 @@ function fakeWin() {
   const log = [];
   return {
     log,
-    location: { assign: (u) => log.push(['assign', u]) },
+    location: { assign: (u) => log.push(['assign', u]), reload: () => log.push(['reload']) },
+    history: { back: () => log.push(['back']), forward: () => log.push(['forward']) },
     __ARENAKIT__: { dispatch: (n, p) => { log.push(['dispatch', n, p]); return 1; }, send: (n, p) => log.push(['send', n, p]) },
     __AK_MANAGER_TOGGLE__: () => log.push(['manager']),
     __AK_ENI_SET__: (on, t) => log.push(['eni', on, t]),
@@ -33,6 +34,9 @@ const CASES = [
   ['unlockSet', ['opus', false], ['unlock', 'opus', false]],
   ['plusSet', [1], ['plus', true]],
   ['probeCall', ['rename', '{"sessionId":"s1"}', 'r7'], ['probe', 'rename', '{"sessionId":"s1"}', 'r7']],
+  ['navBack', [], ['back']],
+  ['navForward', [], ['forward']],
+  ['reload', [], ['reload']],
 ];
 
 test('remote js() and embedded run() have identical effects for every action', async () => {

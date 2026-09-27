@@ -59,6 +59,7 @@ const state = {
   quickBusy: false,         // a session probe is in flight
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
+  hud: { model: '', routed: false, status: '', busy: null, busyTimer: 0 }, // header + floating-ball display state
 };
 
 function sessionRecord(sessionId) {
@@ -81,7 +82,84 @@ const DEFAULT_PREFS = {
   cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
   quickText: '',            // session probe text ('' = random arithmetic)
   quickRename: false,       // rename the conversation after the session probe identifies its model
+  theme: 'auto',            // 'auto' (follow system, like the reference DayNight theme) | 'light' | 'dark'
 };
+
+// ── theme ───────────────────────────────────────────────────────────────
+const THEMES = ['auto', 'light', 'dark'];
+function applyTheme(mode) {
+  const m = THEMES.includes(mode) ? mode : 'auto';
+  const el = EMBED ? EMBED.host : document.documentElement;
+  if (m === 'auto') el.removeAttribute('data-theme'); else el.setAttribute('data-theme', m);
+  root.querySelectorAll('[data-theme-pick]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themePick === m)));
+  return m;
+}
+function wireTheme() {
+  applyTheme(state.prefs.theme);
+  root.querySelectorAll('[data-theme-pick]').forEach((b) => b.addEventListener('click', () => {
+    savePrefs({ theme: applyTheme(b.dataset.themePick) });
+  }));
+}
+
+// ── HUD header (reference panel top: model · status · pulse) ────────────
+/* Every place that learns something about the current conversation's model
+ * goes through here, so the header, the 服务端模型 module and (on Android)
+ * the floating ball never disagree. `known` false = placeholder text. */
+function setModelDisplay(text, { routed = false, known = true } = {}) {
+  const t = String(text || '');
+  const big = q('ak-model');
+  big.textContent = known ? t : (t || '—');
+  big.dataset.routed = String(!!routed);
+  const hud = q('ak-hud-model');
+  hud.textContent = known && t ? t : '模型待确认';
+  hud.dataset.known = String(!!(known && t));
+  hud.dataset.routed = String(!!routed);
+  state.hud.model = known && t ? t : '';
+  state.hud.routed = !!routed;
+  if (EMBED && typeof EMBED.setBall === 'function') renderBall();
+}
+function setHudStatus(text) {
+  state.hud.status = String(text || '');
+  q('ak-hud-status').textContent = state.hud.status;
+}
+/* Floating-ball payload (embedded only): ring = quota %, centre = quota % and/or
+ * the model, per prefs.ballCenter; a transient (probe / cleanup) owns the centre
+ * while state.hud.busy is set. */
+function renderBall() {
+  if (!EMBED || typeof EMBED.setBall !== 'function') return;
+  const v = state.pulse.view();
+  const percent = v.percent;
+  const b = state.hud.busy;
+  if (b) { EMBED.setBall({ percent, band: v.band, top: b.top, bottom: b.bottom, isModel: false, routed: false }); return; }
+  const mode = state.prefs.ballCenter || 'percent-model';
+  const pct = percent === null ? '…' : percent + '%';
+  const model = state.hud.model;
+  const short = shortModel(model);
+  if (mode === 'model' && model) {
+    EMBED.setBall({ percent, band: v.band, top: short.top, bottom: short.bottom, isModel: true, routed: state.hud.routed });
+  } else if (mode === 'percent' || !model) {
+    EMBED.setBall({ percent, band: v.band, top: pct, bottom: '', isModel: false, routed: false });
+  } else {
+    EMBED.setBall({ percent, band: v.band, top: pct, bottom: short.top + (short.bottom ? ' ' + short.bottom : ''), isModel: true, routed: state.hud.routed });
+  }
+}
+/* "claude-opus-4-8" → {top:"claude-opus", bottom:"4-8"}; "gpt-4o" → {top:"gpt", bottom:"4o"} (reference applyBallModel). */
+function shortModel(model) {
+  const id = String(model || '').split(' / ')[0].trim();
+  if (!id) return { top: '', bottom: '' };
+  const parts = id.split(/[-_ /]+/).filter(Boolean);
+  const v = parts.findIndex((x) => /^\d/.test(x));
+  const clip = (x) => (x.length > 10 ? x.slice(0, 10) : x);
+  if (v <= 0) return { top: clip(id), bottom: '' };
+  return { top: clip(parts.slice(0, v).join('-')), bottom: clip(parts.slice(v).join('-')) };
+}
+/* Briefly show a two-line status in the ball centre (reference flashBall). */
+function flashBall(top, bottom, ms = 2500) {
+  state.hud.busy = { top, bottom };
+  renderBall();
+  clearTimeout(state.hud.busyTimer);
+  state.hud.busyTimer = setTimeout(() => { state.hud.busy = null; renderBall(); }, ms);
+}
 
 // ── page event routing (arena page → dock) ──────────────────────────────
 const pageHandlers = new Map();
@@ -128,9 +206,9 @@ function onTrace(p) {
     // A fresh run token = a new turn; a different session = conversation switch.
     const { turn, switched, repeat } = tracker.onToken(p.sessionId, p.runId || '');
     if (switched) { sessionRecord(p.sessionId).historical = false; state.turnHead = ''; }
-    if (!repeat) q('ak-model').textContent = '识别中…';
-    q('ak-model').dataset.routed = 'false';
+    if (!repeat) setModelDisplay('识别中…', { known: false });
     sub.textContent = `第 ${turn} 轮 · run ` + String(p.runId || '').slice(0, 14);
+    setHudStatus(`第 ${turn} 轮 · 已截获令牌，正在识别模型…`);
     renderTurns();
   } else if (p.stage === 'poll') {
     const turn = tracker.turnOf(p.runId);
@@ -154,7 +232,6 @@ function onTrace(p) {
     rec.historical = false;
     state.current = { sessionId: p.sessionId, runId: p.runId || null };
     if (models.length) saveHistory(p.sessionId, p.runId, models, usage);
-    q('ak-model').textContent = models.map((m) => m.model).join(' / ') || '未识别';
     const providers = [...new Set(models.map((m) => m.provider).filter(Boolean))];
     const run = rec.runs.find((r) => r.runId === p.runId);
     if (models.length && p.complete) maybeAutoRename(p.sessionId, models[0].model, run);
@@ -167,13 +244,19 @@ function onTrace(p) {
       if (!p.complete) tracker.setStatus(turn, completion(run?.spans || []));
       else tracker.setStatus(turn, run?.spans?.length ? completion(run.spans) : '已识别');
     }
-    q('ak-model').dataset.routed = String(!!tracker.routed);
+    setModelDisplay(models.map((m) => m.model).join(' / '), { routed: !!tracker.routed, known: models.length > 0 });
+    if (!models.length) q('ak-model').textContent = '未识别';
     sub.textContent = ['run ' + String(p.runId || '').slice(0, 14), providers.join(', '), completion(run?.spans || [])].filter(Boolean).join(' · ');
     if (head) state.turnHead = head.split('\n')[0];
+    setHudStatus(head ? head.split('\n')[0] : (turn ? `第 ${turn} 轮 · trace 未包含模型标签；不猜测模型` : 'trace 未包含模型标签；不猜测模型'));
     renderTurns();
     renderUsage();
   } else if (p.stage === 'error' && p.fatal) {
     q('ak-model-sub').textContent = p.status || '错误';
+  }
+  if (p.stage === 'error') {
+    const turn = tracker.turnOf(p.runId);
+    setHudStatus((turn ? `第 ${turn} 轮 · ` : '') + (p.status || '读取失败'));
   }
   if (p.status) setStatus(p.status);
 }
@@ -458,9 +541,9 @@ onPage('nav', (n) => {
     // (Best-effort reset; the next token's session id is the authoritative one.)
     state.current = { sessionId: null, runId: null };
     state.tracker.reset();
-    q('ak-model').textContent = '—';
-    q('ak-model').dataset.routed = 'false';
+    setModelDisplay('', { known: false });
     q('ak-model-sub').textContent = '发一条消息后自动识别';
+    setHudStatus('等待会话流…');
     renderTurns();
     renderUsage();
   } else if (switched && state.nav.sessionId === state.tracker.sessionId) {
@@ -475,16 +558,16 @@ onPage('nav', (n) => {
     state.current = { sessionId: state.nav.sessionId, runId: last?.runId || null };
     const record = state.historyIndex.get(state.nav.sessionId);
     if (record) rebuildTrackerFromRecord(state.nav.sessionId, record); else { state.tracker.reset(state.nav.sessionId); renderTurns(); }
-    q('ak-model').textContent = rec.models.map((m) => m.model).join(' / ') || '—';
-    q('ak-model').dataset.routed = 'false';
+    setModelDisplay(rec.models.map((m) => m.model).join(' / '), { known: rec.models.length > 0 });
     q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', rec.historical ? '本地记录 · 非重新验证' : ''].filter(Boolean).join(' · ');
+    setHudStatus(rec.historical ? '已恢复本地记录的模型（非重新验证）' : (state.turnHead || '本次运行已识别'));
     renderUsage();
   } else if (switched) {
     state.current = { sessionId: state.nav.sessionId, runId: null };
     state.tracker.reset(state.nav.sessionId);
-    q('ak-model').textContent = '—';
-    q('ak-model').dataset.routed = 'false';
+    setModelDisplay('', { known: false });
     q('ak-model-sub').textContent = '此对话尚无本地记录';
+    setHudStatus('此对话尚无本地记录 · 发一条消息后识别');
     renderTurns();
     renderUsage();
   }
@@ -625,13 +708,12 @@ function wireProbe() {
 // (PulseTiming) and re-renders every second.
 function renderPulse() {
   const v = state.pulse.view();
-  q('ak-credit').textContent = v.percent === null ? '—' : v.percent + '%';
-  q('ak-reset').textContent = v.reset;
   const fill = q('ak-bar-fill');
   fill.style.width = (v.percent ?? 0) + '%';
   fill.dataset.band = v.band;
-  q('ak-pulse-sub').textContent = v.text;
-  q('ak-pulse-sub').classList.toggle('ak-warn', !!v.error);
+  q('ak-hud-pulse').textContent = v.text;
+  q('ak-hud-pulse').classList.toggle('ak-warn', !!v.error);
+  if (EMBED) renderBall();
 }
 onPage('pulse', (ev) => { state.pulse.ingest(ev); renderPulse(); });
 setInterval(renderPulse, 1000);
@@ -827,6 +909,13 @@ function wireControls() {
       } else if (a === 'pulse-refresh') {
         dispatchToPage('pulse-refresh', null);
         setStatus('已请求刷新额度');
+      } else if (a === 'nav-back') {
+        page('navBack');
+      } else if (a === 'nav-forward') {
+        page('navForward');
+      } else if (a === 'nav-reload') {
+        page('reload');
+        if (EMBED) EMBED.close();
       } else if (a === 'quick-send') {
         sessionProbe();
       } else if (a === 'cleanup-start') {
@@ -876,6 +965,7 @@ async function boot() {
   }
   state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
+  wireTheme();
   wireControls();
   wireUsageView();
   wireHistory();

@@ -117,7 +117,7 @@
 | `src-tauri/src/usage.rs` | inspector `core.js`(span 用量标签) | JS→Rust | 从 span 抽 Token / 费用;`partial` 时继续轮询补齐 |
 | `src-tauri/src/store.rs` | ArenaKit 新增 | Rust | `<app_data_dir>/arenakit-store.json`,`store_get/set/keys`;dock 的 prefs / 会话历史 / 重命名闸门都存这里 |
 | `src-tauri/src/pulse.rs` | android `PulseTiming.kt` | Kotlin→Rust | 仅保留阈值/退避常量;实况轮询在页面侧(`injected/pulse.js`),倒计时锚定在 `src/lib/pulse.js` |
-| `src/dock.*` | inspector `hud.js` `panel.js` + android `MainActivity` 面板 | JS→JS | 原生 dock(独立 webview),模块:服务端模型/轮次、回复监控、使用额度、额度、会话历史、自动探针、自动清理、会话探针、重命名对话、功能模块、提示词注入 |
+| `src/dock.*` | inspector `hud.js` `panel.js` + android `MainActivity` 面板 | JS→JS | 原生 dock(桌面独立 webview / 安卓内嵌面板)。顶部按参考安卓面板:模型名(绿色;本轮与首轮不同时橙黄)+ 每轮状态行 + 剩余额度/重置倒计时 + 进度条 + 后退/前进/刷新;模块:服务端模型/轮次、回复监控、使用额度、会话历史、自动探针、自动清理、会话探针、重命名对话、设置(主题:跟随系统/亮色/暗色,`prefs.theme`,CSS 变量 + `[data-theme]`)、功能模块、提示词注入 |
 | `src/lib/turns.js` | android `TurnTracker.kt` | Kotlin→JS | 每轮 → 模型;`routed` = 与首轮模型不同;历史最多 6 条 |
 | `src/lib/history.js` | inspector `history.js` + android `HistoryLogic.kt` | JS/Kotlin→JS | `history.<sessionId>` 记录 + `history-carry` 淘汰累计桶;200 条上限 |
 | `src/lib/usage.js` | inspector `view-model.js` | JS→JS | 用量合并/汇总/格式化/证据导出 |

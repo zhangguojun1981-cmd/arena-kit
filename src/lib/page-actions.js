@@ -39,6 +39,19 @@ export const PAGE_ACTIONS = {
     js: (on) => `window.__AK_PLUS_SET__ && window.__AK_PLUS_SET__(${!!on})`,
     run: (w, on) => (w.__AK_PLUS_SET__ ? w.__AK_PLUS_SET__(!!on) : undefined),
   },
+  // Browser controls (reference app panel: ‹ 后退 / 前进 › / 刷新).
+  navBack: {
+    js: () => 'window.history&&window.history.back()',
+    run: (w) => (w.history ? w.history.back() : undefined),
+  },
+  navForward: {
+    js: () => 'window.history&&window.history.forward()',
+    run: (w) => (w.history ? w.history.forward() : undefined),
+  },
+  reload: {
+    js: () => 'window.location&&window.location.reload&&window.location.reload()',
+    run: (w) => (w.location && typeof w.location.reload === 'function' ? w.location.reload() : undefined),
+  },
   // probe.js RPC: answered asynchronously through the bridge as 'probe-result'.
   probeCall: {
     js: (action, argsJson, reqId) => '(function(){var a=' + jsString(action) + ',g=' + jsString(argsJson) + ',r=' + jsString(reqId) + ';'

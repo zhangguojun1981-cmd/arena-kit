@@ -95,7 +95,8 @@ function fakeDom() {
       removeEventListener() {},
       querySelector: () => mk('div'), querySelectorAll: () => [], getElementById: (id) => (byId[id] ||= mk(id)),
       getBoundingClientRect: () => ({ left: 10, top: 20, width: 46, height: 46 }),
-      appendChild(c) { this.children.push(c); return c; }, remove() {}, setAttribute(k, v) { this['attr_' + k] = v; },
+      appendChild(c) { this.children.push(c); return c; }, remove() {}, setAttribute(k, v) { this['attr_' + k] = v; }, removeAttribute(k) { delete this['attr_' + k]; }, getAttribute(k) { return this['attr_' + k] ?? null; },
+      classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
       setPointerCapture() {}, closest: () => null, focus() {}, select() {},
     };
     return base;
