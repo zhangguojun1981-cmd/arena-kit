@@ -633,3 +633,40 @@ body {
     gap: 14px;
   }
 }
+
+/* ── mobile automation settings ─────────────────────────── */
+.m-settings {
+  margin: 0 0 18px;
+  padding: 16px 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  display: grid;
+  gap: 10px;
+}
+.m-settings-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+.m-settings-sub {
+  margin: -4px 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+.m-settings .grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.m-settings .row {
+  padding-left: 0;
+  padding-right: 0;
+}
+.m-settings .actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}

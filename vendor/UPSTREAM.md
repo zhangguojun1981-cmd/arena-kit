@@ -19,8 +19,8 @@ ArenaKit 整合了以下开源/私有项目。各上游脚本移植进 `injected
 
 | 上游 | 仓库链接 | 说明 | 用于 ArenaKit 的部分 |
 |---|---|---|---|
-| Arena Trace Inspector(Chrome MV3 扩展) | https://github.com/AI-modelsAPI/arena-trace-inspector | 截 SSE 令牌→查 Trigger.dev trace→显示服务端真实模型名;含 auto-draw 探针/清理/HUD | `injected/snoop.js`、`src-tauri/src/trace.rs`、HUD、待移植的 autodraw/history |
-| Arena Trace(Android 原生) | https://github.com/AI-modelsAPI/arena-trace-android | 上述扩展的 Kotlin 移植;WebView + 原生轮询;额度进度条 | `src-tauri/src/pulse.rs`、cookie 导出、已验证的额度轮询与注入时机 |
+| Arena Trace Inspector(Chrome MV3 扩展) | https://github.com/AI-modelsAPI/arena-trace-inspector | 截 SSE 令牌→查 Trigger.dev trace→显示服务端真实模型名;含 auto-draw 探针/清理/HUD、usage.js 用量标签 | `injected/snoop.js`、`src-tauri/src/trace.rs`(含 `extract_usage` ← usage.js)、HUD |
+| Arena Trace(Android 原生) | https://github.com/AI-modelsAPI/arena-trace-android | 上述扩展的 Kotlin 移植;WebView + 原生轮询;额度进度条;ProbeController / ProbeLogic / TurnTracker;probe.js / conversation-rename.js | `src-tauri/src/pulse.rs`、`probe.rs`(← ProbeController.kt)、`probe_logic.rs`(← ProbeLogic.kt)、`turns.rs`(← TurnTracker.kt)、`injected/probe.js`、`injected/rename.js`、会话记忆 / 导航跟踪 |
 
 > 注入时机参考安卓版:`arena-trace-android` 的 `MainActivity.kt` 用 `WebViewClient.onPageFinished` + `doUpdateVisitedHistory`（SPA pushState 导航）重新注入 `snoop.js`。ArenaKit 桌面端对应用 Tauri 的 `WebviewBuilder::initialization_script`（每次导航前自动重跑），等价地保证注入不被 SPA 路由冲掉。
 

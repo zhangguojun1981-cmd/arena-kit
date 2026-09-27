@@ -619,3 +619,149 @@ body {
     display: none;
   }
 }
+
+/* ── 回复监控 (turns / usage) ─────────────────────────────── */
+.turn-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.turn-headline {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  line-height: 1.4;
+}
+.turn-headline[data-empty="true"] {
+  color: var(--fg-3);
+  font-weight: 500;
+}
+.turn-headline[data-routed="true"] {
+  color: var(--warn);
+}
+.turn-history {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+.turn-history li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.turn-history li b {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-3);
+  min-width: 24px;
+}
+.turn-history li[data-routed="true"] b {
+  color: var(--warn);
+}
+.usage-block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 3px;
+}
+.usage-line {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  line-height: 1.5;
+  word-break: break-all;
+}
+.usage-line.mono {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* ── 自动探针 / 快捷发送 ─────────────────────────────────── */
+.field-inline {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+}
+.field-inline-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.card .input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  width: 100%;
+  min-width: 0;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.card .input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+.card .input::placeholder {
+  color: var(--fg-3);
+}
+.actions-wrap {
+  align-items: flex-start;
+  gap: 10px;
+}
+.actions-wrap .hint {
+  flex: 1;
+  line-height: 1.5;
+}
+.actions .btn[disabled] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.log {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  max-height: 150px;
+  overflow: auto;
+  border-radius: var(--r-ctl);
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.card-aside[data-tone="live"] {
+  color: var(--accent);
+}
+.card-aside[data-tone="warn"] {
+  color: var(--warn);
+}
+.empty-hint b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.empty-hint code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}

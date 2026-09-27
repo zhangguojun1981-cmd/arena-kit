@@ -16,8 +16,13 @@ ArenaKit = 网页套壳(A) + 取证 HUD(B) + 提示词注入。整合了以下�
 | 个人投票胜负统计 | [personal-leaderboard](https://github.com/wrapss/lmarena-personal-leaderboard) | A 前端注入 |
 | 每新对话自动注入系统提示词 | [Arena-Ai (ENI)](https://github.com/peyton2065/Arena-Ai) | 提示词注入 |
 | **截获运行令牌 → 拉 trace → 显示服务端真实模型名** | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector) / [-android](https://github.com/AI-modelsAPI/arena-trace-android) | B 原生取证 |
+| **回复监控**:每轮回复一个令牌 = 一轮;显示"第 N 轮 · 模型",同一会话内模型切换高亮,保留最近 6 轮 | [arena-trace-android](https://github.com/AI-modelsAPI/arena-trace-android) (TurnTracker) | B 原生取证 |
+| **会话记忆**:切回某个对话时回放已识别模型 / 用量;新对话清空显示 | [arena-trace-android](https://github.com/AI-modelsAPI/arena-trace-android) (restoreModelForSession) | B 原生取证 |
+| **使用额度(非百分比)**:trace 里的 Token 数与费用标签,本轮 + 本会话累计,只读原始标签不推算 | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector) (usage.js) | B 原生取证 |
 | **额度百分比 + 三色进度条 + 重置倒计时** | [arena-trace-android](https://github.com/AI-modelsAPI/arena-trace-android) (pulse) | B 原生取证 |
-| 自动抽卡/探针、清理探测残留、会话历史 | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector)(待移植) | B 原生取证 |
+| **自动探针 / 抽卡**:新建对话 → 发随机算式 → 读回模型 → 目标命中(别名 / 模糊 / `/正则/`)→ 改名 `前缀+模型名-NNN`;命中全部才停 / 命中即停 | [arena-trace-android](https://github.com/AI-modelsAPI/arena-trace-android) (ProbeController) ← auto-draw.js | C 自动化 |
+| **自动清理**:侧栏算式标题(探针残留)逐个经 Arena 自己的 ⋯ 菜单归档,不删除、跳过当前对话、失败重试、结束复查 | 同上 | C 自动化 |
+| **自动重命名**:识别后把对话改名为 `前缀+模型名`(每个对话一次);**快捷发送**:把设定文本发到当前对话(会话探针) | 同上 | C 自动化 |
 
 完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 
@@ -30,8 +35,8 @@ ArenaKit = 网页套壳(A) + 取证 HUD(B) + 提示词注入。整合了以下�
 | **壳 Shell** | 桌面端唯一的本地 WebView(`src/shell.html`),铺满窗口 | 顶部 44px 标签栏(每个 arena 页面一个标签,可单独关闭 / 切换 / 中键关闭)、首页(账号管理)、右侧 340px 侧栏 Dock |
 | **首页 · 账号** | Shell 中间区域(没有激活标签时可见) | 应用**默认打开首页而不是 arena.ai**。添加 / 编辑账号(名称、代理节点、颜色、备注、测试代理),每个账号"打开 arena"→ 新标签;同一账号可开多页 |
 | **arena 标签页** | 原生子 WebView,覆盖在 Shell 的中间区域 | 每个标签绑定一个账号:独立数据存储(Cookie / localStorage / IndexedDB 互不可见)+ 该账号的代理节点;`+` 按钮弹出原生菜单选择账号 |
-| **侧栏 Dock** | Shell 右列 | 镜像**当前激活标签**:服务端模型(含最近记录)、今日额度仪表、功能开关、提示词注入;后台标签的事件会缓存,切回时回放 |
-| **页内 HUD** | 注入 arena.ai 页面的 Shadow DOM(`src/hud.js`) | 可拖动胶囊,点击展开模型 / 额度卡片;移动端默认开启并提供"首页"按钮,桌面端可在 Dock 里打开 |
+| **侧栏 Dock** | Shell 右列 | 镜像**当前激活标签**:服务端模型(含最近记录、本轮 Token/费用)、回复监控(轮次 / 会话记忆 / 累计用量)、今日额度仪表、功能开关(含自动重命名)、自动探针 / 清理、快捷发送、提示词注入;后台标签的事件会缓存,切回时回放 |
+| **页内 HUD** | 注入 arena.ai 页面的 Shadow DOM(`src/hud.js`) | 可拖动胶囊,点击展开模型 / 轮次 / 用量 / 额度卡片;移动端默认开启,并提供"首页"与"开始探针 / 停止 / 清理 / 快捷发送"(用首页保存的自动化设置) |
 | **手机首页** | 同一个 `shell.html`,`data-mode="mobile"` | Android 启动页:"打开 Arena"按钮 + 功能说明;arena.ai 在同一个 WebView 里打开,HUD 里的"首页"回来 |
 | **预览页** | `src/index.html` | 浏览器里无需 Tauri 即可审阅 Shell(首页 / 多标签)、亮 / 暗 Dock、手机首页与 HUD(`npm run preview`) |
 

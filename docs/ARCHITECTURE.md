@@ -24,7 +24,9 @@
 │  Rust 核心 (src-tauri/src/lib.rs) —— 两端共用                 │
 │   ├── build_init_script  组装 env + bootstrap + shim + 各模块(按开关) │
 │   ├── sessions.rs  账号簿 accounts.json / 代理校验 / 标签列表   │
-│   ├── trace.rs   validate_token → poll Trigger.dev → 抽模型名  │
+│   ├── trace.rs   validate_token → poll Trigger.dev → 抽模型名 + Token/费用标签 │
+│   ├── turns.rs   回复监控:每令牌一轮,routed = 与首轮模型不同  │
+│   ├── probe.rs / probe_logic.rs  自动探针 / 清理 / 快捷发送 / 自动重命名(JS-RPC 驱动页面) │
 │   ├── pulse.rs   额度阈值 / 退避(轮询循环待接入)              │
 │   └── broadcast  事件带 tab 标签 emit 给 Shell + eval 进对应页面 HUD │
 ├─────────────────────────────────────────────────────────────┤
@@ -51,6 +53,15 @@
 - **代理节点**:`WebviewBuilder::proxy_url`(`http://` / `socks5://`,需 Cargo feature `macos-proxy`,因此 `minimumSystemVersion = 14.0`)。Rust 侧替页面发出的请求(`fetch_trace` 轮询 Trigger.dev、`proxy_get`)用调用方 WebView 的标签查到账号,构造带同一代理的 reqwest Client,保证页面与后台请求同一出口。
 - **事件归属**:所有 `arenakit://*` 事件的 payload 为 `{ tab, data }`;`page_event` / `fetch_trace` 的 `Webview` 参数给出来源标签。Dock 只渲染激活标签,后台标签的事件进缓存,切回时回放;`arenakit://tabs` 通知 Shell 重绘标签栏。
 - **ACL**:`capabilities/default.json`(`local: true`,webviews `shell` + `main`)拥有全部命令;`capabilities/arena.json`(远程 `arena.ai`,webviews `arena-*` + `main`)只有 `fetch_trace / proxy_get / page_event / get_app_info`。原生弹出菜单(`Window::popup_menu`)用于选账号,因为 HTML 弹层会被子 WebView 遮住。
+
+## 自动化(探针 / 清理 / 重命名)与回复监控
+
+- **分工与安卓版一致**:页面侧 `injected/probe.js` / `injected/rename.js` 只做"一步一动作"的 DOM 操作(新建对话、确认 Agent Mode、填算式并发送、扫侧栏、归档、重命名),全部经 Arena 自己的 UI;循环在 Rust `probe.rs` 里,通过 `webview.eval("ArenaProbe.call(action,args,reqId)")` 发起、页面用 `page_event{kind:"probe"}` 回传结果(`tokio::oneshot` 等待,35 s 超时)。模型名来自已有的 snoop → `fetch_trace` 链路,按 `sessionId` 存入该标签的 `TabMemory`,探针轮询它(最多 45 s)。
+- **安全红线**(照搬扩展):不覆盖用户草稿(`noDraft`)、只发送 / 只清理纯算式标题、发送前多重守卫(页面 / 模式 / 会话未变)、连续失败 3 次中止、归档≠删除、跳过当前对话、每个操作后关闭自己打开的菜单。
+- **回复监控**:`fetch_trace` 收到令牌即 `TurnTracker::on_token`(会话变化则重置)并广播 `arenakit://turn`;识别完成后 `record()` 给出 `第 N 轮 · 模型` / `已切换模型 →`(routed)和最近 6 轮历史,随 `arenakit://models` 一起下发。
+- **会话记忆**:`bootstrap.js` 钩住 pushState / replaceState / popstate 上报 `page_event{kind:"nav"}`;Rust 按 `/agent/<id>` 回放 `models_by_session` / `usage_by_session`(`restored:true`)或发 `cleared:true` 让 UI 清空。
+- **用量**:`trace::extract_usage` 只读模型 span 上的 `tabler-hash`(Token,支持 k/m/b 后缀 → 标记 ≈)与 `tabler-currency-dollar`(费用)标签,`summarize_usage` 给本轮 / 本会话累计,缺失就说"未提供"。
+- **移动端**:没有 Dock,HUD 里提供开始探针 / 停止 / 清理 / 快捷发送(两次点按确认),命令由 `capabilities/mobile-hud.json`(仅 android / iOS、仅 `main` 远程 webview)放行;参数在首页"自动化设置"里保存(`settings.json`)。
 
 ## 令牌截获数据流(核心取证链)
 

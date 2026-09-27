@@ -316,9 +316,47 @@ function wireDialog() {
 }
 
 // ── mobile ───────────────────────────────────────────────────────────────
-function wireMobile() {
+async function wireMobile() {
   $('m-open').addEventListener('click', () => openTab('mobile'));
   $('m-version').textContent = `v${info.version} · ${info.platform}`;
+  // Automation settings used by the in-page HUD (there is no dock on a phone).
+  let settings = null;
+  try {
+    settings = await invoke('get_settings');
+  } catch {
+    settings = null;
+  }
+  const p = settings?.probe || {};
+  $('ms-targets').value = p.targets ?? 'opus5, fable5, gpt6';
+  $('ms-rounds').value = p.max_rounds ?? 5;
+  $('ms-prefix').value = p.prefix ?? settings?.rename_prefix ?? '';
+  $('ms-find-all').checked = p.find_all !== false;
+  $('ms-probe-rename').checked = p.auto_rename !== false;
+  $('ms-auto-rename').checked = !!settings?.auto_rename;
+  $('ms-quick').value = settings?.quick_text || '';
+  $('ms-save').addEventListener('click', async () => {
+    const prefix = $('ms-prefix').value;
+    const next = {
+      auto_rename: $('ms-auto-rename').checked,
+      rename_prefix: prefix,
+      probe: {
+        targets: $('ms-targets').value,
+        max_rounds: Math.min(200, Math.max(1, Number($('ms-rounds').value) || 5)),
+        find_all: $('ms-find-all').checked,
+        auto_rename: $('ms-probe-rename').checked,
+        prefix,
+        suffix: p.suffix !== false,
+      },
+      quick_text: $('ms-quick').value,
+    };
+    try {
+      await invoke('save_settings', { settings: next });
+      $('ms-saved').textContent = '已保存';
+      setTimeout(() => ($('ms-saved').textContent = ''), 1800);
+    } catch (e) {
+      $('ms-saved').textContent = String(e?.message || e);
+    }
+  });
 }
 
 // ── boot ─────────────────────────────────────────────────────────────────
@@ -336,7 +374,7 @@ async function boot() {
   $('home').hidden = mobile;
 
   if (mobile) {
-    wireMobile();
+    await wireMobile();
     return;
   }
 
@@ -444,6 +482,10 @@ async function previewInvoke(cmd, args) {
       return preview.accounts.map((a) => ({ ...a }));
     case 'probe_proxy':
       return args.proxy ? { ok: true, ip: '203.0.113.7', ms: 412, error: null } : { ok: true, ip: '198.51.100.2', ms: 88, error: null };
+    case 'get_settings':
+      return { auto_rename: false, rename_prefix: '', probe: { targets: 'opus5, fable5, gpt6', max_rounds: 5, find_all: true, auto_rename: true, prefix: '', suffix: true }, quick_text: '' };
+    case 'save_settings':
+      return args.settings;
     default:
       throw new Error('preview: unknown command ' + cmd);
   }

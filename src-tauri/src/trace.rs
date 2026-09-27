@@ -216,6 +216,139 @@ pub fn extract_models(trace: &Value, run_id: &str) -> Result<Vec<ModelHit>, Stri
     Ok(found)
 }
 
+
+// ─────────────────────────── usage (tokens / cost) ───────────────────────────
+// Ported from arena-trace-inspector `usage.js`: only the labels Trigger.dev
+// already renders on a model span are read (tabler-hash = tokens,
+// tabler-currency-dollar = cost). Nothing is inferred from provider price
+// lists; a span without a label reports `None`.
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SpanUsage {
+    pub span_id: String,
+    pub model: String,
+    pub provider: String,
+    pub tokens: Option<u64>,
+    pub tokens_approximate: bool,
+    pub cost_usd: Option<f64>,
+    pub partial: bool,
+    pub error: bool,
+    pub cancelled: bool,
+}
+
+/// "12,345", "12.3k", "1.2M" → tokens (approximate when a unit suffix is used).
+pub fn parse_token_label(label: &str) -> Option<(u64, bool)> {
+    let t: String = label.trim().chars().filter(|c| *c != ',').collect();
+    let (num, unit) = match t.chars().last() {
+        Some(c) if c.is_ascii_alphabetic() => (&t[..t.len() - 1], Some(c.to_ascii_lowercase())),
+        _ => (t.as_str(), None),
+    };
+    let num = num.trim();
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit() || c == '.') || num.matches('.').count() > 1 {
+        return None;
+    }
+    let value: f64 = num.parse().ok()?;
+    let mult = match unit {
+        None => 1.0,
+        Some('k') => 1e3,
+        Some('m') => 1e6,
+        Some('b') => 1e9,
+        Some(_) => return None,
+    };
+    let v = (value * mult).round();
+    if !v.is_finite() || v < 0.0 || v > 9e15 {
+        return None;
+    }
+    Some((v as u64, unit.is_some()))
+}
+
+/// "$0.0123" → 0.0123
+pub fn parse_cost_label(label: &str) -> Option<f64> {
+    let t: String = label.trim().chars().filter(|c| *c != ',').collect();
+    let body = t.strip_prefix('$')?.trim();
+    if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    body.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0)
+}
+
+pub fn extract_usage(trace: &Value, run_id: &str) -> Vec<SpanUsage> {
+    let Some(events) = trace_events(trace) else { return Vec::new() };
+    let mut out: Vec<SpanUsage> = Vec::new();
+    for event in &events {
+        if event.get("runId").and_then(|v| v.as_str()) != Some(run_id) {
+            continue;
+        }
+        let Some(span_id) = event.get("spanId").and_then(|v| v.as_str()) else { continue };
+        if !MODEL_SPANS.contains(&span_name(event).as_str()) {
+            continue;
+        }
+        let items = event
+            .get("style").and_then(|s| s.get("accessory")).and_then(|a| a.get("items"))
+            .and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let text_of = |icon: &str| {
+            items.iter().find(|i| i.get("icon").and_then(|v| v.as_str()) == Some(icon))
+                .and_then(|i| i.get("text")).and_then(|v| v.as_str()).map(str::to_string)
+        };
+        let model = items.iter()
+            .find(|i| CUBE_ICONS.contains(&i.get("icon").and_then(|v| v.as_str()).unwrap_or("")))
+            .and_then(|i| i.get("text")).and_then(|v| v.as_str()).unwrap_or("")
+            .chars().take(200).collect::<String>();
+        let provider = event.get("style").and_then(|s| s.get("icon")).and_then(|v| v.as_str())
+            .filter(|s| s.starts_with("ai-provider-"))
+            .map(|s| s.trim_start_matches("ai-provider-").to_string()).unwrap_or_default();
+        let tokens = text_of("tabler-hash").and_then(|l| parse_token_label(&l));
+        let cost_usd = text_of("tabler-currency-dollar").and_then(|l| parse_cost_label(&l));
+        let flag = |k: &str| event.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        if let Some(existing) = out.iter_mut().find(|s| s.span_id == span_id) {
+            if tokens.is_some() { existing.tokens = tokens.map(|t| t.0); existing.tokens_approximate = tokens.map(|t| t.1).unwrap_or(false); }
+            if cost_usd.is_some() { existing.cost_usd = cost_usd; }
+            existing.partial = flag("isPartial");
+            continue;
+        }
+        out.push(SpanUsage {
+            span_id: span_id.to_string(),
+            model,
+            provider,
+            tokens: tokens.map(|t| t.0),
+            tokens_approximate: tokens.map(|t| t.1).unwrap_or(false),
+            cost_usd,
+            partial: flag("isPartial"),
+            error: flag("isError"),
+            cancelled: flag("isCancelled"),
+        });
+    }
+    out
+}
+
+/// Totals over a set of spans (dedup by span id), mirroring summarizeUsage.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct UsageTotals {
+    pub span_count: usize,
+    pub tokens: Option<u64>,
+    pub tokens_approximate: bool,
+    pub cost_usd: Option<f64>,
+    pub token_coverage: usize,
+    pub cost_coverage: usize,
+    pub partial: bool,
+}
+
+pub fn summarize_usage(spans: &[SpanUsage]) -> UsageTotals {
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&SpanUsage> = spans.iter().filter(|s| seen.insert(s.span_id.clone())).collect();
+    let with_tokens: Vec<&&SpanUsage> = unique.iter().filter(|s| s.tokens.is_some()).collect();
+    let with_cost: Vec<&&SpanUsage> = unique.iter().filter(|s| s.cost_usd.is_some()).collect();
+    UsageTotals {
+        span_count: unique.len(),
+        tokens: if with_tokens.is_empty() { None } else { Some(with_tokens.iter().map(|s| s.tokens.unwrap_or(0)).sum()) },
+        tokens_approximate: with_tokens.iter().any(|s| s.tokens_approximate),
+        cost_usd: if with_cost.is_empty() { None } else { Some((with_cost.iter().map(|s| s.cost_usd.unwrap_or(0.0)).sum::<f64>() * 1e9).round() / 1e9) },
+        token_coverage: with_tokens.len(),
+        cost_coverage: with_cost.len(),
+        partial: unique.iter().any(|s| s.partial),
+    }
+}
+
 // ─────────────────────────── tests ───────────────────────────
 #[cfg(test)]
 mod tests {
@@ -304,5 +437,47 @@ mod tests {
         assert!(is_fatal_trace_status(401));
         assert!(is_fatal_trace_status(429));
         assert!(!is_fatal_trace_status(500));
+    }
+
+    #[test]
+    fn usage_labels_parse_like_the_extension() {
+        assert_eq!(parse_token_label("12,345"), Some((12345, false)));
+        assert_eq!(parse_token_label("12.3k"), Some((12300, true)));
+        assert_eq!(parse_token_label("1.5M"), Some((1_500_000, true)));
+        assert_eq!(parse_token_label("abc"), None);
+        assert_eq!(parse_token_label("1.2.3"), None);
+        assert_eq!(parse_cost_label("$0.0123"), Some(0.0123));
+        assert_eq!(parse_cost_label("$ 1,000.5"), Some(1000.5));
+        assert_eq!(parse_cost_label("0.01"), None);
+    }
+
+    #[test]
+    fn usage_extraction_and_totals() {
+        let trace = json!({"events": [
+            {"runId": "run_1", "spanId": "s1", "message": "ai.streamText.doStream", "isPartial": false,
+             "style": {"icon": "ai-provider-openai", "accessory": {"items": [
+                {"icon": "tabler-cube", "text": "gpt-6"},
+                {"icon": "tabler-hash", "text": "1.2k"},
+                {"icon": "tabler-currency-dollar", "text": "$0.0030"}]}}},
+            {"runId": "run_1", "spanId": "s2", "message": "ai.streamText.doStream", "isPartial": true,
+             "style": {"accessory": {"items": [{"icon": "tabler-cube", "text": "gpt-6"}]}}},
+            {"runId": "run_1", "spanId": "s3", "message": "other", "style": {"accessory": {"items": [{"icon": "tabler-hash", "text": "999"}]}}},
+            {"runId": "run_2", "spanId": "s4", "message": "ai.streamText.doStream", "style": {"accessory": {"items": [{"icon": "tabler-hash", "text": "5"}]}}}
+        ]});
+        let spans = extract_usage(&trace, "run_1");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].tokens, Some(1200));
+        assert!(spans[0].tokens_approximate);
+        assert_eq!(spans[0].cost_usd, Some(0.003));
+        assert_eq!(spans[0].provider, "openai");
+        assert_eq!(spans[1].tokens, None);
+        assert!(spans[1].partial);
+        let t = summarize_usage(&spans);
+        assert_eq!(t.span_count, 2);
+        assert_eq!(t.tokens, Some(1200));
+        assert_eq!(t.token_coverage, 1);
+        assert_eq!(t.cost_coverage, 1);
+        assert!(t.partial && t.tokens_approximate);
+        assert_eq!(summarize_usage(&[]), UsageTotals::default());
     }
 }

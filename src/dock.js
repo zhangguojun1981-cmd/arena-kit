@@ -17,9 +17,13 @@ import {
   nextThemeMode,
   pushRecent,
   relativeTime,
+  formatUsage,
   resolveTheme,
   shortRun,
+  shortSession,
   themeLabel,
+  turnHeadline,
+  turnHistoryLine,
 } from './lib/format.js';
 
 const $ = (id) => document.getElementById(id);
@@ -136,11 +140,12 @@ function showModels(payload, opts = {}) {
   const block = $('model-block');
   if (!info.name) {
     block.dataset.empty = 'true';
-    $('model-name').textContent = payload ? '未识别' : '—';
+    $('model-name').textContent = payload && !payload.cleared ? '未识别' : '—';
     $('model-provider').textContent = '';
     $('model-run').textContent = '';
     $('copy-model').hidden = true;
-    $('model-when').textContent = '';
+    $('model-when').textContent = payload?.cleared ? '新对话' : '';
+    $('model-usage').hidden = true;
     return;
   }
   block.dataset.empty = 'false';
@@ -148,7 +153,10 @@ function showModels(payload, opts = {}) {
   $('model-provider').textContent = info.provider;
   $('model-run').textContent = shortRun(payload?.run_id || payload?.runId);
   $('copy-model').hidden = false;
-  $('model-when').textContent = info.partial ? '部分结果' : '刚刚识别';
+  $('model-when').textContent = payload?.restored ? '会话记忆' : info.partial ? '部分结果' : '刚刚识别';
+  const u = payload?.run_usage && payload.run_usage.span_count ? formatUsage(payload.run_usage) : '';
+  $('model-usage').textContent = u;
+  $('model-usage').hidden = !u;
   lastModel = info.name;
   if (opts.replay) {
     renderRecent();
@@ -234,6 +242,193 @@ function updateEniAside() {
   $('eni-aside').textContent = $('eni-on').checked ? '开启' : '关闭';
 }
 
+// ── 回复监控: turns / session memory / usage ───────────────────────────
+function setTurnState(state, text) {
+  $('turn-state').dataset.state = state;
+  $('turn-state-text').textContent = text;
+}
+function renderTurnHistory(history) {
+  const ol = $('turn-history');
+  const items = Array.isArray(history) ? history.filter((h) => h && h.model) : [];
+  ol.hidden = items.length === 0;
+  ol.innerHTML = '';
+  const first = items.length ? items[0].model : '';
+  for (const h of items) {
+    const li = document.createElement('li');
+    li.dataset.routed = first && h.model !== first ? 'true' : 'false';
+    const b = document.createElement('b');
+    b.textContent = `R${h.turn}`;
+    const span = document.createElement('span');
+    span.textContent = h.model;
+    li.append(b, span);
+    ol.appendChild(li);
+  }
+}
+function showTurnToken(p) {
+  // A new run token = a new turn; the trace is still being fetched.
+  setTurnState('live', `第 ${p?.turn ?? '?'} 轮 · 识别中`);
+  $('turn-session').textContent = shortSession(p?.session_id);
+  $('turn-aside').textContent = p?.switched ? '新会话' : '';
+  if (p?.switched) {
+    $('turn-headline').textContent = '—';
+    $('turn-headline').dataset.empty = 'true';
+    delete $('turn-headline').dataset.routed;
+    renderTurnHistory([]);
+  }
+}
+function showTurnResolved(report) {
+  const view = report?.turn;
+  if (report?.session_id) $('turn-session').textContent = shortSession(report.session_id);
+  if (view) {
+    $('turn-headline').textContent = turnHeadline(view);
+    $('turn-headline').dataset.empty = 'false';
+    $('turn-headline').dataset.routed = view.routed ? 'true' : 'false';
+    renderTurnHistory(view.history);
+    setTurnState('live', view.routed ? '模型已切换' : '已识别');
+    $('turn-aside').textContent = `${view.turn} 轮`;
+  } else if (report?.restored) {
+    setTurnState('idle', '会话记忆');
+    $('turn-aside').textContent = '已恢复';
+  }
+  const run = report?.run_usage && report.run_usage.span_count ? formatUsage(report.run_usage) : '';
+  const all = report?.usage && report.usage.span_count ? formatUsage(report.usage) : '';
+  $('usage-run').textContent = run ? `本轮 · ${run}` : '本轮 · Token / 费用:未提供';
+  $('usage-session').textContent = all ? `本会话累计 · ${all}` : '本会话累计 · 未提供';
+}
+function resetTurns(cleared) {
+  setTurnState('idle', cleared ? '新对话' : '等待会话流');
+  $('turn-session').textContent = shortSession(cleared?.session_id);
+  $('turn-headline').textContent = '—';
+  $('turn-headline').dataset.empty = 'true';
+  delete $('turn-headline').dataset.routed;
+  $('turn-aside').textContent = '';
+  renderTurnHistory([]);
+  $('usage-run').textContent = '本轮 · Token / 费用:未提供';
+  $('usage-session').textContent = '本会话累计 · 未提供';
+}
+
+// ── 自动探针 / 清理 / 快捷发送 / 设置 ─────────────────────────────────────
+let settings = { auto_rename: false, rename_prefix: '', probe: { targets: 'opus5, fable5, gpt6', max_rounds: 5, find_all: true, auto_rename: true, prefix: '', suffix: true }, quick_text: '' };
+let saveTimer = 0;
+
+function readProbeConfig() {
+  return {
+    targets: $('probe-targets').value,
+    max_rounds: Math.min(200, Math.max(1, Number($('probe-rounds').value) || 5)),
+    find_all: $('probe-find-all').checked,
+    auto_rename: $('probe-rename').checked,
+    prefix: $('probe-prefix').value,
+    suffix: $('probe-suffix').checked,
+  };
+}
+function fillSettings(s) {
+  settings = s || settings;
+  const p = settings.probe || {};
+  $('probe-targets').value = p.targets ?? '';
+  $('probe-rounds').value = p.max_rounds ?? 5;
+  $('probe-prefix').value = p.prefix ?? settings.rename_prefix ?? '';
+  $('probe-find-all').checked = p.find_all !== false;
+  $('probe-rename').checked = p.auto_rename !== false;
+  $('probe-suffix').checked = p.suffix !== false;
+  $('auto-rename').checked = !!settings.auto_rename;
+  $('quick-text').value = settings.quick_text || '';
+  $('quick-count').textContent = charCount($('quick-text').value);
+}
+function scheduleSaveSettings() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const probe = readProbeConfig();
+    settings = { auto_rename: $('auto-rename').checked, rename_prefix: probe.prefix, probe, quick_text: $('quick-text').value };
+    if (tauri) tauri.core.invoke('save_settings', { settings }).catch((e) => setStatus('设置保存失败: ' + (e?.message || e), 'error'));
+  }, 400);
+}
+
+function renderProbe(payload) {
+  const st = payload?.status;
+  const text = payload?.text;
+  if (!st) return;
+  const aside = $('probe-aside');
+  if (st.active && st.kind === 'probe') {
+    aside.textContent = `第 ${st.round}/${st.max_rounds} 轮 · 命中 ${st.hits.length}`;
+    aside.dataset.tone = 'live';
+  } else if (st.active && st.kind === 'cleanup') {
+    aside.textContent = `清理中 · 已归档 ${st.archived}`;
+    aside.dataset.tone = 'live';
+  } else {
+    aside.textContent = st.hits && st.hits.length ? `上次命中 ${st.hits.length}` : '空闲';
+    delete aside.dataset.tone;
+  }
+  $('probe-start').hidden = st.active;
+  $('probe-stop').hidden = !st.active;
+  $('cleanup-start').disabled = st.active;
+  $('quick-send').disabled = st.active;
+  $('probe-progress').textContent = text || st.last || '';
+  const log = $('probe-log');
+  log.textContent = (st.log || []).join('\n');
+  log.hidden = !st.log || !st.log.length;
+  log.scrollTop = log.scrollHeight;
+  for (const id of ['probe-targets', 'probe-rounds', 'probe-prefix', 'probe-find-all', 'probe-rename', 'probe-suffix']) $(id).disabled = st.active;
+}
+
+function wireAutomation() {
+  for (const id of ['probe-targets', 'probe-rounds', 'probe-prefix', 'probe-find-all', 'probe-rename', 'probe-suffix', 'auto-rename']) {
+    $(id).addEventListener('change', scheduleSaveSettings);
+    $(id).addEventListener('input', scheduleSaveSettings);
+  }
+  $('quick-text').addEventListener('input', () => {
+    $('quick-count').textContent = charCount($('quick-text').value);
+    scheduleSaveSettings();
+  });
+  $('probe-start').addEventListener('click', async () => {
+    const config = readProbeConfig();
+    if (!config.targets.trim()) {
+      toast('请先填写探针目标');
+      return;
+    }
+    if (!window.confirm(`自动探针会新建对话并发送真实消息(消耗额度)。\n目标:${config.targets}\n最多 ${config.max_rounds} 轮 · ${config.find_all ? '命中全部才停' : '命中即停'}${config.auto_rename ? ' · 命中后重命名' : ''}\n\n开始?`)) return;
+    if (!tauri) {
+      renderProbe({ status: { active: true, kind: 'probe', round: 1, max_rounds: config.max_rounds, hits: [], archived: 0, log: ['开始探针(预览)'], last: '' } });
+      return;
+    }
+    try {
+      renderProbe({ status: await tauri.core.invoke('probe_start', { config }) });
+    } catch (e) {
+      toast(String(e?.message || e));
+    }
+  });
+  $('probe-stop').addEventListener('click', async () => {
+    if (!tauri) { renderProbe({ status: { active: false, kind: 'idle', round: 0, max_rounds: 0, hits: [], archived: 0, log: ['已停止(预览)'], last: '' } }); return; }
+    try {
+      renderProbe({ status: await tauri.core.invoke('probe_stop') });
+    } catch (e) {
+      toast(String(e?.message || e));
+    }
+  });
+  $('cleanup-start').addEventListener('click', async () => {
+    if (!window.confirm('清理侧栏里标题为算式的对话(探针残留):仅归档、不删除,跳过当前打开的对话。\n\n开始?')) return;
+    if (!tauri) return;
+    try {
+      renderProbe({ status: await tauri.core.invoke('cleanup_start') });
+    } catch (e) {
+      toast(String(e?.message || e));
+    }
+  });
+  $('quick-send').addEventListener('click', async () => {
+    const text = $('quick-text').value;
+    if (!text.trim()) { toast('请先填写要发送的内容'); return; }
+    if (!tauri) { toast('预览模式:未发送'); return; }
+    $('quick-send').disabled = true;
+    try {
+      await tauri.core.invoke('quick_send', { text });
+      toast('已发送到当前对话');
+    } catch (e) {
+      toast('发送失败: ' + String(e?.message || e));
+    } finally {
+      $('quick-send').disabled = false;
+    }
+  });
+}
+
 // ── Tauri bridge ─────────────────────────────────────────────────────────
 const tauri = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.event ? window.__TAURI__ : null;
 
@@ -313,7 +508,7 @@ export function unwrapEvent(payload) {
 
 function cacheFor(tab) {
   const key = tab ?? 'mobile';
-  if (!perTab.has(key)) perTab.set(key, { models: null, credits: null, state: null });
+  if (!perTab.has(key)) perTab.set(key, { models: null, credits: null, state: null, token: null, probe: null });
   return perTab.get(key);
 }
 
@@ -326,6 +521,8 @@ function resetCards() {
   showModels(null);
   showCredits(null);
   $('model-when').textContent = '';
+  resetTurns(null);
+  renderProbe({ status: { active: false, kind: 'idle', round: 0, max_rounds: 0, hits: [], archived: 0, log: [], last: '' } });
   setStatus('就绪');
 }
 
@@ -337,9 +534,12 @@ function replay(tab) {
   }
   if (c.models) showModels(c.models, { replay: true });
   else showModels(null);
+  if (c.models && !c.models.cleared) showTurnResolved(c.models);
+  else resetTurns(c.models);
   if (c.credits) showCredits(c.credits);
   else showCredits(null);
   if (c.state) applyPageState(c.state);
+  if (c.probe) renderProbe(c.probe);
 }
 
 /** Called by the shell whenever tabs change. */
@@ -368,11 +568,14 @@ export function setActiveTab(view) {
   setConn('idle', '等待页面');
   // Ask the now-visible page for its switches (it also reports on load).
   pageCall(`${AK}reportState()`);
+  if (tauri) tauri.core.invoke('probe_status').then((status) => renderProbe({ status })).catch(() => {});
 }
 
 async function boot() {
   wireControls();
+  wireAutomation();
   renderRecent();
+  fillSettings(settings);
   $('eni-count').textContent = charCount($('eni-text').value);
 
   if (!tauri) {
@@ -380,11 +583,31 @@ async function boot() {
     return;
   }
 
+  try {
+    fillSettings(await tauri.core.invoke('get_settings'));
+  } catch {
+    /* older core */
+  }
+
   const { listen } = tauri.event;
   await listen('arenakit://models', (e) => {
     const { tab, data } = unwrapEvent(e.payload);
     cacheFor(tab).models = data;
-    if (isCurrent(tab)) showModels(data);
+    if (isCurrent(tab)) {
+      showModels(data);
+      if (data?.cleared) resetTurns(data);
+      else showTurnResolved(data);
+    }
+  });
+  await listen('arenakit://turn', (e) => {
+    const { tab, data } = unwrapEvent(e.payload);
+    cacheFor(tab).token = data;
+    if (isCurrent(tab)) showTurnToken(data);
+  });
+  await listen('arenakit://probe', (e) => {
+    const { tab, data } = unwrapEvent(e.payload);
+    cacheFor(tab).probe = data;
+    if (isCurrent(tab)) renderProbe(data);
   });
   await listen('arenakit://credits', (e) => {
     const { tab, data } = unwrapEvent(e.payload);
@@ -450,6 +673,13 @@ function preview() {
     hud: false,
     eni: { on: false, text: '' },
   });
+  showTurnResolved({
+    session_id: 'a1b2c3d4e5f6',
+    run_usage: { span_count: 1, tokens: 1284, tokens_approximate: false, cost_usd: 0.0031, token_coverage: 1, cost_coverage: 1, partial: false },
+    usage: { span_count: 3, tokens: 4120, tokens_approximate: true, cost_usd: 0.0104, token_coverage: 3, cost_coverage: 2, partial: false },
+    turn: { turn: 3, model: 'claude-opus-4-1', routed: true, changed: true, history: [{ turn: 1, model: 'gpt-5-chat' }, { turn: 2, model: 'gpt-5-chat' }, { turn: 3, model: 'claude-opus-4-1' }] },
+  });
+  renderProbe({ status: { active: false, kind: 'idle', round: 0, max_rounds: 5, hits: [{ target: 'opus5', model: 'claude-opus-4-1' }], archived: 0, log: ['开始探针 · 目标 opus5、gpt6 · 命中全部才停 · 最多 5 轮', '第 1 轮 · 发送 "473×82=" · 待命中 opus5、gpt6', '识别到:claude-opus-4-1', '命中目标 opus5 → claude-opus-4-1', '已重命名为 claude-opus-4-1-001', '探针结束 · 命中:opus5→claude-opus-4-1'], last: '' } });
   if (params.get('band') === 'warning') showCredits({ remaining: 15, total: 100, resetAt: Date.now() + 40 * 60_000 });
   if (params.get('band') === 'danger') showCredits({ remaining: 4, total: 100, resetAt: Date.now() + 9 * 60_000 });
 }

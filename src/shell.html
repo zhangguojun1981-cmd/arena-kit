@@ -90,6 +90,20 @@
             <li><b>模型管理面板</b><span>70+ 厂商识别、分组、排序</span></li>
             <li><b>提示词注入</b><span>为每个新对话前置系统提示词</span></li>
           </ul>
+          <section class="m-settings" id="m-settings">
+            <h2 class="m-settings-title">自动化设置</h2>
+            <p class="m-settings-sub">页内 HUD 的"开始探针 / 清理 / 快捷发送"使用这里保存的设置。探针会发送真实消息、消耗额度。</p>
+            <label class="field"><span class="field-label">探针目标(逗号分隔,支持 /正则/)</span><input class="input" id="ms-targets" type="text" autocomplete="off" spellcheck="false" placeholder="opus5, fable5, gpt6" /></label>
+            <div class="grid2">
+              <label class="field"><span class="field-label">最多轮数</span><input class="input" id="ms-rounds" type="number" min="1" max="200" value="5" /></label>
+              <label class="field"><span class="field-label">标题前缀</span><input class="input" id="ms-prefix" type="text" autocomplete="off" placeholder="可选" /></label>
+            </div>
+            <label class="row row-flush"><span class="row-main"><span class="row-label">命中所有目标才停止</span></span><span class="switch"><input type="checkbox" id="ms-find-all" checked /><i></i></span></label>
+            <label class="row row-flush"><span class="row-main"><span class="row-label">命中后自动重命名(-NNN 后缀)</span></span><span class="switch"><input type="checkbox" id="ms-probe-rename" checked /><i></i></span></label>
+            <label class="row row-flush"><span class="row-main"><span class="row-label">识别后自动重命名对话</span><span class="row-desc">每个对话一次,标题 = 前缀 + 模型名</span></span><span class="switch"><input type="checkbox" id="ms-auto-rename" /><i></i></span></label>
+            <label class="field"><span class="field-label">快捷发送内容</span><textarea class="textarea" id="ms-quick" rows="3" spellcheck="false" placeholder="HUD 里点「快捷发送」时发到当前对话的内容"></textarea></label>
+            <div class="actions"><span class="hint" id="ms-saved"></span><button class="btn btn-primary" type="button" id="ms-save">保存设置</button></div>
+          </section>
           <p class="m-note">Android 的系统 WebView 只有一份登录态,多账号请使用系统的"应用分身";代理由 Clash 等 VPN 接管。</p>
           <p class="m-version mono" id="m-version"></p>
         </section>
@@ -147,8 +161,32 @@
                       <button class="link-btn" id="copy-model" type="button" hidden>复制</button>
                     </div>
                     <p class="empty-hint" id="model-hint">在左侧发送一条消息,ArenaKit 会截获运行令牌并读取 trace 中的真实模型名。</p>
+                    <div class="usage-line mono" id="model-usage" hidden></div>
                   </div>
                   <ul class="recent" id="recent" hidden></ul>
+                </div>
+              </div>
+            </section>
+
+            <!-- Module: per-turn reply monitor (轮次 / 会话记忆 / 用量) -->
+            <section class="card" data-section="turns" data-open="true">
+              <button class="card-head" type="button" aria-expanded="true">
+                <span class="card-title">回复监控</span>
+                <span class="card-aside" id="turn-aside"></span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner">
+                  <div class="turn-top">
+                    <span class="pill pill-status" id="turn-state" data-state="idle"><i class="dot"></i><span id="turn-state-text">等待会话流</span></span>
+                    <span class="hint mono" id="turn-session"></span>
+                  </div>
+                  <div class="turn-headline" id="turn-headline">—</div>
+                  <ol class="turn-history" id="turn-history" hidden></ol>
+                  <div class="usage-block">
+                    <div class="usage-line" id="usage-run">本轮 · Token / 费用:未提供</div>
+                    <div class="usage-line" id="usage-session">本会话累计 · 未提供</div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -231,6 +269,83 @@
                     </span>
                     <span class="switch"><input type="checkbox" data-module="hud" /><i></i></span>
                   </label>
+
+                  <label class="row">
+                    <span class="row-main">
+                      <span class="row-label">识别后自动重命名对话</span>
+                      <span class="row-desc">每个对话一次,标题 = 前缀 + 模型名(经 Arena 自己的菜单)</span>
+                    </span>
+                    <span class="switch"><input type="checkbox" id="auto-rename" /><i></i></span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Module: auto-probe / cleanup (自动探针 / 自动清理) -->
+            <section class="card" data-section="probe" data-open="false">
+              <button class="card-head" type="button" aria-expanded="false">
+                <span class="card-title">自动探针</span>
+                <span class="card-aside" id="probe-aside">空闲</span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner">
+                  <p class="empty-hint">自动新建对话、发送算式消息、读回模型名,命中目标后重命名。<b>会发送真实消息、消耗额度。</b>目标用逗号分隔,支持 <code>/正则/</code>。</p>
+                  <label class="field-inline">
+                    <span class="field-inline-label">目标</span>
+                    <input class="input" id="probe-targets" type="text" autocomplete="off" spellcheck="false" placeholder="opus5, fable5, gpt6" />
+                  </label>
+                  <div class="grid2">
+                    <label class="field-inline">
+                      <span class="field-inline-label">最多轮数</span>
+                      <input class="input" id="probe-rounds" type="number" min="1" max="200" step="1" value="5" />
+                    </label>
+                    <label class="field-inline">
+                      <span class="field-inline-label">标题前缀</span>
+                      <input class="input" id="probe-prefix" type="text" autocomplete="off" placeholder="可选,如 探针·" />
+                    </label>
+                  </div>
+                  <label class="row row-flush">
+                    <span class="row-main"><span class="row-label">命中所有目标才停止</span><span class="row-desc">关闭 = 命中任一目标即停</span></span>
+                    <span class="switch"><input type="checkbox" id="probe-find-all" checked /><i></i></span>
+                  </label>
+                  <label class="row row-flush">
+                    <span class="row-main"><span class="row-label">命中后自动重命名会话</span><span class="row-desc">标题 = 前缀 + 模型名 + -NNN</span></span>
+                    <span class="switch"><input type="checkbox" id="probe-rename" checked /><i></i></span>
+                  </label>
+                  <label class="row row-flush">
+                    <span class="row-main"><span class="row-label">加 -NNN 序号后缀</span><span class="row-desc">同模型独立计数;关闭 = 抽卡模式,只写模型名</span></span>
+                    <span class="switch"><input type="checkbox" id="probe-suffix" checked /><i></i></span>
+                  </label>
+                  <div class="actions">
+                    <span class="hint" id="probe-progress"></span>
+                    <button class="btn" id="probe-stop" type="button" hidden>停止</button>
+                    <button class="btn btn-primary" id="probe-start" type="button">开始探针</button>
+                  </div>
+                  <div class="actions actions-wrap">
+                    <span class="hint">清理侧栏里的算式标题对话:仅归档、不删除、跳过当前对话</span>
+                    <button class="btn" id="cleanup-start" type="button">清理算式标题</button>
+                  </div>
+                  <pre class="log mono" id="probe-log" hidden></pre>
+                </div>
+              </div>
+            </section>
+
+            <!-- Module: quick send to the current conversation (会话探针) -->
+            <section class="card" data-section="quick" data-open="false">
+              <button class="card-head" type="button" aria-expanded="false">
+                <span class="card-title">快捷发送</span>
+                <span class="card-aside" id="quick-aside"></span>
+                <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="card-body">
+                <div class="card-inner">
+                  <p class="empty-hint">把下面的内容填入<b>当前对话</b>的输入框并发送(会话探针:对已有对话再探一轮,回复监控里看它路由到了哪个模型)。会覆盖输入框里的草稿。</p>
+                  <textarea id="quick-text" class="textarea" rows="3" spellcheck="false" placeholder="要发送到当前对话的内容…"></textarea>
+                  <div class="actions">
+                    <span class="hint mono" id="quick-count">0 字</span>
+                    <button class="btn btn-primary" id="quick-send" type="button">发送到当前对话</button>
+                  </div>
                 </div>
               </div>
             </section>

@@ -103,3 +103,24 @@ test('charCount counts code points', () => {
   assert.equal(charCount('你好😀'), '3 字');
   assert.equal(charCount(undefined), '0 字');
 });
+
+test('formatUsage mirrors the extension wording', async () => {
+  const { formatUsage, turnHistoryLine, turnHeadline, shortSession } = await import('../src/lib/format.js');
+  assert.equal(formatUsage(null), 'Token / 费用:未提供');
+  assert.equal(formatUsage({ span_count: 0 }), 'Token / 费用:未提供');
+  assert.equal(
+    formatUsage({ span_count: 2, tokens: 1200, tokens_approximate: true, cost_usd: 0.003, token_coverage: 1, cost_coverage: 1, partial: true }),
+    'Token ≈1,200 · trace 费用 ≈$0.003(部分缺失)(进行中)'
+  );
+  assert.equal(
+    formatUsage({ span_count: 1, tokens: 12345, tokens_approximate: false, cost_usd: null, token_coverage: 1, cost_coverage: 0, partial: false }),
+    'Token 12,345 · trace 费用 未提供(部分缺失)'
+  );
+  assert.equal(turnHistoryLine([{ turn: 1, model: 'a' }, { turn: 2, model: 'b' }]), '本会话: R1 a · R2 b');
+  assert.equal(turnHistoryLine([]), '');
+  assert.equal(turnHeadline({ turn: 2, model: 'x', routed: true, changed: true }), '第 2 轮 · 已切换模型 → x');
+  assert.equal(turnHeadline({ turn: 3, model: 'x', routed: true, changed: false }), '第 3 轮 · x(非首轮模型)');
+  assert.equal(turnHeadline({ turn: 1, model: 'x', routed: false, changed: false }), '第 1 轮 · x');
+  assert.equal(shortSession('abcdefghijkl'), 'abcdefgh…');
+  assert.equal(shortSession(''), '');
+});

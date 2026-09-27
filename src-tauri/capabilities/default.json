@@ -26,6 +26,13 @@
     "allow-close-tab",
     "allow-activate-tab",
     "allow-pick-account",
-    "allow-probe-proxy"
+    "allow-probe-proxy",
+    "allow-probe-start",
+    "allow-probe-stop",
+    "allow-probe-status",
+    "allow-cleanup-start",
+    "allow-quick-send",
+    "allow-get-settings",
+    "allow-save-settings"
   ]
 }

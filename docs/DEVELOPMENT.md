@@ -148,8 +148,10 @@ __ARENAKIT__.proxyGet(url)                 → invoke('proxy_get', {url})       
 __ARENAKIT__.reportState()                 → invoke('page_event', {kind:'state', payload})
    payload = {modules:{manager,unlock,plus,leaderboard,eni}, unlock:{opus,hidden},
               eni:{on,text}, hud, url, version}
-invoke('page_event', {kind:'credits'|'log'|'home', payload})   kind 白名单:state | credits | log | home
+invoke('page_event', {kind:'credits'|'log'|'home'|'probe'|'nav', payload})   kind 白名单:state | credits | log | home | probe | nav
    home(手机 HUD 的"首页"按钮)→ Rust 把 main WebView 导航回 shell.html;桌面上等价于回首页(标签保留)
+   probe  → injected/probe.js 回传一次 JS-RPC 结果 {reqId, ok, data|error}(probe.rs 的 oneshot 等待方)
+   nav    → bootstrap.js 钩住 pushState/replaceState/popstate 上报 {url};Rust 回放会话记忆或清空显示
 
 // Shell → Rust(capabilities/default.json 授权;全部带 tab 语义)
 invoke('get_app_info')                     → {platform, version, arch, mobile, multi_account, per_tab_proxy}
@@ -161,6 +163,11 @@ invoke('open_tab', {accountId})            → TabsView   桌面:新建子 WebVi
 invoke('close_tab', {id}) / invoke('activate_tab', {id|null})  → TabsView(null = 首页)
 invoke('pick_account')                     → 原生弹出菜单选账号(点击后 Rust 自行 open_tab)
 invoke('probe_proxy', {proxy})             → {ok, ip, ms, error}   经该代理取出口 IP
+invoke('get_settings') / invoke('save_settings', {settings})   → Settings {auto_rename, rename_prefix, probe:{targets,max_rounds,find_all,auto_rename,prefix,suffix}, quick_text}
+invoke('probe_start', {config}) / invoke('probe_stop') / invoke('probe_status')   → ProbeStatus {active, kind, round, max_rounds, hits, archived, log, last}
+invoke('cleanup_start')                    → ProbeStatus   侧栏算式标题归档(仅归档)
+invoke('quick_send', {text})               → sessionId     发到当前对话(会话探针)
+   以上自动化命令作用于"激活标签"(桌面)或 main(手机);手机 HUD 经 capabilities/mobile-hud.json 也可调用(不含 save_settings)
 invoke('arena_command', {js})              → 在**激活标签**的 arena WebView 里 eval;Dock 只用它调用 __ARENAKIT__:
     __ARENAKIT__.reportState()             启动时索要页面状态
     __ARENAKIT__.toggleManager()           打开/关闭 Arena-Manager 面板
@@ -171,7 +178,10 @@ invoke('arena_command', {js})              → 在**激活标签**的 arena WebV
 
 // Rust → Shell(Tauri 事件,payload 一律 {tab, data};tab 为来源标签 id,手机 / 未知为 null)
 //      与 → 页内 HUD(eval `__AK_HUD__.push(kind, data)`,只推给来源标签的页面)
-'arenakit://models'    data = {run_id, models: [{model, provider, partial}]}
+'arenakit://models'    data = {run_id, models: [{model, provider, partial}], session_id, turn?: {turn, model, routed, changed, headline, history[]},
+                               run_usage, usage: {span_count, tokens, tokens_approximate, cost_usd, token_coverage, cost_coverage, partial}, spans[], restored, cleared}
+'arenakit://turn'      data = {phase:'token', session_id, turn, switched, run_id}   令牌到达 = 新一轮,trace 尚在拉取
+'arenakit://probe'     data = {status: ProbeStatus, text?}   探针 / 清理 / 快捷发送的进度与日志
 'arenakit://credits'   data = {remaining, total, resetAt}
 'arenakit://error'     data = {scope, message}(scope=tab 表示开标签失败)
 'arenakit://state'     data = page_event 的 state 载荷原样转发(Dock 用它同步开关)

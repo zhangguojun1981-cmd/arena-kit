@@ -103,3 +103,36 @@ export function charCount(text) {
   const n = typeof text === 'string' ? [...text].length : 0;
   return `${n} 字`;
 }
+
+/** Token / cost line from trace labels (port of arena-trace-inspector formatUsage). */
+export function formatUsage(t) {
+  if (!t || !t.span_count) return 'Token / 费用:未提供';
+  const tokens = t.tokens === null || t.tokens === undefined ? '未提供' : (t.tokens_approximate ? '≈' : '') + Number(t.tokens).toLocaleString('zh-CN');
+  const cost =
+    t.cost_usd === null || t.cost_usd === undefined
+      ? '未提供'
+      : '≈$' + Number(t.cost_usd).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  const missing = t.token_coverage < t.span_count || t.cost_coverage < t.span_count;
+  return `Token ${tokens} · trace 费用 ${cost}` + (missing ? '(部分缺失)' : '') + (t.partial ? '(进行中)' : '');
+}
+
+/** "本会话: R1 m1 · R2 m2" from a turn history array. */
+export function turnHistoryLine(history) {
+  const items = Array.isArray(history) ? history.filter((h) => h && h.model) : [];
+  if (!items.length) return '';
+  return '本会话: ' + items.map((h) => `R${h.turn} ${h.model}`).join(' · ');
+}
+
+/** Headline for a turn view (mirrors turns.rs::record). */
+export function turnHeadline(view) {
+  if (!view || !view.model) return '';
+  if (view.routed && view.changed) return `第 ${view.turn} 轮 · 已切换模型 → ${view.model}`;
+  if (view.routed) return `第 ${view.turn} 轮 · ${view.model}(非首轮模型)`;
+  return `第 ${view.turn} 轮 · ${view.model}`;
+}
+
+/** Short conversation id for labels ("a1b2c3d4…"). */
+export function shortSession(id, keep = 8) {
+  if (typeof id !== 'string' || !id) return '';
+  return id.length > keep ? id.slice(0, keep) + '…' : id;
+}

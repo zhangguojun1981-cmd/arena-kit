@@ -73,7 +73,18 @@
           '<div class="gauge-row"><span class="gauge-val empty" id="pct">—</span><span class="gauge-sub" id="reset">今日额度</span></div>' +
           '<div class="bar"><div class="fill" id="fill"></div></div>' +
         '</div>' +
+        '<div class="turn" id="turn" hidden><div class="turn-head" id="turn-head"></div><div class="turn-hist" id="turn-hist"></div></div>' +
+        '<div class="usage" id="usage" hidden></div>' +
         '<div class="error" id="error"></div>' +
+        '<div class="probe" id="probe" hidden>' +
+          '<div class="probe-line" id="probe-line"></div>' +
+          '<div class="probe-btns" id="probe-btns" hidden>' +
+            '<button type="button" id="p-start">开始探针</button>' +
+            '<button type="button" id="p-stop" hidden>停止</button>' +
+            '<button type="button" id="p-clean">清理算式标题</button>' +
+            '<button type="button" id="p-quick">快捷发送</button>' +
+          '</div>' +
+        '</div>' +
         '<div class="foot"><span>ArenaKit</span><button class="home" id="home" type="button" hidden>首页</button><span id="ver"></span></div>' +
       '</div>' +
       '<button class="chip empty no-pct" id="chip" aria-label="ArenaKit HUD">' +
@@ -222,14 +233,112 @@
     if (msg && !open) chip.classList.add('has-error');
   }
 
+  // ── 回复监控: per-turn line + token/cost labels ─────────────────────
+  function fmtUsage(t) {
+    if (!t || !t.span_count) return '';
+    var tokens = t.tokens === null || t.tokens === undefined ? '未提供' : (t.tokens_approximate ? '≈' : '') + Number(t.tokens).toLocaleString('zh-CN');
+    var cost = t.cost_usd === null || t.cost_usd === undefined ? '未提供' : '≈$' + Number(t.cost_usd).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    var missing = t.token_coverage < t.span_count || t.cost_coverage < t.span_count;
+    return 'Token ' + tokens + ' · 费用 ' + cost + (missing ? '(部分缺失)' : '') + (t.partial ? '(进行中)' : '');
+  }
+  function renderTurn(p) {
+    var box = $('turn');
+    if (!p) { box.hidden = true; $('turn-head').textContent = ''; $('turn-hist').textContent = ''; return; }
+    var head = '';
+    if (p.phase === 'token') head = '第 ' + p.turn + ' 轮 · 识别中…';
+    else if (p.headline) head = p.headline;
+    var hist = '';
+    if (p.history && p.history.length) {
+      var parts = [];
+      for (var i = 0; i < p.history.length; i++) parts.push('R' + p.history[i].turn + ' ' + p.history[i].model);
+      hist = '本会话: ' + parts.join(' · ');
+    }
+    $('turn-head').textContent = head;
+    $('turn-head').classList.toggle('routed', !!p.routed);
+    $('turn-hist').textContent = hist;
+    box.hidden = !head && !hist;
+  }
+  function renderUsage(p) {
+    var run = fmtUsage(p && p.run_usage);
+    var all = fmtUsage(p && p.usage);
+    var text = run ? '本轮 ' + run : '';
+    if (all && all !== run) text += (text ? '\n' : '') + '累计 ' + all;
+    $('usage').textContent = text;
+    $('usage').hidden = !text;
+  }
+  function renderProbe(p) {
+    var st = (p && p.status) || null;
+    var line = (p && p.text) || '';
+    if (st && st.active) {
+      line = (st.kind === 'cleanup' ? '清理中 · 已归档 ' + st.archived : '探针 第 ' + st.round + '/' + st.max_rounds + ' 轮 · 命中 ' + st.hits.length) + (line ? ' · ' + line : '');
+    }
+    $('probe-line').textContent = line;
+    $('probe').hidden = !line && !env.mobile;
+    if (env.mobile) {
+      $('p-start').hidden = !!(st && st.active);
+      $('p-stop').hidden = !(st && st.active);
+      $('p-clean').disabled = !!(st && st.active);
+    }
+  }
+
   function push(kind, payload) {
     try {
-      if (kind === 'models') { state.models = payload; state.error = null; renderError(null); renderModels(payload); }
+      if (kind === 'models') {
+        state.models = payload; state.error = null; renderError(null); renderModels(payload);
+        if (payload && payload.cleared) { renderTurn(null); renderUsage(null); }
+        else { if (payload && payload.turn) renderTurn(payload.turn); renderUsage(payload); }
+      }
+      else if (kind === 'turn') { renderTurn(payload); }
       else if (kind === 'credits') { state.credits = payload; renderCredits(payload); }
       else if (kind === 'error') { state.error = payload; renderError(payload); }
+      else if (kind === 'probe') { renderProbe(payload); }
     } catch (e) {
       console.warn('[ArenaKit] hud push', e);
     }
+  }
+
+  // Mobile has no shell: the HUD drives the automation through the same
+  // commands (capabilities/mobile-hud.json), using the saved settings.
+  if (env.mobile) {
+    $('probe').hidden = false;
+    $('probe-btns').hidden = false;
+    var call = function (cmd, args) {
+      var ak = window.__ARENAKIT__;
+      if (!ak || !ak.invoke) return Promise.reject(new Error('no runtime'));
+      return ak.invoke(cmd, args || {});
+    };
+    var say = function (t) { $('probe-line').textContent = t; };
+    // No native confirm() in every WebView: arm on first tap, run on the second.
+    var armed = { id: null, at: 0 };
+    var arm = function (id, label, run) {
+      var now = Date.now();
+      if (armed.id === id && now - armed.at < 5000) { armed.id = null; run(); return; }
+      armed.id = id; armed.at = now;
+      say(label + ' · 再点一次确认(5 秒内)');
+    };
+    $('p-start').addEventListener('click', function () {
+      call('get_settings').then(function (s) {
+        var cfg = (s && s.probe) || {};
+        arm('start', '探针会新建对话、发送真实消息(消耗额度);目标 ' + (cfg.targets || '未设置') + ' · 最多 ' + (cfg.max_rounds || 5) + ' 轮', function () {
+          call('probe_start', { config: cfg }).then(function () { setOpen(true); }).catch(function (e) { say('启动失败:' + (e && e.message || e)); });
+        });
+      }).catch(function (e) { say('读取设置失败:' + (e && e.message || e)); });
+    });
+    $('p-stop').addEventListener('click', function () { call('probe_stop').catch(function (e) { say(String(e && e.message || e)); }); });
+    $('p-clean').addEventListener('click', function () {
+      arm('clean', '清理算式标题对话(仅归档,跳过当前对话)', function () {
+        call('cleanup_start').catch(function (e) { say('清理失败:' + (e && e.message || e)); });
+      });
+    });
+    $('p-quick').addEventListener('click', function () {
+      call('get_settings').then(function (s) {
+        var text = (s && s.quick_text) || '';
+        if (!text.trim()) { say('请先在首页"自动化设置"里填写快捷发送内容'); return; }
+        arm('quick', '发送到当前对话:' + text.slice(0, 40), function () {
+          call('quick_send', { text: text }).then(function () { say('已发送到当前对话'); }).catch(function (e) { say('发送失败:' + (e && e.message || e)); });
+        });
+      }).catch(function (e) { say('读取设置失败:' + (e && e.message || e)); });
+    });
   }
 
   // ── visibility ──────────────────────────────────────────────────────

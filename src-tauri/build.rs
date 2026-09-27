@@ -20,6 +20,14 @@ const COMMANDS: &[&str] = &[
     "activate_tab",
     "pick_account",
     "probe_proxy",
+    // automation (shell; on mobile also the in-page HUD via capabilities/mobile-hud.json)
+    "probe_start",
+    "probe_stop",
+    "probe_status",
+    "cleanup_start",
+    "quick_send",
+    "get_settings",
+    "save_settings",
 ];
 
 fn main() {

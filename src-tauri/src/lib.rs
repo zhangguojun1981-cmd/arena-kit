@@ -18,14 +18,18 @@
 //! `window.__AK_HUD__.push(kind, payload)` eval into the arena webview it
 //! belongs to, so the in-page HUD needs no IPC permission of its own.
 
+pub mod probe;
+pub mod probe_logic;
 pub mod pulse;
 pub mod sessions;
 pub mod trace;
+pub mod turns;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use sessions::{tab_id_from_label, Account, AccountBook, AccountInput, TabList};
@@ -35,6 +39,10 @@ use sessions::{tab_id_from_label, Account, AccountBook, AccountInput, TabList};
 const BOOTSTRAP_JS: &str = include_str!("../../injected/bootstrap.js");
 const GM_SHIM_JS: &str = include_str!("../../injected/gm-shim.js");
 const SNOOP_JS: &str = include_str!("../../injected/snoop.js");
+// Page-side automation primitives (probe / rename / archive); inert until the
+// Rust orchestrator calls them.
+const PROBE_JS: &str = include_str!("../../injected/probe.js");
+const RENAME_JS: &str = include_str!("../../injected/rename.js");
 const UNLOCK_JS: &str = include_str!("../../injected/unlock.js");
 const ENI_JS: &str = include_str!("../../injected/eni.js");
 // document_idle UI scripts.
@@ -87,6 +95,8 @@ pub fn build_init_script(platform: &str, mobile: bool) -> String {
         BOOTSTRAP_JS.len()
             + GM_SHIM_JS.len()
             + SNOOP_JS.len()
+            + PROBE_JS.len()
+            + RENAME_JS.len()
             + UNLOCK_JS.len()
             + ENI_JS.len()
             + MANAGER_JS.len()
@@ -111,6 +121,10 @@ pub fn build_init_script(platform: &str, mobile: bool) -> String {
     s.push_str("\n;");
     s.push_str(SNOOP_JS);
     s.push_str("\n;");
+    s.push_str(RENAME_JS);
+    s.push_str("\n;");
+    s.push_str(PROBE_JS);
+    s.push_str("\n;");
     s.push_str(&wrap("unlock", UNLOCK_JS));
     s.push_str(&wrap("eni", ENI_JS));
     // defer UI scripts until the DOM is ready.
@@ -131,6 +145,56 @@ pub fn build_init_script(platform: &str, mobile: bool) -> String {
 /// The assembled init script, shared with every arena webview we create.
 pub struct InitScript(pub String);
 
+/// Per-arena-webview memory: which conversation is open, the models / usage
+/// resolved for each conversation so far (restored when you switch back —
+/// "会话记忆"), the turn tracker ("回复监控") and the probe runtime.
+#[derive(Default)]
+pub struct TabMemory {
+    pub turns: turns::TurnTracker,
+    pub models_by_session: HashMap<String, Vec<ModelOut>>,
+    pub usage_by_session: HashMap<String, Vec<trace::SpanUsage>>,
+    pub current_session: Option<String>,
+    /// Sessions already auto-renamed (once per conversation, like the extension's claim()).
+    pub renamed: HashSet<String>,
+    pub probe: probe::ProbeRuntime,
+}
+
+/// User preferences persisted in `settings.json` next to `accounts.json`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct Settings {
+    /// Rename a conversation to its identified model (once per conversation).
+    pub auto_rename: bool,
+    /// Title prefix for auto-rename / probe hits ("探针·").
+    pub rename_prefix: String,
+    pub probe: probe::ProbeConfig,
+    /// Text for "快捷发送到当前对话".
+    pub quick_text: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { auto_rename: false, rename_prefix: String::new(), probe: probe::ProbeConfig::default(), quick_text: String::new() }
+    }
+}
+
+const SETTINGS_FILE: &str = "settings.json";
+
+impl Settings {
+    fn load(dir: &std::path::Path) -> Self {
+        std::fs::read_to_string(dir.join(SETTINGS_FILE))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+    fn save(&self, dir: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join("settings.json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(self).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, dir.join(SETTINGS_FILE)).map_err(|e| e.to_string())
+    }
+}
+
 /// Everything the shell needs to know about sessions.
 #[derive(Default)]
 pub struct Sessions {
@@ -138,6 +202,19 @@ pub struct Sessions {
     pub tabs: TabList,
     /// Mobile only: the shell URL we navigate back to.
     pub home_url: Option<tauri::Url>,
+    /// Keyed by webview label (`arena-<n>` / `main`).
+    pub memory: HashMap<String, TabMemory>,
+    pub settings: Settings,
+    pub config_dir: Option<std::path::PathBuf>,
+}
+
+/// `/agent/<id>` → id (mirrors sessionFromPath in the injected scripts).
+pub fn session_from_url(url: &str) -> Option<String> {
+    let path = url.split('#').next()?.split('?').next()?;
+    let path = path.strip_prefix("https://arena.ai").or_else(|| path.strip_prefix("https://www.arena.ai")).unwrap_or(path);
+    let rest = path.strip_prefix("/agent/")?.trim_end_matches('/');
+    let ok = !rest.is_empty() && rest.len() <= 128 && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    ok.then(|| rest.to_string())
 }
 
 pub type SessionState = Mutex<Sessions>;
@@ -263,10 +340,22 @@ fn http_client(proxy: Option<&str>, timeout_secs: u64) -> Result<reqwest::Client
 
 // ── commands: trace / bridge ─────────────────────────────────────────────
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 pub struct ModelReport {
     pub run_id: String,
     pub models: Vec<ModelOut>,
+    pub session_id: String,
+    /// Turn view of this identification ("第 N 轮 · model", routed flag, history).
+    pub turn: Option<turns::TurnView>,
+    /// Token / cost labels of THIS run's model spans.
+    pub run_usage: trace::UsageTotals,
+    /// Accumulated over every run seen for this conversation.
+    pub usage: trace::UsageTotals,
+    pub spans: Vec<trace::SpanUsage>,
+    /// Replayed from memory after switching back to a conversation.
+    pub restored: bool,
+    /// Conversation switched to one we know nothing about yet (UI resets).
+    pub cleared: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -293,7 +382,8 @@ fn platform_name() -> &'static str {
 
 /// Called when snoop.js hands back a {sessionId, token}. Validates the token,
 /// polls Trigger.dev (8x @ 3s) through the calling tab's proxy, extracts the
-/// server-side model, and emits it to that tab.
+/// server-side model + token/cost labels, records the turn and emits it to
+/// that tab (shell + in-page HUD).
 #[tauri::command]
 async fn fetch_trace(
     app: AppHandle,
@@ -314,6 +404,22 @@ async fn fetch_trace(
         );
         e
     })?;
+
+    // A fresh run token = a new turn of this conversation ("回复监控").
+    let label = webview.label().to_string();
+    let (turn, switched) = {
+        let state = app.state::<SessionState>();
+        let mut s = lock(&state);
+        let mem = s.memory.entry(label.clone()).or_default();
+        mem.current_session = Some(session_id.clone());
+        mem.turns.on_token(&session_id)
+    };
+    broadcast(
+        &app,
+        "turn",
+        serde_json::json!({"phase":"token","session_id": session_id, "turn": turn, "switched": switched, "run_id": claims.run_id}),
+        Some(&webview),
+    );
 
     let proxy = proxy_for_label(&app, webview.label());
     let client = http_client(proxy.as_deref(), 10)?;
@@ -336,18 +442,15 @@ async fn fetch_trace(
                     if let Ok(trace_json) = serde_json::from_str::<Value>(&body) {
                         if let Ok(models) = trace::extract_models(&trace_json, &claims.run_id) {
                             if !models.is_empty() {
-                                let report = ModelReport {
-                                    run_id: claims.run_id.clone(),
-                                    models: models
-                                        .into_iter()
-                                        .map(|m| ModelOut {
-                                            model: m.model,
-                                            provider: m.provider,
-                                            partial: m.partial,
-                                        })
-                                        .collect(),
-                                };
+                                let spans = trace::extract_usage(&trace_json, &claims.run_id);
+                                let outs: Vec<ModelOut> = models
+                                    .into_iter()
+                                    .map(|m| ModelOut { model: m.model, provider: m.provider, partial: m.partial })
+                                    .collect();
+                                let first = outs[0].model.clone();
+                                let report = remember_models(&app, &label, &session_id, &claims.run_id, turn, outs, spans);
                                 broadcast(&app, "models", report, Some(&webview));
+                                maybe_auto_rename(&app, &label, &session_id, &first);
                                 return Ok(());
                             }
                         }
@@ -374,6 +477,68 @@ async fn fetch_trace(
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
     Err("trace 未返回模型名称".into())
+}
+
+/// Store the identification in the tab's memory and build the report.
+fn remember_models(
+    app: &AppHandle,
+    label: &str,
+    session_id: &str,
+    run_id: &str,
+    turn: u32,
+    models: Vec<ModelOut>,
+    spans: Vec<trace::SpanUsage>,
+) -> ModelReport {
+    let state = app.state::<SessionState>();
+    let mut s = lock(&state);
+    let mem = s.memory.entry(label.to_string()).or_default();
+    let first = models.first().map(|m| m.model.clone()).unwrap_or_default();
+    let turn_view = if mem.turns.session_id == session_id { Some(mem.turns.record(turn, &first)) } else { None };
+    mem.models_by_session.insert(session_id.to_string(), models.clone());
+    let all = mem.usage_by_session.entry(session_id.to_string()).or_default();
+    for sp in &spans {
+        if let Some(existing) = all.iter_mut().find(|x| x.span_id == sp.span_id) {
+            *existing = sp.clone();
+        } else {
+            all.push(sp.clone());
+        }
+    }
+    ModelReport {
+        run_id: run_id.to_string(),
+        models,
+        session_id: session_id.to_string(),
+        turn: turn_view,
+        run_usage: trace::summarize_usage(&spans),
+        usage: trace::summarize_usage(all),
+        spans,
+        restored: false,
+        cleared: false,
+    }
+}
+
+/// Extension parity ("自动改名"): once per conversation, rename it to
+/// `<prefix><model>` right after the model is identified.
+fn maybe_auto_rename(app: &AppHandle, label: &str, session_id: &str, model: &str) {
+    let title = {
+        let state = app.state::<SessionState>();
+        let mut s = lock(&state);
+        if !s.settings.auto_rename {
+            return;
+        }
+        let prefix = s.settings.rename_prefix.clone();
+        let mem = s.memory.entry(label.to_string()).or_default();
+        if !mem.renamed.insert(session_id.to_string()) {
+            return;
+        }
+        probe_logic::compose_title(&prefix, model, None)
+    };
+    let (app, label, session_id) = (app.clone(), label.to_string(), session_id.to_string());
+    tauri::async_runtime::spawn(async move {
+        let host = AppHost(app.clone());
+        if let Err(e) = probe::auto_rename(&app, &host, &label, &session_id, &title).await {
+            host.publish(&label, Some(&format!("自动重命名失败:{e}")));
+        }
+    });
 }
 
 /// Bypass page CORS for logo/price/gist fetches used by injected scripts.
@@ -429,10 +594,11 @@ fn get_app_info() -> AppInfo {
 
 /// Events raised by the page bootstrap (remote origin). The kind is
 /// allow-listed; `state`/`credits` are re-emitted as `arenakit://<kind>`
-/// tagged with the tab, `log` goes to stdout, `home` (mobile) leaves arena.ai.
+/// tagged with the tab, `log` goes to stdout, `home` (mobile) leaves arena.ai,
+/// `probe` answers a JS-RPC of the orchestrator, `nav` tracks SPA routing.
 #[tauri::command]
 fn page_event(app: AppHandle, webview: tauri::Webview, kind: String, payload: Value) -> Result<(), String> {
-    const ALLOWED: [&str; 4] = ["state", "credits", "log", "home"];
+    const ALLOWED: [&str; 6] = ["state", "credits", "log", "home", "probe", "nav"];
     if !ALLOWED.contains(&kind.as_str()) {
         return Err(format!("page_event: unknown kind {kind}"));
     }
@@ -446,12 +612,23 @@ fn page_event(app: AppHandle, webview: tauri::Webview, kind: String, payload: Va
             Ok(())
         }
         "home" => go_home(&app, &webview),
+        "probe" => {
+            probe::deliver(&payload);
+            Ok(())
+        }
+        "nav" => {
+            let url = payload.get("url").and_then(Value::as_str).unwrap_or("");
+            on_navigation(&app, &webview, url);
+            Ok(())
+        }
         _ => {
             if kind == "state" {
                 LAST_STATE_TAB.store(tab_id_from_label(webview.label()).unwrap_or(u32::MAX), Ordering::Relaxed);
+                if let Some(url) = payload.get("url").and_then(Value::as_str) {
+                    on_navigation(&app, &webview, url);
+                }
             }
-            app
-            .emit(
+            app.emit(
                 &format!("arenakit://{kind}"),
                 Tagged {
                     tab: tab_id_from_label(webview.label()),
@@ -461,6 +638,49 @@ fn page_event(app: AppHandle, webview: tauri::Webview, kind: String, payload: Va
             .map_err(|e| e.to_string())
         }
     }
+}
+
+/// The page moved to another conversation (SPA route or full load): replay
+/// what we remember about it, or clear the display, and re-bind the turn
+/// tracker (arena-trace-android `applyNavigation` / `restoreModelForSession`).
+fn on_navigation(app: &AppHandle, webview: &tauri::Webview, url: &str) {
+    let session = session_from_url(url);
+    let label = webview.label().to_string();
+    let report = {
+        let state = app.state::<SessionState>();
+        let mut s = lock(&state);
+        let mem = s.memory.entry(label).or_default();
+        if mem.current_session == session {
+            return;
+        }
+        mem.current_session = session.clone();
+        let Some(id) = session else {
+            // /agent (fresh chat) or elsewhere: nothing to show.
+            return;
+        };
+        if mem.turns.session_id != id {
+            mem.turns.reset(&id);
+        }
+        match mem.models_by_session.get(&id) {
+            Some(models) => {
+                mem.turns.clear_routed();
+                let spans = mem.usage_by_session.get(&id).cloned().unwrap_or_default();
+                ModelReport {
+                    run_id: String::new(),
+                    models: models.clone(),
+                    session_id: id,
+                    turn: None,
+                    run_usage: trace::UsageTotals::default(),
+                    usage: trace::summarize_usage(&spans),
+                    spans,
+                    restored: true,
+                    cleared: false,
+                }
+            }
+            None => ModelReport { session_id: id, cleared: true, ..Default::default() },
+        }
+    };
+    broadcast(app, "models", report, Some(webview));
 }
 
 /// Tab id of the most recent `page_event{kind:"state"}` (u32::MAX = mobile /
@@ -637,6 +857,135 @@ async fn probe_proxy(proxy: Option<String>) -> Result<ProbeResult, String> {
             error: Some(e.to_string()),
         }),
     }
+}
+
+
+// ── probe host + commands (自动探针 / 清理 / 快捷发送 / 设置) ────────────────
+
+/// Bridges the probe orchestrator to the app state and the event bus.
+pub struct AppHost(pub AppHandle);
+
+impl probe::Host for AppHost {
+    fn models_for(&self, label: &str, session_id: &str) -> Option<Vec<String>> {
+        let state = self.0.state::<SessionState>();
+        let s = lock(&state);
+        s.memory
+            .get(label)?
+            .models_by_session
+            .get(session_id)
+            .map(|m| m.iter().map(|x| x.model.clone()).collect())
+    }
+
+    fn with_runtime(&self, label: &str, f: &mut dyn FnMut(&mut probe::ProbeRuntime)) {
+        let state = self.0.state::<SessionState>();
+        let mut s = lock(&state);
+        let mem = s.memory.entry(label.to_string()).or_default();
+        f(&mut mem.probe);
+    }
+
+    fn publish(&self, label: &str, text: Option<&str>) {
+        let status = {
+            let state = self.0.state::<SessionState>();
+            let mut s = lock(&state);
+            s.memory.entry(label.to_string()).or_default().probe.status.clone()
+        };
+        let payload = serde_json::json!({ "status": status, "text": text });
+        let origin = self.0.get_webview(label);
+        broadcast(&self.0, "probe", payload, origin.as_ref());
+    }
+
+    fn current_session(&self, label: &str) -> Option<String> {
+        let state = self.0.state::<SessionState>();
+        let s = lock(&state);
+        s.memory.get(label).and_then(|m| m.current_session.clone())
+    }
+}
+
+/// The arena webview the automation should drive: the active tab on desktop
+/// (the shell calls these), the single "main" webview on mobile (the HUD does).
+fn automation_label(app: &AppHandle, webview: &tauri::Webview) -> Result<String, String> {
+    if tab_id_from_label(webview.label()).is_some() || (cfg!(mobile) && webview.label() == "main") {
+        return Ok(webview.label().to_string());
+    }
+    active_arena_webview(app)
+        .map(|w| w.label().to_string())
+        .ok_or_else(|| "没有打开的 arena 页面".to_string())
+}
+
+#[tauri::command]
+fn probe_start(app: AppHandle, webview: tauri::Webview, config: probe::ProbeConfig) -> Result<probe::ProbeStatus, String> {
+    let label = automation_label(&app, &webview)?;
+    {
+        // Remember the last used configuration.
+        let state = app.state::<SessionState>();
+        let mut s = lock(&state);
+        s.settings.probe = config.clone();
+        if let Some(dir) = s.config_dir.clone() {
+            let _ = s.settings.save(&dir);
+        }
+    }
+    probe::start(app.clone(), Arc::new(AppHost(app.clone())), label.clone(), config)?;
+    Ok(probe_status_for(&app, &label))
+}
+
+#[tauri::command]
+fn probe_stop(app: AppHandle, webview: tauri::Webview) -> Result<probe::ProbeStatus, String> {
+    let label = automation_label(&app, &webview)?;
+    let host = AppHost(app.clone());
+    let was_active = probe::stop(&host, &label);
+    if was_active {
+        host.publish(&label, Some("正在停止…"));
+    }
+    Ok(probe_status_for(&app, &label))
+}
+
+#[tauri::command]
+fn probe_status(app: AppHandle, webview: tauri::Webview) -> Result<probe::ProbeStatus, String> {
+    let label = automation_label(&app, &webview)?;
+    Ok(probe_status_for(&app, &label))
+}
+
+fn probe_status_for(app: &AppHandle, label: &str) -> probe::ProbeStatus {
+    let state = app.state::<SessionState>();
+    let mut s = lock(&state);
+    s.memory.entry(label.to_string()).or_default().probe.status.clone()
+}
+
+#[tauri::command]
+fn cleanup_start(app: AppHandle, webview: tauri::Webview) -> Result<probe::ProbeStatus, String> {
+    let label = automation_label(&app, &webview)?;
+    probe::cleanup(app.clone(), Arc::new(AppHost(app.clone())), label.clone())?;
+    Ok(probe_status_for(&app, &label))
+}
+
+#[tauri::command]
+async fn quick_send(app: AppHandle, webview: tauri::Webview, text: String) -> Result<String, String> {
+    let label = automation_label(&app, &webview)?;
+    {
+        let state = app.state::<SessionState>();
+        let mut s = lock(&state);
+        s.settings.quick_text = text.clone();
+        if let Some(dir) = s.config_dir.clone() {
+            let _ = s.settings.save(&dir);
+        }
+    }
+    let host = AppHost(app.clone());
+    probe::quick_send(&app, &host, &label, &text).await
+}
+
+#[tauri::command]
+fn get_settings(state: State<SessionState>) -> Settings {
+    lock(&state).settings.clone()
+}
+
+#[tauri::command]
+fn save_settings(state: State<SessionState>, settings: Settings) -> Result<Settings, String> {
+    let mut s = lock(&state);
+    s.settings = settings;
+    if let Some(dir) = s.config_dir.clone() {
+        s.settings.save(&dir)?;
+    }
+    Ok(s.settings.clone())
 }
 
 // ── desktop window / webview plumbing ────────────────────────────────────
@@ -1001,7 +1350,14 @@ pub fn run() {
             close_tab,
             activate_tab,
             pick_account,
-            probe_proxy
+            probe_proxy,
+            probe_start,
+            probe_stop,
+            probe_status,
+            cleanup_start,
+            quick_send,
+            get_settings,
+            save_settings
         ]);
     #[cfg(desktop)]
     {
@@ -1013,7 +1369,10 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             {
                 let state = app.state::<SessionState>();
-                lock(&state).accounts = AccountBook::load(&dir);
+                let mut s = lock(&state);
+                s.accounts = AccountBook::load(&dir);
+                s.settings = Settings::load(&dir);
+                s.config_dir = Some(dir.clone());
             }
             #[cfg(desktop)]
             {

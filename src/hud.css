@@ -342,3 +342,73 @@ button {
 .foot .home[hidden] {
   display: none;
 }
+
+/* ── 回复监控 / 用量 / 探针 ───────────────────────────────── */
+.turn {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.turn-head {
+  font-weight: 600;
+  color: var(--fg);
+}
+.turn-head.routed {
+  color: var(--warn);
+}
+.turn-hist {
+  margin-top: 2px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.usage {
+  margin-top: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg-2);
+  white-space: pre-line;
+}
+.probe {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.probe-line {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  min-height: 0;
+  word-break: break-all;
+}
+.probe-line:empty {
+  display: none;
+}
+.probe-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.probe-btns button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: default;
+}
+.probe-btns button[hidden] {
+  display: none;
+}
+.probe-btns button[disabled] {
+  opacity: 0.5;
+}
+.probe-btns button:active {
+  background: var(--bg-3);
+}

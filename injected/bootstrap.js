@@ -202,6 +202,23 @@
     toggleManager: toggleManager,
   };
 
+  // SPA route changes (pushState / replaceState / popstate) → Rust, so the
+  // dock and HUD can restore the remembered model of the conversation you
+  // switched to and reset the turn counter (arena-trace-android parity).
+  var lastPath = location.pathname;
+  function reportNav() {
+    if (location.pathname === lastPath) return;
+    lastPath = location.pathname;
+    if (!hasRuntime()) return;
+    invoke('page_event', { kind: 'nav', payload: { url: location.href } }).catch(function () {});
+  }
+  try {
+    var origPush = history.pushState, origReplace = history.replaceState;
+    history.pushState = function () { var r = origPush.apply(this, arguments); setTimeout(reportNav, 0); return r; };
+    history.replaceState = function () { var r = origReplace.apply(this, arguments); setTimeout(reportNav, 0); return r; };
+    window.addEventListener('popstate', function () { setTimeout(reportNav, 0); });
+  } catch (e) { /* ignore */ }
+
   // The dock may have started before this page finished loading: announce.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () { reportState(); });

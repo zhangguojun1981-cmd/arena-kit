@@ -1,0 +1,32 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-hud",
+  "description": "Mobile only: the in-page HUD inside arena.ai (single `main` webview) can start/stop the probe, run the cleanup sweep, quick-send and read settings — there is no shell to do it from on a phone. Desktop tabs never get these.",
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://arena.ai",
+      "https://*.arena.ai",
+      "https://lmarena.ai",
+      "https://*.lmarena.ai"
+    ]
+  },
+  "windows": [
+    "main"
+  ],
+  "webviews": [
+    "main"
+  ],
+  "permissions": [
+    "allow-probe-start",
+    "allow-probe-stop",
+    "allow-probe-status",
+    "allow-cleanup-start",
+    "allow-quick-send",
+    "allow-get-settings"
+  ]
+}

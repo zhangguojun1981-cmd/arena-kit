@@ -56,6 +56,8 @@ console.log('assembled init bundle');
   bundle += sources['bootstrap.js'] + '\n;';
   bundle += sources['gm-shim.js'] + '\n;';
   bundle += sources['snoop.js'] + '\n;';
+  bundle += sources['rename.js'] + '\n;';
+  bundle += sources['probe.js'] + '\n;';
   bundle += wrap('unlock', sources['unlock.js']);
   bundle += wrap('eni', sources['eni.js']);
   bundle += '(function(){var run=function(){\n';
@@ -84,7 +86,8 @@ for (const f of ['src/shell.js', 'src/dock.js', 'src/lib/format.js']) {
 }
 
 console.log('JSON');
-for (const f of ['src-tauri/tauri.conf.json', 'src-tauri/capabilities/default.json', 'src-tauri/capabilities/arena.json', 'package.json']) {
+for (const f of ['src-tauri/tauri.conf.json', 'src-tauri/capabilities/default.json', 'src-tauri/capabilities/arena.json',
+  'src-tauri/capabilities/mobile-hud.json', 'package.json']) {
   try {
     JSON.parse(readFileSync(join(root, f), 'utf8'));
     ok(f);

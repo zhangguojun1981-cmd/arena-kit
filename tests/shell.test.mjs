@@ -78,3 +78,24 @@ test('dock.js keeps its browser preview path (no Tauri runtime)', () => {
   assert.ok(dock.trimEnd().endsWith('boot();'), 'boot() must be the last statement');
   assert.ok(dock.indexOf('function preview()') < dock.lastIndexOf('boot();'));
 });
+
+test('mobile-hud capability is mobile-only and never grants shell-only commands', () => {
+  const cap = JSON.parse(read('src-tauri/capabilities/mobile-hud.json'));
+  assert.deepEqual(cap.platforms, ['android', 'iOS']);
+  assert.deepEqual(cap.webviews, ['main']);
+  assert.equal(cap.local, false);
+  for (const secret of ['allow-arena-command', 'allow-save-account', 'allow-delete-account', 'allow-open-tab', 'allow-close-tab', 'allow-activate-tab', 'allow-save-settings']) {
+    assert.ok(!cap.permissions.includes(secret), `mobile-hud must not allow ${secret}`);
+  }
+  for (const needed of ['allow-probe-start', 'allow-probe-stop', 'allow-cleanup-start', 'allow-quick-send', 'allow-get-settings']) {
+    assert.ok(cap.permissions.includes(needed), `mobile-hud needs ${needed}`);
+  }
+});
+
+test('init bundle order: rename + probe primitives load right after snoop', () => {
+  const rs = read('src-tauri/src/lib.rs');
+  const order = ['BOOTSTRAP_JS', 'GM_SHIM_JS', 'SNOOP_JS', 'RENAME_JS', 'PROBE_JS', 'wrap("unlock"'].map((n) => rs.indexOf(`s.push_str(${n.startsWith('wrap') ? '&' + n : n}`));
+  for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1] && order[i] > 0, `order broken at ${i}`);
+  const check = read('scripts/check-syntax.mjs');
+  assert.ok(check.indexOf("sources['rename.js']") < check.indexOf("sources['probe.js']") && check.indexOf("sources['probe.js']") < check.indexOf("wrap('unlock'"));
+});
