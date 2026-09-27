@@ -10,6 +10,8 @@ dist
 # Tauri signing / secrets
 *.keystore
 *.jks
+# Throwaway CI debug signing key (password "android"); NOT a store key.
+!.github/android/debug.keystore
 .env
 .env.*
 

@@ -81,7 +81,7 @@
 - 验收:探针能跑完设定轮数、命中即停/命中全部才停、命中改名「前缀+模型-序号」;清理只归档算式标题且不碰当前对话;会话探针在当前对话内识别本轮模型;回复流异常在轮次列表出现徽标,正常显示「无异常信号」。**待真机确认。**
 
 ### M6 — Android 出包 ✅ CI 就位
-- `cargo tauri android build --apk --debug --target aarch64` 出 debug 签名 arm64 apk(免 keystore 可直接安装;正式签名二期)。
+- `cargo tauri android build --apk --target aarch64` 出 release arm64 apk(优化 + strip,debug 包带符号约 190 MB),CI 再用 `zipalign` + `apksigner` 以仓库内固定的调试密钥 `.github/android/debug.keystore`(PKCS12,别名 `arenakitdebug`,密码 `android`)签名——每次构建签名一致,可覆盖安装。这不是商店密钥;正式发布时换成 secrets 里的密钥。
 - **dock 内嵌模式**:mobile Tauri 一窗一 webview(`Window::add_child` 仅桌面),所以安卓不建第二个 webview,而是 `node scripts/bundle-dock.mjs` 把 `src/dock.js` + `src/lib/*` + `src/embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`(已提交,CI `--check` 防过期),Rust 在 `#[cfg(mobile)]` 下 `include_str!` 并追加到 init 脚本末尾;页面加载后挂载悬浮 AK 按钮 + 底部抽屉(shadow DOM,样式互不干扰)。改了 `src/` 记得重新跑 bundler(测试 `embed-bundle.test.mjs` 会提示)。
 - 验收:真机安装,登录、截令牌、额度、注入脚本、抽屉里的全部模块可用。
 

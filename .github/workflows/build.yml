@@ -107,14 +107,26 @@ jobs:
           echo "NDK_HOME=$NDK_HOME"
           cargo tauri android init --ci --skip-targets-install
           cargo tauri icon src-tauri/icons/icon.png || true
-          cargo tauri android build --apk --debug --target aarch64
-      - name: Collect
+          # Release profile (optimised + stripped; the --debug build shipped an
+          # unstripped ~190 MB .so). Gradle leaves it unsigned; we sign below.
+          cargo tauri android build --apk --target aarch64
+      # Sign with the committed throwaway debug key (.github/android/debug.keystore,
+      # password "android"), so every build has the SAME signature and installs
+      # over the previous one. Not a Play Store key — swap in your own via
+      # secrets when publishing for real.
+      - name: Align + sign + collect
         run: |
           mkdir -p out
           version=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
-          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
-          test -n "$apk"
-          cp "$apk" "out/ArenaKit_${version}_android-arm64-debug.apk"
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' ! -name '*debug*' | head -n 1)
+          test -n "$apk" && echo "unsigned: $apk"
+          "$tools/zipalign" -p -f 4 "$apk" out/aligned.apk
+          "$tools/apksigner" sign --ks .github/android/debug.keystore --ks-type PKCS12 \
+            --ks-pass pass:android --ks-key-alias arenakitdebug --key-pass pass:android \
+            --out "out/ArenaKit_${version}_android-arm64.apk" out/aligned.apk
+          rm -f out/aligned.apk
+          "$tools/apksigner" verify --print-certs "out/ArenaKit_${version}_android-arm64.apk"
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
@@ -147,12 +159,17 @@ jobs:
         run: |
           ls -la dist
           tag="build-${RUN}"
-          notes="自动构建 #${RUN} · 分支 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。Android 为 debug 签名 arm64 包，可直接安装。"
+          notes="自动构建 #${RUN} · 分支 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。Android 为 arm64 release 包，用仓库内固定的调试密钥签名（每次构建签名一致，可覆盖安装）；macOS dmg 未做 Apple 签名/公证，首次打开若提示已损坏请执行 xattr -cr /Applications/ArenaKit.app。"
           gh release create "$tag" dist/* \
             --repo "$REPO" --target "$SHA" --prerelease \
             --title "ArenaKit build #${RUN}" --notes "$notes"
           url="https://github.com/${REPO}/releases/tag/${tag}"
           echo "release=$url" >> "$GITHUB_OUTPUT"
+          # Keep the 3 newest build-* prereleases; every push makes one.
+          gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease and (.tagName|startswith("build-"))) | .tagName' \
+            | sort -t- -k2,2nr | tail -n +4 \
+            | while read -r old; do gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true; done
           {
             echo "## 构建产物（直接下载，不是 zip）"
             echo
