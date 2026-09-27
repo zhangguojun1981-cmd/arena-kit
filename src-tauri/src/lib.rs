@@ -26,6 +26,10 @@ const GM_SHIM_JS: &str = include_str!("../../injected/gm-shim.js");
 const SNOOP_JS: &str = include_str!("../../injected/snoop.js");
 const UNLOCK_JS: &str = include_str!("../../injected/unlock.js");
 const ENI_JS: &str = include_str!("../../injected/eni.js");
+// Page-side RPC layer for the dock orchestrator (probe / rename / archive /
+// session probe): stateless DOM actions, answered via bridge 'probe-result'.
+const CONVERSATION_RENAME_JS: &str = include_str!("../../injected/conversation-rename.js");
+const PROBE_JS: &str = include_str!("../../injected/probe.js");
 // document_idle UI scripts.
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
 const PLUS_JS: &str = include_str!("../../injected/plus.js");
@@ -59,6 +63,8 @@ fn build_init_script() -> String {
     guarded(&mut s, "snoop", SNOOP_JS);
     guarded(&mut s, "unlock", UNLOCK_JS);
     guarded(&mut s, "eni", ENI_JS);
+    guarded(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
+    guarded(&mut s, "probe", PROBE_JS);
     // defer UI scripts until the DOM is ready.
     s.push_str("(function(){var run=function(){\n");
     guarded(&mut s, "manager", MANAGER_JS);
@@ -493,7 +499,7 @@ mod tests {
         // bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("try{\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "unlock", "eni", "manager", "plus", "leaderboard"] {
+        for name in ["bridge", "gm-shim", "snoop", "unlock", "eni", "conversation-rename", "probe", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));

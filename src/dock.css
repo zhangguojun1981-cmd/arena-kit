@@ -126,3 +126,7 @@ html, body {
 .ak-badge { display: inline-block; padding: 0 5px; border-radius: 6px; font-size: 11px; line-height: 16px; margin-left: 4px; background: #3f3f46; color: #e4e4e7; }
 .ak-badge.ak-badge-warn { background: #78350f; color: #fde68a; }
 .ak-badge.ak-badge-err { background: #7f1d1d; color: #fecaca; }
+
+/* labelled input (rename prefix, probe targets …) */
+.ak-field { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; }
+.ak-field > span { font-size: 11px; color: var(--ak-sub); }

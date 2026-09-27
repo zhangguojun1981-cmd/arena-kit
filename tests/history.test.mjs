@@ -119,3 +119,14 @@ test('exportHistory carries models, turns and totals but never tokens', () => {
   assert.equal(out.sessions[0].totals.tokens, 1000);
   assert.equal(JSON.stringify(out).includes('NEVER_SAVE'), false);
 });
+
+test('retitle updates only the title of an existing record', async () => {
+  const store = memStore();
+  const h = createHistoryStore(store);
+  await h.save({ sessionId: 'abc', title: 'old', models: [{ model: 'm' }], runId: 'r1' });
+  const r = await h.retitle('abc', 'AK-m');
+  assert.equal(r.title, 'AK-m');
+  assert.equal(r.observations.length, 1);
+  assert.equal((await h.get('abc')).title, 'AK-m');
+  assert.equal(await h.retitle('nope', 'x'), null);
+});

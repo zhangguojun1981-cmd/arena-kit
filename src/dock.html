@@ -66,6 +66,21 @@
   </section>
 
   <!-- Module: enhancement toggles + panels -->
+  <section class="ak-mod">
+    <div class="ak-mod-head"><span>重命名对话</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <label class="ak-field"><span>标题前缀（可选）</span>
+        <input id="ak-rename-prefix" class="ak-input" type="text" maxlength="40" placeholder="例如 AK- 或 【探针】" autocomplete="off" />
+      </label>
+      <div id="ak-rename-preview" class="ak-sub ak-mono"></div>
+      <label class="ak-switch"><input type="checkbox" id="ak-auto-rename" /> 识别到模型后自动重命名当前对话</label>
+      <div class="ak-btns">
+        <button class="ak-btn ak-btn-sm" data-action="rename-now">立即重命名为模型名</button>
+      </div>
+      <div id="ak-rename-status" class="ak-sub"></div>
+    </div>
+  </section>
+
   <section class="ak-mod" data-open="true">
     <div class="ak-mod-head"><span>功能模块</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">

@@ -11,6 +11,8 @@ import { getTauri, createStore, jsString } from './lib/tauri-api.js';
 import { usageFromReport, mergeUsage, summarizeUsage, formatUsage, formatTokens, formatMoney, completion, exportEvidence } from './lib/usage.js';
 import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTotals, exportHistory } from './lib/history.js';
 import { createTurnTracker } from './lib/turns.js';
+import { createRpc } from './lib/rpc.js';
+import { buildTitle, sanitizePrefix, createRenameGate } from './lib/rename.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -30,6 +32,9 @@ const state = {
   history: null,            // createHistoryStore()
   historyIndex: new Map(),  // sessionId → record (mirror of the store, newest first on render)
   historyCarry: null,       // evicted totals bucket
+  rpc: null,                // createRpc() — dock → page probe.js actions
+  renameGate: null,         // createRenameGate() — auto-rename once per conversation
+  renaming: false,          // a rename dialog is being driven right now
 };
 
 function sessionRecord(sessionId) {
@@ -43,6 +48,8 @@ const DEFAULT_PREFS = {
   plus: true,
   eniOn: false,
   eniText: '',
+  renamePrefix: '',   // optional title prefix: "<prefix><model>"
+  autoRename: false,  // rename the current conversation once its model is identified
 };
 
 // ── page event routing (arena page → dock) ──────────────────────────────
@@ -108,6 +115,7 @@ function onTrace(p) {
     q('ak-model').textContent = models.map((m) => m.model).join(' / ') || '未识别';
     const providers = [...new Set(models.map((m) => m.provider).filter(Boolean))];
     const run = rec.runs.find((r) => r.runId === p.runId);
+    if (models.length && p.complete) maybeAutoRename(p.sessionId, models[0].model, run);
     // Per-turn model resolution (routed = differs from this conversation's first model).
     let turn = tracker.turnOf(p.runId);
     if (!turn && models.length) turn = tracker.onToken(p.sessionId, p.runId || '').turn; // model without a seen token stage
@@ -280,13 +288,15 @@ function restoreFromHistory(sessionId) {
 }
 
 // ── module: navigation (restore per-conversation display) ───────────────
+onPage('probe-result', (r) => { if (state.rpc) state.rpc.deliver(r); });
+
 onPage('nav', (n) => {
   if (!n || typeof n !== 'object') return;
   const switched = n.sessionId !== state.nav.sessionId;
   state.nav = { sessionId: n.sessionId || null, path: n.path || '/', title: n.title || '' };
   q('ak-session').textContent = state.nav.sessionId ? '会话 ' + state.nav.sessionId.slice(0, 8) + '…' : (n.agentPath ? '新对话' : n.path || '');
   if (state.nav.sessionId && state.sessions.has(state.nav.sessionId)) sessionRecord(state.nav.sessionId).title = state.nav.title;
-  if (switched) renderHistory();
+  if (switched) { renderHistory(); renderRenamePreview(); }
   if (switched && !state.nav.sessionId) {
     // Fresh /agent composer: nothing identified yet for this conversation.
     // (Best-effort reset; the next token's session id is the authoritative one.)
@@ -324,6 +334,90 @@ onPage('nav', (n) => {
   }
 });
 
+// ── module: rename conversation (prefix + manual / auto) ────────────────
+// Rename goes through Arena's own sidebar ⋯ → Rename dialog (probe.js →
+// conversation-rename.js), never a private endpoint. Auto-rename fires at most
+// once per conversation (gate persisted in the store), only for the
+// conversation currently open, and only once the trace is complete.
+const renameStatus = (t) => { q('ak-rename-status').textContent = t; };
+
+function firstModelOf(sessionId) {
+  const rec = state.sessions.get(sessionId);
+  const live = rec?.models?.[0]?.model;
+  if (live) return live;
+  return state.historyIndex.get(sessionId)?.models?.[0]?.model || '';
+}
+
+function renderRenamePreview() {
+  const model = (state.nav.sessionId && firstModelOf(state.nav.sessionId)) || '<模型名>';
+  let text;
+  try { text = '预览: ' + buildTitle({ prefix: state.prefs.renamePrefix, model }); } catch (e) { text = String(e.message || e); }
+  q('ak-rename-preview').textContent = text;
+}
+
+async function renameConversation(sessionId, title, { reason }) {
+  if (!state.rpc) throw new Error('无 Tauri 运行时');
+  if (state.renaming) throw new Error('上一次重命名尚未完成');
+  state.renaming = true;
+  try {
+    renameStatus(`${reason}重命名为「${title}」…`);
+    const res = await state.rpc.call('rename', { sessionId, title });
+    const rec = sessionRecord(sessionId);
+    rec.title = title;
+    if (state.nav.sessionId === sessionId) state.nav.title = title;
+    if (state.historyIndex.has(sessionId)) {
+      await state.history.retitle(sessionId, title).then((r) => { if (r) state.historyIndex.set(sessionId, r); }).catch(() => {});
+      renderHistory();
+    }
+    renameStatus(`${reason}已重命名为「${res?.title || title}」`);
+    setStatus('对话已重命名');
+    return true;
+  } finally {
+    state.renaming = false;
+  }
+}
+
+async function renameNow() {
+  const sid = state.nav.sessionId;
+  if (!sid) { renameStatus('请先打开一个已保存的 Arena 对话'); return; }
+  const model = firstModelOf(sid);
+  if (!model) { renameStatus('此对话尚未识别模型，请先发送一条消息'); return; }
+  try {
+    await renameConversation(sid, buildTitle({ prefix: state.prefs.renamePrefix, model }), { reason: '手动' });
+  } catch (e) {
+    renameStatus('重命名失败: ' + (e && e.message || e));
+  }
+}
+
+const autoRenameSeen = new Set(); // in-memory fast path in front of the persisted gate
+async function maybeAutoRename(sessionId, model, run) {
+  if (!state.prefs.autoRename || !state.rpc || !sessionId || !model) return;
+  if (state.nav.sessionId !== sessionId) return;              // only the conversation on screen
+  if (run?.spans?.some((sp) => sp.partial)) return;           // wait for the usage to settle
+  if (autoRenameSeen.has(sessionId)) return;
+  autoRenameSeen.add(sessionId);
+  let title;
+  try { title = buildTitle({ prefix: state.prefs.renamePrefix, model }); } catch (e) { renameStatus(String(e.message || e)); return; }
+  if (state.nav.title && state.nav.title.trim() === title) return; // already named
+  try {
+    if (!(await state.renameGate.claim(sessionId))) return;     // renamed (or tried) in an earlier session
+    await renameConversation(sessionId, title, { reason: '自动' });
+  } catch (e) {
+    renameStatus('自动重命名失败: ' + (e && e.message || e) + '（可点击“立即重命名”重试）');
+  }
+}
+
+function wireRename() {
+  const prefix = q('ak-rename-prefix');
+  prefix.value = state.prefs.renamePrefix || '';
+  prefix.addEventListener('input', () => { state.prefs.renamePrefix = sanitizePrefix(prefix.value); renderRenamePreview(); });
+  prefix.addEventListener('change', () => { prefix.value = sanitizePrefix(prefix.value); savePrefs({ renamePrefix: prefix.value }); renderRenamePreview(); });
+  const auto = q('ak-auto-rename');
+  auto.checked = !!state.prefs.autoRename;
+  auto.addEventListener('change', () => { savePrefs({ autoRename: auto.checked }); renameStatus(auto.checked ? '已开启：识别到模型后自动重命名当前对话（每个对话仅一次）' : '已关闭自动重命名'); });
+  renderRenamePreview();
+}
+
 // ── module: enhancement toggles + ENI ───────────────────────────────────
 function wireControls() {
   document.querySelectorAll('[data-action]').forEach((el) => {
@@ -337,6 +431,8 @@ function wireControls() {
         exportAllHistory();
       } else if (a === 'history-clear') {
         clearHistory(el);
+      } else if (a === 'rename-now') {
+        renameNow();
       } else if (a === 'save-eni') {
         const eniText = q('ak-eni-text').value;
         const eniOn = q('ak-eni-on').checked;
@@ -371,9 +467,12 @@ async function boot() {
   state.tauri = getTauri();
   state.store = createStore(state.tauri);
   state.history = createHistoryStore(state.store);
+  state.renameGate = createRenameGate(state.store);
+  state.rpc = state.tauri ? createRpc({ evalInPage: (js) => state.tauri.invoke('arena_command', { js }) }) : null;
   await loadPrefs();
   wireControls();
   wireHistory();
+  wireRename();
   await loadHistoryIndex();
   if (!state.tauri) {
     setStatus('浏览器预览模式(无 Tauri 运行时)');

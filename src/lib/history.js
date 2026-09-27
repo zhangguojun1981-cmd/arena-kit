@@ -135,6 +135,14 @@ export function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
       if (!isRecord(old)) await evict();
       return record;
     }),
+    /* Title-only update after a rename; no-op when the conversation has no record. */
+    retitle: (sessionId, title) => enqueue(async () => {
+      const old = await store.get(key(sessionId));
+      if (!isRecord(old) || old.sessionId !== sessionId) return null;
+      const record = { ...old, title: String(title || old.title).slice(0, 300) };
+      await store.set(key(sessionId), record);
+      return record;
+    }),
     get: (sessionId) => enqueue(async () => { conversationUrl(sessionId); const r = await store.get(key(sessionId)); return isRecord(r) && r.sessionId === sessionId ? r : null; }),
     list: () => enqueue(loadAll),
     remove: (sessionId) => enqueue(async () => { conversationUrl(sessionId); await store.set(key(sessionId), null); }),
