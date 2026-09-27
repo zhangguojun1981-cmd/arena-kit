@@ -16,6 +16,7 @@ function fakeWin() {
     __AK_UNLOCK_SET__: (k, on) => log.push(['unlock', k, on]),
     __AK_PLUS_SET__: (on) => log.push(['plus', on]),
     ArenaProbe: { call: (a, g, r) => log.push(['probe', a, g, r]) },
+    ArenaAccount: { call: (a, g, r) => log.push(['account', a, g, r]) },
   };
 }
 
@@ -35,6 +36,7 @@ const CASES = [
   ['unlockSet', ['opus', false], ['unlock', 'opus', false]],
   ['plusSet', [1], ['plus', true]],
   ['probeCall', ['rename', '{"sessionId":"s1"}', 'r7'], ['probe', 'rename', '{"sessionId":"s1"}', 'r7']],
+  ['accountCall', ['restore', '{"cookies":[{"name":"arena-auth-prod-v1.0","value":"base64-x"}]}', 'r8'], ['account', 'restore', '{"cookies":[{"name":"arena-auth-prod-v1.0","value":"base64-x"}]}', 'r8']],
   ['flagSet', ['capture', false], ['flag', 'capture', false]],
   ['navBack', [], ['back']],
   ['navForward', [], ['forward']],
@@ -67,6 +69,15 @@ test('probeCall without probe.js answers the dock with a probe-result error', ()
   assert.deepEqual(w.sent, ['probe-result', { reqId: 'r1', ok: false, error: '探针脚本未加载，请刷新 Arena 页面' }]);
   const w2 = { __ARENAKIT__: { send: (n, p) => { w2.sent = [n, p]; } } };
   evalAgainst(w2, PAGE_ACTIONS.probeCall.js('precheck', '{}', 'r1'));
+  assert.deepEqual(w2.sent, w.sent);
+});
+
+test('accountCall without account.js answers the dock with an account-result error', () => {
+  const w = { __ARENAKIT__: { send: (n, p) => { w.sent = [n, p]; } } };
+  PAGE_ACTIONS.accountCall.run(w, 'snapshot', '{}', 'r1');
+  assert.deepEqual(w.sent, ['account-result', { reqId: 'r1', ok: false, error: '账号脚本未加载，请刷新 Arena 页面' }]);
+  const w2 = { __ARENAKIT__: { send: (n, p) => { w2.sent = [n, p]; } } };
+  evalAgainst(w2, PAGE_ACTIONS.accountCall.js('snapshot', '{}', 'r1'));
   assert.deepEqual(w2.sent, w.sent);
 });
 

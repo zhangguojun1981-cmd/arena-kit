@@ -73,6 +73,17 @@ export const PAGE_ACTIONS = {
       if (w.__ARENAKIT__) w.__ARENAKIT__.send('probe-result', { reqId: String(reqId), ok: false, error: '探针脚本未加载，请刷新 Arena 页面' });
     },
   },
+  // account.js RPC (snapshot / restore / clear / login / fill / stop):
+  // answered asynchronously through the bridge as 'account-result'.
+  accountCall: {
+    js: (action, argsJson, reqId) => '(function(){var a=' + jsString(action) + ',g=' + jsString(argsJson) + ',r=' + jsString(reqId) + ';'
+      + 'if(window.ArenaAccount&&window.ArenaAccount.call){window.ArenaAccount.call(a,g,r);}'
+      + "else if(window.__ARENAKIT__){window.__ARENAKIT__.send('account-result',{reqId:r,ok:false,error:'账号脚本未加载，请刷新 Arena 页面'});}})();",
+    run: (w, action, argsJson, reqId) => {
+      if (w.ArenaAccount && typeof w.ArenaAccount.call === 'function') { w.ArenaAccount.call(String(action), String(argsJson), String(reqId)); return; }
+      if (w.__ARENAKIT__) w.__ARENAKIT__.send('account-result', { reqId: String(reqId), ok: false, error: '账号脚本未加载，请刷新 Arena 页面' });
+    },
+  },
 };
 
 /* Build a `call(name, ...args) → Promise` bound to one transport.
