@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRpc } from '../src/lib/rpc.js';
 
-function harness(evalImpl) {
+function harness(sendImpl) {
   const evals = [];
   const timers = [];
   const rpc = createRpc({
-    evalInPage: (js) => { evals.push(js); return evalImpl ? evalImpl(js) : Promise.resolve(); },
+    send: (action, argsJson, reqId) => { evals.push({ action, argsJson, reqId }); return sendImpl ? sendImpl(action) : Promise.resolve(); },
     timeoutMs: 1000,
     setTimeoutFn: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
     clearTimeoutFn: (t) => { t.cleared = true; },
@@ -14,15 +14,12 @@ function harness(evalImpl) {
   return { rpc, evals, timers };
 }
 
-test('call evaluates ArenaProbe.call with JSON args and resolves on delivery', async () => {
+test('call hands (action, argsJson, reqId) to the transport and resolves on delivery', async () => {
   const h = harness();
   const p = h.rpc.call('rename', { sessionId: 's1', title: 'x"y' });
   await Promise.resolve();
   assert.equal(h.evals.length, 1);
-  assert.match(h.evals[0], /window\.ArenaProbe\.call\(a,g,r\)/);
-  assert.ok(h.evals[0].includes('"rename"'));
-  assert.ok(h.evals[0].includes(JSON.stringify(JSON.stringify({ sessionId: 's1', title: 'x"y' }))));
-  assert.ok(h.evals[0].includes('探针脚本未加载'));
+  assert.deepEqual(h.evals[0], { action: 'rename', argsJson: JSON.stringify({ sessionId: 's1', title: 'x"y' }), reqId: 'r1' });
   assert.equal(h.rpc.pendingCount, 1);
   assert.equal(h.rpc.deliver({ reqId: 'r1', ok: true, data: { title: 'x"y' } }), true);
   assert.deepEqual(await p, { title: 'x"y' });
@@ -51,7 +48,7 @@ test('timeout rejects and clears the waiter', async () => {
   assert.equal(h.rpc.deliver({ reqId: 'r1', ok: true }), false);
 });
 
-test('eval failure rejects immediately; cancelAll rejects everything pending', async () => {
+test('transport failure rejects immediately; cancelAll rejects everything pending', async () => {
   const h = harness(() => Promise.reject(new Error('webview gone')));
   await assert.rejects(h.rpc.call('precheck'), /无法执行页面脚本: webview gone/);
   const ok = harness();

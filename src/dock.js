@@ -1,13 +1,20 @@
 /* ArenaKit native side dock logic.
- * Runs in its own webview. Talks to Rust via Tauri IPC (window.__TAURI__), and
- * to the arena.ai webview via Rust commands (arena_command evals into the page;
- * the page answers through page_event → "arenakit://page").
+ * Desktop: runs in its own webview. Talks to Rust via Tauri IPC
+ * (window.__TAURI__), and to the arena.ai webview via Rust commands
+ * (arena_command evals into the page; the page answers through page_event →
+ * "arenakit://page").
+ * Android: mobile Tauri has one webview per window, so scripts/bundle-dock.mjs
+ * packs this file + ./lib into src/embed/dock-embedded.gen.js and
+ * embed/shell.js mounts the same markup inside the arena page (shadow DOM).
+ * `__ARENAKIT_EMBED__` marks that mode: DOM lookups go through the shadow root
+ * and page actions run directly (lib/page-actions.js) instead of via eval.
  *
  * Structure: one listener per Rust event, a name→handler map for page events,
  * and small feature modules below. Pure logic lives in ./lib (unit-tested with
  * node:test); this file only wires DOM + IPC. */
 
-import { getTauri, createStore, jsString } from './lib/tauri-api.js';
+import { getTauri, createStore } from './lib/tauri-api.js';
+import { createPageActions } from './lib/page-actions.js';
 import { usageFromReport, mergeUsage, summarizeUsage, formatUsage, formatTokens, formatMoney, completion, exportEvidence } from './lib/usage.js';
 import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTotals, exportHistory } from './lib/history.js';
 import { createTurnTracker } from './lib/turns.js';
@@ -19,7 +26,11 @@ import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/se
 import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
 
-const q = (id) => document.getElementById(id);
+// Embedded (Android) mode: the dock markup lives in a shadow root inside the
+// arena page; otherwise this is the dock webview's own document.
+const EMBED = globalThis.__ARENAKIT_EMBED__ && globalThis.__ARENAKIT_EMBED__.root ? globalThis.__ARENAKIT_EMBED__ : null;
+const root = EMBED ? EMBED.root : document;
+const q = (id) => root.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -72,14 +83,23 @@ const DEFAULT_PREFS = {
 const pageHandlers = new Map();
 const onPage = (name, fn) => pageHandlers.set(name, fn);
 
-// Send a command into the arena.ai page webview via Rust.
-function arenaCmd(js) {
-  if (!state.tauri) return Promise.resolve();
-  return state.tauri.invoke('arena_command', { js }).catch((e) => setStatus('命令失败: ' + e));
+// Run a page action (lib/page-actions.js) in the arena page: evaluated via the
+// Rust arena_command on desktop, called directly when embedded on Android.
+let pageActions = null;
+function page(name, ...args) {
+  if (!pageActions) return Promise.resolve();
+  return pageActions(name, ...args).catch((e) => setStatus('命令失败: ' + (e && e.message || e)));
 }
 // dock → page bus (bridge.js dispatch).
 function dispatchToPage(name, payload) {
-  return arenaCmd(`window.__ARENAKIT__&&window.__ARENAKIT__.dispatch(${jsString(name)},${JSON.stringify(payload ?? null)})`);
+  return page('dispatch', name, payload);
+}
+// Open a conversation: in-page SPA switch when embedded (keeps the dock state
+// alive), full navigation of the arena webview on desktop.
+function openConversation(sid) {
+  const url = 'https://arena.ai/agent/' + sid;
+  if (EMBED && state.rpc) return state.rpc.call('openConversation', { sessionId: sid }, { timeout: 12_000 }).catch(() => page('open', url));
+  return page('open', url);
 }
 
 // ── prefs ───────────────────────────────────────────────────────────────
@@ -261,8 +281,7 @@ function wireHistory() {
     const open = e.target.closest('[data-open]');
     const del = e.target.closest('[data-del]');
     if (open) {
-      const sid = open.dataset.open;
-      arenaCmd(`location.assign(${jsString('https://arena.ai/agent/' + sid)})`);
+      openConversation(open.dataset.open);
     } else if (del && state.history) {
       const sid = del.dataset.del;
       await state.history.remove(sid).catch((err) => setStatus('删除失败: ' + err));
@@ -381,9 +400,9 @@ function persistProbePanel() {
   return savePrefs({ probeTargets: q('ak-probe-targets').value, probeRounds: cfg.maxRounds, probeFindAll: cfg.findAll, probeRename: cfg.autoRename });
 }
 function setProbeRunningUi(running, what = '探针') {
-  document.querySelector('[data-action="probe-start"]').disabled = running;
-  document.querySelector('[data-action="probe-stop"]').disabled = !running;
-  document.querySelector('[data-action="probe-stop"]').textContent = running ? `停止${what}` : '停止';
+  root.querySelector('[data-action="probe-start"]').disabled = running;
+  root.querySelector('[data-action="probe-stop"]').disabled = !running;
+  root.querySelector('[data-action="probe-stop"]').textContent = running ? `停止${what}` : '停止';
 }
 
 async function startProbe() {
@@ -411,8 +430,8 @@ async function startProbe() {
 
 // ── module: cleanup sweep (archive arithmetic-titled probe residue) ─────
 function setCleanupRunningUi(running) {
-  document.querySelector('[data-action="cleanup-start"]').disabled = running;
-  document.querySelector('[data-action="cleanup-stop"]').disabled = !running;
+  root.querySelector('[data-action="cleanup-start"]').disabled = running;
+  root.querySelector('[data-action="cleanup-stop"]').disabled = !running;
 }
 async function startCleanup() {
   if (!state.probe) { setStatus('无 Tauri 运行时'); return null; }
@@ -514,7 +533,7 @@ async function sessionProbe() {
   if (!state.probe || !state.rpc) { quickState('无 Tauri 运行时'); return; }
   if (state.quickBusy) { quickState('上一条探针仍在等待识别…'); return; }
   state.quickBusy = true;
-  const btn = document.querySelector('[data-action="quick-send"]');
+  const btn = root.querySelector('[data-action="quick-send"]');
   btn.disabled = true;
   try {
     await savePrefs({ quickText: q('ak-quick-text').value, quickRename: q('ak-quick-rename').checked });
@@ -643,11 +662,12 @@ function wireRename() {
 
 // ── module: enhancement toggles + ENI ───────────────────────────────────
 function wireControls() {
-  document.querySelectorAll('[data-action]').forEach((el) => {
+  root.querySelectorAll('[data-action]').forEach((el) => {
     el.addEventListener('click', () => {
       const a = el.dataset.action;
       if (a === 'manager') {
-        arenaCmd('window.__AK_MANAGER_TOGGLE__ && window.__AK_MANAGER_TOGGLE__()');
+        page('managerToggle');
+        if (EMBED) EMBED.close();
       } else if (a === 'export-evidence') {
         exportCurrentEvidence();
       } else if (a === 'history-export') {
@@ -673,7 +693,7 @@ function wireControls() {
         const eniText = q('ak-eni-text').value;
         const eniOn = q('ak-eni-on').checked;
         savePrefs({ eniText, eniOn });
-        arenaCmd(`window.__AK_ENI_SET__ && window.__AK_ENI_SET__(${eniOn}, ${jsString(eniText)})`);
+        page('eniSet', eniOn, eniText);
         setStatus('提示词已保存');
       }
     });
@@ -684,15 +704,15 @@ function wireControls() {
     q(id).checked = !!state.prefs[key];
     q(id).addEventListener('change', (e) => { savePrefs({ [key]: e.target.checked }); fn(e.target.checked); });
   };
-  bind('ak-unlock-opus', 'unlockOpus', (v) => arenaCmd(`window.__AK_UNLOCK_SET__ && window.__AK_UNLOCK_SET__('opus', ${v})`));
-  bind('ak-unlock-hidden', 'unlockHidden', (v) => arenaCmd(`window.__AK_UNLOCK_SET__ && window.__AK_UNLOCK_SET__('hidden', ${v})`));
-  bind('ak-plus', 'plus', (v) => arenaCmd(`window.__AK_PLUS_SET__ && window.__AK_PLUS_SET__(${v})`));
+  bind('ak-unlock-opus', 'unlockOpus', (v) => page('unlockSet', 'opus', v));
+  bind('ak-unlock-hidden', 'unlockHidden', (v) => page('unlockSet', 'hidden', v));
+  bind('ak-plus', 'plus', (v) => page('plusSet', v));
   q('ak-eni-on').checked = !!state.prefs.eniOn;
   q('ak-eni-text').value = state.prefs.eniText || '';
 }
 
 // ── boot ────────────────────────────────────────────────────────────────
-document.querySelectorAll('.ak-mod-head').forEach((h) => {
+root.querySelectorAll('.ak-mod-head').forEach((h) => {
   h.addEventListener('click', () => {
     const mod = h.parentElement;
     mod.dataset.open = mod.dataset.open === 'true' ? 'false' : 'true';
@@ -705,7 +725,12 @@ async function boot() {
   state.history = createHistoryStore(state.store);
   state.renameGate = createRenameGate(state.store);
   state.monitor = createReplyMonitor({ tracker: state.tracker });
-  state.rpc = state.tauri ? createRpc({ evalInPage: (js) => state.tauri.invoke('arena_command', { js }) }) : null;
+  if (state.tauri) {
+    pageActions = EMBED
+      ? createPageActions({ win: globalThis })
+      : createPageActions({ evalInPage: (js) => state.tauri.invoke('arena_command', { js }) });
+  }
+  state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
   wireControls();
   wireHistory();
@@ -725,9 +750,15 @@ async function boot() {
     const h = p && pageHandlers.get(p.name);
     if (h) { try { h(p.payload); } catch (err) { console.warn('[dock] page handler', p.name, err); } }
   });
-  setStatus('就绪');
+  // Embedded: the bridge announced the initial navigation before our listener
+  // existed — read it directly so the current conversation is known at once.
+  if (EMBED && globalThis.__ARENAKIT__ && typeof globalThis.__ARENAKIT__.navState === 'function') {
+    const h = pageHandlers.get('nav');
+    if (h) { try { h({ ...globalThis.__ARENAKIT__.navState(), reason: 'init' }); } catch (err) { console.warn('[dock] nav seed', err); } }
+  }
+  setStatus(EMBED ? '就绪（内嵌模式）' : '就绪');
 }
 
 boot();
 
-export { state, arenaCmd, dispatchToPage, onPage, esc };
+export { state, page, dispatchToPage, onPage, esc };

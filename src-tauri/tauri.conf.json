@@ -12,7 +12,8 @@
       "csp": null,
       "capabilities": [
         "default",
-        "arena-page"
+        "arena-page",
+        "arena-page-mobile"
       ]
     },
     "withGlobalTauri": true

@@ -1,13 +1,13 @@
 /* Dock → page JS-RPC (the Tauri counterpart of Android ProbeController.rpc()).
- * Each call evaluates `window.ArenaProbe.call(action, argsJson, reqId)` inside
- * the arena webview; probe.js answers through the bridge as a `probe-result`
- * page event, which the dock feeds into deliver(). Times out like Android
- * (35 s) so a wedged page can never hang the orchestrator. */
-import { jsString } from './tauri-api.js';
-
+ * Each call hands `(action, argsJson, reqId)` to the transport, which runs
+ * `window.ArenaProbe.call(...)` inside the arena page (see page-actions.js:
+ * evaluated through Rust on desktop, called directly when the dock is embedded
+ * in the page on Android); probe.js answers through the bridge as a
+ * `probe-result` page event, which the dock feeds into deliver(). Times out
+ * like Android (35 s) so a wedged page can never hang the orchestrator. */
 export const RPC_TIMEOUT_MS = 35_000;
 
-export function createRpc({ evalInPage, timeoutMs = RPC_TIMEOUT_MS, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
+export function createRpc({ send, timeoutMs = RPC_TIMEOUT_MS, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
   const pending = new Map();
   let seq = 0;
 
@@ -16,10 +16,7 @@ export function createRpc({ evalInPage, timeoutMs = RPC_TIMEOUT_MS, setTimeoutFn
     return new Promise((resolve, reject) => {
       const timer = setTimeoutFn(() => { pending.delete(reqId); reject(new Error(action + ' 超时')); }, timeout);
       pending.set(reqId, { resolve, reject, timer, action });
-      const js = '(function(){var a=' + jsString(action) + ',g=' + jsString(JSON.stringify(args ?? {})) + ',r=' + jsString(reqId) + ';'
-        + 'if(window.ArenaProbe&&window.ArenaProbe.call){window.ArenaProbe.call(a,g,r);}'
-        + "else if(window.__ARENAKIT__){window.__ARENAKIT__.send('probe-result',{reqId:r,ok:false,error:'探针脚本未加载，请刷新 Arena 页面'});}})();";
-      Promise.resolve().then(() => evalInPage(js)).catch((e) => {
+      Promise.resolve().then(() => send(action, JSON.stringify(args ?? {}), reqId)).catch((e) => {
         const p = pending.get(reqId);
         if (!p) return;
         pending.delete(reqId);

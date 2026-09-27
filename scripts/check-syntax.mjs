@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const targets = [];
 for (const f of fs.readdirSync(path.join(root, 'injected'))) if (f.endsWith('.js')) targets.push([path.join('injected', f), 'script']);
-for (const dir of ['src', 'src/lib']) for (const f of fs.readdirSync(path.join(root, dir))) if (f.endsWith('.js')) targets.push([path.join(dir, f), 'module']);
+for (const dir of ['src', 'src/lib', 'src/embed']) for (const f of fs.readdirSync(path.join(root, dir))) if (f.endsWith('.js')) targets.push([path.join(dir, f), 'module']);
 let failed = 0;
 for (const [rel, kind] of targets) {
   let error = null;

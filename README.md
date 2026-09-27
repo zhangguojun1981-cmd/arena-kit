@@ -43,9 +43,10 @@ cargo tauri dev
 # 出 macOS dmg
 cargo tauri build
 
-# 出 Android apk(需 Android SDK/NDK)
-cargo tauri android init   # 首次
-cargo tauri android build
+# 出 Android apk(需 Android SDK/NDK;dock 以内嵌模式装进页面,见 docs/ARCHITECTURE.md)
+node scripts/bundle-dock.mjs   # 改过 src/ 后重新生成 src/embed/dock-embedded.gen.js
+cargo tauri android init       # 首次
+cargo tauri android build --apk --debug --target aarch64
 
 # 单测 / 语法检查(无需 Rust 工具链)
 node --test 'tests/**/*.test.mjs'
@@ -60,12 +61,12 @@ node scripts/check-syntax.mjs
 arena-kit/
 ├── docs/               开发文档、架构、功能移植清单
 ├── injected/           注入 arena.ai 页面的脚本(MAIN world):bridge/snoop/monitor/pulse/probe/…
-├── src/                dock 面板(dock.html/js/css)+ src/lib/ 纯逻辑库
+├── src/                dock 面板(dock.html/js/css)+ src/lib/ 纯逻辑库 + src/embed/ 安卓内嵌 dock(shell + 生成的 bundle)
 ├── src-tauri/          Rust 核心(WebView 初始化、trace/用量、store、IPC 中继、capabilities)
 ├── tests/              node:test 单测(逻辑库直接 import;注入脚本用 node:vm 跑)
-├── scripts/            check-syntax.mjs
+├── scripts/            check-syntax.mjs、bundle-dock.mjs(安卓内嵌 dock 打包)
 ├── vendor/             上游项目来源与许可说明
-└── .github/workflows/  CI:node-test → rust-test → dmg + apk
+└── .github/workflows/  CI:node-test → rust-test → dmg + apk → Release(附件为 .dmg/.apk 原文件)
 ```
 
 ## 上游与许可

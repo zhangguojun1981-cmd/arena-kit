@@ -5,6 +5,11 @@ on:
     branches: [main, "arena/**"]
   workflow_dispatch:
 
+# The release job publishes the raw .dmg / .apk as GitHub Release assets
+# (Actions artifacts are always wrapped in a zip on download).
+permissions:
+  contents: write
+
 jobs:
   # Pure-JS logic (src/lib) + injected page scripts — zero-dependency node:test.
   node-test:
@@ -16,6 +21,8 @@ jobs:
           node-version: "22"
       - name: Syntax check (injected bundle + dock)
         run: node scripts/check-syntax.mjs
+      - name: Embedded dock bundle is up to date (Android)
+        run: node scripts/bundle-dock.mjs --check
       - name: node --test
         run: node --test 'tests/**/*.test.mjs'
 
@@ -39,7 +46,8 @@ jobs:
         working-directory: src-tauri
         run: cargo test --lib
 
-  # macOS .dmg — real bundle artifact.
+  # macOS .dmg (Apple Silicon). The artifact is only the hand-over to the
+  # release job below — download the .dmg from the Release, not from here.
   macos-dmg:
     needs: [rust-test, node-test]
     runs-on: macos-latest
@@ -53,14 +61,22 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
       - name: Build dmg
         run: cargo tauri build
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp src-tauri/target/release/bundle/dmg/*.dmg out/
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: arenakit-macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          name: transfer-dmg
+          path: out/*.dmg
+          if-no-files-found: error
+          retention-days: 1
 
   # Android .apk — debug-signed arm64 apk (installable on a device without a
   # release keystore). gen/android is not committed; `tauri android init`
-  # regenerates it here.
+  # regenerates it here. The dock is embedded in the page on mobile
+  # (src/embed/dock-embedded.gen.js, checked above).
   android-apk:
     needs: [rust-test, node-test]
     runs-on: ubuntu-latest
@@ -92,8 +108,55 @@ jobs:
           cargo tauri android init --ci --skip-targets-install
           cargo tauri icon src-tauri/icons/icon.png || true
           cargo tauri android build --apk --debug --target aarch64
+      - name: Collect
+        run: |
+          mkdir -p out
+          version=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" "out/ArenaKit_${version}_android-arm64-debug.apk"
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: arenakit-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: transfer-apk
+          path: out/*.apk
           if-no-files-found: error
+          retention-days: 1
+
+  # Publish the raw files: one prerelease per build (tag build-<run number>),
+  # assets = the .dmg and the .apk themselves, no zip.
+  release:
+    needs: [macos-dmg, android-apk]
+    if: always() && (needs.macos-dmg.result == 'success' || needs.android-apk.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: transfer-*
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN: ${{ github.run_number }}
+          REF: ${{ github.ref_name }}
+          DMG_OK: ${{ needs.macos-dmg.result }}
+          APK_OK: ${{ needs.android-apk.result }}
+        run: |
+          ls -la dist
+          tag="build-${RUN}"
+          notes="自动构建 #${RUN} · 分支 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。Android 为 debug 签名 arm64 包，可直接安装。"
+          gh release create "$tag" dist/* \
+            --repo "$REPO" --target "$SHA" --prerelease \
+            --title "ArenaKit build #${RUN}" --notes "$notes"
+          url="https://github.com/${REPO}/releases/tag/${tag}"
+          echo "release=$url" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 构建产物（直接下载，不是 zip）"
+            echo
+            echo "Release: ${url}"
+            echo
+            for f in dist/*; do echo "- https://github.com/${REPO}/releases/download/${tag}/$(basename "$f")"; done
+          } >> "$GITHUB_STEP_SUMMARY"

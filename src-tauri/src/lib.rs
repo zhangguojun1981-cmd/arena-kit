@@ -7,6 +7,10 @@
 //!   dock webview   — src/dock.html, the native UI (persistent, never reloads)
 //!   Rust           — thin relay: trace polling, store, page_event → dock,
 //!                    arena_command (dock → page eval), proxy_get allowlist.
+//! Mobile (Android) has a single webview per window, so the dock is instead
+//! bundled (scripts/bundle-dock.mjs → src/embed/dock-embedded.gen.js) and
+//! mounted inside the arena page by the init script; it then talks to Rust
+//! through the same commands/events as the desktop dock.
 
 pub mod pulse;
 pub mod store;
@@ -16,7 +20,9 @@ pub mod usage;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl};
+#[cfg(desktop)]
+use tauri::{LogicalPosition, LogicalSize};
+use tauri::{Emitter, Manager, WebviewUrl};
 
 // ── injected scripts (bundled at compile time) ───────────────────────────
 // MAIN-world, must run before arena.ai's own JS. Order matters: bridge first
@@ -38,6 +44,10 @@ const PROBE_JS: &str = include_str!("../../injected/probe.js");
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
 const PLUS_JS: &str = include_str!("../../injected/plus.js");
 const LEADERBOARD_JS: &str = include_str!("../../injected/leaderboard.js");
+// Mobile only: the whole dock (dock.js + lib + embed/shell.js) as one classic
+// script, mounted inside the arena page after DOMContentLoaded.
+#[cfg(mobile)]
+const DOCK_EMBED_JS: &str = include_str!("../../src/embed/dock-embedded.gen.js");
 
 /// Trace polling: 8 attempts, 3 s apart (extension background.js parity).
 const TRACE_MAX_ATTEMPTS: u32 = 8;
@@ -58,8 +68,9 @@ fn guarded(out: &mut String, name: &str, src: &str) {
 
 /// Assemble the bridge + all injected scripts into one init script that runs
 /// in the MAIN world before page load. UI scripts are deferred to
-/// DOMContentLoaded so they see a ready DOM.
-fn build_init_script() -> String {
+/// DOMContentLoaded so they see a ready DOM. `embedded_dock` (mobile) is
+/// appended last in the deferred block, after every page hook it drives.
+fn build_init_script(embedded_dock: Option<&str>) -> String {
     let mut s = String::new();
     // document_start scripts.
     guarded(&mut s, "bridge", BRIDGE_JS);
@@ -76,6 +87,9 @@ fn build_init_script() -> String {
     guarded(&mut s, "manager", MANAGER_JS);
     guarded(&mut s, "plus", PLUS_JS);
     guarded(&mut s, "leaderboard", LEADERBOARD_JS);
+    if let Some(dock) = embedded_dock {
+        guarded(&mut s, "dock-embedded", dock);
+    }
     s.push_str("};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run);}else{run();}})();\n");
     s
 }
@@ -437,7 +451,10 @@ async fn arena_command(app: tauri::AppHandle, js: String) -> Result<(), String> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let init = build_init_script();
+    #[cfg(desktop)]
+    let init = build_init_script(None);
+    #[cfg(mobile)]
+    let init = build_init_script(Some(DOCK_EMBED_JS));
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
@@ -455,42 +472,61 @@ pub fn run() {
             app.manage(store::Store::open(data_dir.join("arenakit-store.json")));
             app.manage(TraceState::default());
 
-            // Split-view window: arena.ai webview on the left, ArenaKit native
-            // dock webview on the right. The dock lives in its own webview (not
-            // injected into the page), so arena redesigns can't break it.
-            let width = 1360.0_f64;
-            let height = 900.0_f64;
-            let dock_w = 320.0_f64;
+            // Desktop: split-view window: arena.ai webview on the left, ArenaKit
+            // native dock webview on the right. The dock lives in its own
+            // webview (not injected into the page), so arena redesigns can't
+            // break it.
+            #[cfg(desktop)]
+            {
+                let width = 1360.0_f64;
+                let height = 900.0_f64;
+                let dock_w = 320.0_f64;
 
-            let window = tauri::window::WindowBuilder::new(app, "main")
-                .title("ArenaKit")
-                .inner_size(width, height)
-                .build()?;
+                let window = tauri::window::WindowBuilder::new(app, "main")
+                    .title("ArenaKit")
+                    .inner_size(width, height)
+                    .build()?;
 
-            // Left: arena.ai. The init script is injected before page load AND
-            // on every navigation (Tauri re-runs initialization scripts per
-            // navigation), mirroring the Android WebViewClient re-injection.
-            let _arena = window.add_child(
-                tauri::webview::WebviewBuilder::new(
+                // Left: arena.ai. The init script is injected before page load
+                // AND on every navigation (Tauri re-runs initialization scripts
+                // per navigation), mirroring the Android WebViewClient
+                // re-injection.
+                let _arena = window.add_child(
+                    tauri::webview::WebviewBuilder::new(
+                        "arena",
+                        WebviewUrl::External("https://arena.ai".parse().unwrap()),
+                    )
+                    .initialization_script(&init)
+                    .auto_resize(),
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(width - dock_w, height),
+                )?;
+
+                // Right: the native dock (bundled frontend, dock.html).
+                let _dock = window.add_child(
+                    tauri::webview::WebviewBuilder::new(
+                        "dock",
+                        WebviewUrl::App("dock.html".into()),
+                    )
+                    .auto_resize(),
+                    LogicalPosition::new(width - dock_w, 0.0),
+                    LogicalSize::new(dock_w, height),
+                )?;
+            }
+
+            // Mobile: one full-screen webview ("arena", also the window label —
+            // capabilities/arena*.json match the webview label). The dock is
+            // part of the init script and mounts itself inside the page.
+            #[cfg(mobile)]
+            {
+                let _arena = tauri::WebviewWindowBuilder::new(
+                    app,
                     "arena",
                     WebviewUrl::External("https://arena.ai".parse().unwrap()),
                 )
                 .initialization_script(&init)
-                .auto_resize(),
-                LogicalPosition::new(0.0, 0.0),
-                LogicalSize::new(width - dock_w, height),
-            )?;
-
-            // Right: the native dock (bundled frontend, dock.html).
-            let _dock = window.add_child(
-                tauri::webview::WebviewBuilder::new(
-                    "dock",
-                    WebviewUrl::App("dock.html".into()),
-                )
-                .auto_resize(),
-                LogicalPosition::new(width - dock_w, 0.0),
-                LogicalSize::new(dock_w, height),
-            )?;
+                .build()?;
+            }
 
             Ok(())
         })
@@ -504,7 +540,7 @@ mod tests {
 
     #[test]
     fn init_script_isolates_every_module() {
-        let s = build_init_script();
+        let s = build_init_script(None);
         // bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("try{\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
@@ -512,6 +548,22 @@ mod tests {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));
+        assert!(!s.contains("dock-embedded init failed"));
+    }
+
+    #[test]
+    fn embedded_dock_is_appended_last_in_the_deferred_block() {
+        let s = build_init_script(Some("/*DOCK*/"));
+        let dock = s.find("/*DOCK*/").unwrap();
+        assert!(s.find("[ArenaKit] leaderboard init failed").unwrap() < dock);
+        assert!(dock < s.find("DOMContentLoaded").unwrap());
+        assert!(s.contains("[ArenaKit] dock-embedded init failed"));
+        // the committed bundle is a self-contained classic script
+        let bundle = include_str!("../../src/embed/dock-embedded.gen.js");
+        assert!(bundle.starts_with("/* GENERATED by scripts/bundle-dock.mjs"));
+        assert!(bundle.contains("__define(\"dock.js\""));
+        assert!(bundle.contains("__define(\"embed/shell.js\""));
+        assert!(!bundle.contains("\nimport "));
     }
 
     #[test]
