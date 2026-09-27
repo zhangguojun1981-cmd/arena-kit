@@ -13,6 +13,8 @@ import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTota
 import { createTurnTracker } from './lib/turns.js';
 import { createRpc } from './lib/rpc.js';
 import { buildTitle, sanitizePrefix, createRenameGate } from './lib/rename.js';
+import { parseTargets, DEFAULT_TARGETS } from './lib/probe-logic.js';
+import { createProbeController } from './lib/probe-runner.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -35,6 +37,7 @@ const state = {
   rpc: null,                // createRpc() — dock → page probe.js actions
   renameGate: null,         // createRenameGate() — auto-rename once per conversation
   renaming: false,          // a rename dialog is being driven right now
+  probe: null,              // createProbeController() — auto probe / cleanup / quick send
 };
 
 function sessionRecord(sessionId) {
@@ -50,6 +53,10 @@ const DEFAULT_PREFS = {
   eniText: '',
   renamePrefix: '',   // optional title prefix: "<prefix><model>"
   autoRename: false,  // rename the current conversation once its model is identified
+  probeTargets: DEFAULT_TARGETS.join(', '),
+  probeRounds: 5,
+  probeFindAll: true,
+  probeRename: true,
 };
 
 // ── page event routing (arena page → dock) ──────────────────────────────
@@ -334,6 +341,82 @@ onPage('nav', (n) => {
   }
 });
 
+// ── module: auto probe (Android ProbeController port) ───────────────────
+// The dock is the orchestrator; every page step is a probe.js RPC action and
+// model names come from the trace pipeline (state.sessions, keyed by session).
+const PROBE_LOG_MAX = 60;
+function probeLog(line) {
+  const el = q('ak-probe-log');
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, '0'), mm = String(t.getMinutes()).padStart(2, '0'), ss = String(t.getSeconds()).padStart(2, '0');
+  const lines = el.textContent ? el.textContent.split('\n') : [];
+  lines.push(`${hh}:${mm}:${ss} ${line}`);
+  el.textContent = lines.slice(-PROBE_LOG_MAX).join('\n');
+  el.hidden = false;
+  el.scrollTop = el.scrollHeight;
+  setStatus(line);
+}
+
+function probeConfigFromPanel() {
+  const rounds = Math.min(100, Math.max(1, parseInt(q('ak-probe-rounds').value, 10) || 5));
+  q('ak-probe-rounds').value = String(rounds);
+  return {
+    targets: parseTargets(q('ak-probe-targets').value),
+    maxRounds: rounds,
+    findAll: q('ak-probe-findall').checked,
+    autoRename: q('ak-probe-rename').checked,
+  };
+}
+function persistProbePanel() {
+  const cfg = probeConfigFromPanel();
+  return savePrefs({ probeTargets: q('ak-probe-targets').value, probeRounds: cfg.maxRounds, probeFindAll: cfg.findAll, probeRename: cfg.autoRename });
+}
+function setProbeRunningUi(running, what = '探针') {
+  document.querySelector('[data-action="probe-start"]').disabled = running;
+  document.querySelector('[data-action="probe-stop"]').disabled = !running;
+  document.querySelector('[data-action="probe-stop"]').textContent = running ? `停止${what}` : '停止';
+}
+
+async function startProbe() {
+  if (!state.probe) { probeLog('无 Tauri 运行时'); return; }
+  if (state.probe.isRunning) { probeLog('探针已在运行'); return; }
+  await persistProbePanel();
+  const cfg = probeConfigFromPanel();
+  if (!cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
+  q('ak-probe-log').textContent = '';
+  setProbeRunningUi(true);
+  try {
+    await state.probe.start(cfg);
+  } finally {
+    setProbeRunningUi(false);
+  }
+}
+
+function createDockProbe() {
+  const counters = state.prefs.probeSuffixes && typeof state.prefs.probeSuffixes === 'object' ? state.prefs.probeSuffixes : {};
+  return createProbeController({
+    rpc: state.rpc,
+    modelForSession: (sid) => (state.sessions.get(sid)?.models || []).map((m) => m.model),
+    onProgress: probeLog,
+    onFinished: (summary) => { probeLog(summary); q('ak-probe-state').textContent = summary; },
+    onProbeState: (round, max, hits, active) => {
+      q('ak-probe-state').textContent = active ? `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}` : (q('ak-probe-state').textContent || '');
+    },
+    buildTitle: (model, suffix) => buildTitle({ prefix: state.prefs.renamePrefix, model, suffix }),
+    suffixCounters: counters,
+    onSuffixes: (c) => savePrefs({ probeSuffixes: c }),
+  });
+}
+
+function wireProbe() {
+  q('ak-probe-targets').value = state.prefs.probeTargets || DEFAULT_TARGETS.join(', ');
+  q('ak-probe-rounds').value = String(state.prefs.probeRounds || 5);
+  q('ak-probe-findall').checked = state.prefs.probeFindAll !== false;
+  q('ak-probe-rename').checked = state.prefs.probeRename !== false;
+  for (const id of ['ak-probe-targets', 'ak-probe-rounds', 'ak-probe-findall', 'ak-probe-rename']) q(id).addEventListener('change', persistProbePanel);
+  setProbeRunningUi(false);
+}
+
 // ── module: rename conversation (prefix + manual / auto) ────────────────
 // Rename goes through Arena's own sidebar ⋯ → Rename dialog (probe.js →
 // conversation-rename.js), never a private endpoint. Auto-rename fires at most
@@ -392,6 +475,7 @@ async function renameNow() {
 const autoRenameSeen = new Set(); // in-memory fast path in front of the persisted gate
 async function maybeAutoRename(sessionId, model, run) {
   if (!state.prefs.autoRename || !state.rpc || !sessionId || !model) return;
+  if (state.probe?.isRunning) return;                          // the probe names its own sessions
   if (state.nav.sessionId !== sessionId) return;              // only the conversation on screen
   if (run?.spans?.some((sp) => sp.partial)) return;           // wait for the usage to settle
   if (autoRenameSeen.has(sessionId)) return;
@@ -433,6 +517,10 @@ function wireControls() {
         clearHistory(el);
       } else if (a === 'rename-now') {
         renameNow();
+      } else if (a === 'probe-start') {
+        startProbe();
+      } else if (a === 'probe-stop') {
+        if (state.probe?.stop()) probeLog('正在停止…');
       } else if (a === 'save-eni') {
         const eniText = q('ak-eni-text').value;
         const eniOn = q('ak-eni-on').checked;
@@ -473,6 +561,8 @@ async function boot() {
   wireControls();
   wireHistory();
   wireRename();
+  wireProbe();
+  if (state.rpc) state.probe = createDockProbe();
   await loadHistoryIndex();
   if (!state.tauri) {
     setStatus('浏览器预览模式(无 Tauri 运行时)');

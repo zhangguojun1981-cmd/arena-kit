@@ -130,3 +130,9 @@ html, body {
 /* labelled input (rename prefix, probe targets …) */
 .ak-field { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; }
 .ak-field > span { font-size: 11px; color: var(--ak-sub); }
+
+/* probe module */
+.ak-inline { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-end; margin-bottom: 6px; }
+.ak-field-sm { width: 88px; margin: 0; }
+.ak-log { margin: 6px 0 0; padding: 6px 8px; max-height: 160px; overflow: auto; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; background: var(--ak-bg); border: 1px solid var(--ak-line); border-radius: 6px; color: var(--ak-sub); }
+.ak-btn[disabled] { opacity: .45; cursor: default; }

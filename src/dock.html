@@ -67,6 +67,27 @@
 
   <!-- Module: enhancement toggles + panels -->
   <section class="ak-mod">
+    <div class="ak-mod-head"><span>自动探针（抽卡）</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <div class="ak-sub">探针会新建对话并发送真实的算式消息（消耗额度），直到命中目标模型；命中的对话按「前缀 + 模型-序号」重命名。</div>
+      <label class="ak-field"><span>目标模型（逗号分隔；别名 opus5 / fable5 / gpt6，或 /正则/）</span>
+        <input id="ak-probe-targets" class="ak-input" type="text" placeholder="opus5, fable5, gpt6" autocomplete="off" />
+      </label>
+      <div class="ak-inline">
+        <label class="ak-field ak-field-sm"><span>最多轮数</span><input id="ak-probe-rounds" class="ak-input" type="number" min="1" max="100" step="1" /></label>
+        <label class="ak-switch"><input type="checkbox" id="ak-probe-findall" /> 命中全部才停</label>
+        <label class="ak-switch"><input type="checkbox" id="ak-probe-rename" /> 命中后重命名</label>
+      </div>
+      <div class="ak-btns">
+        <button class="ak-btn ak-btn-sm" data-action="probe-start">开始探针</button>
+        <button class="ak-btn ak-btn-sm" data-action="probe-stop" disabled>停止</button>
+      </div>
+      <div id="ak-probe-state" class="ak-sub"></div>
+      <pre id="ak-probe-log" class="ak-log" hidden></pre>
+    </div>
+  </section>
+
+  <section class="ak-mod">
     <div class="ak-mod-head"><span>重命名对话</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">
       <label class="ak-field"><span>标题前缀（可选）</span>
