@@ -21,25 +21,44 @@ ArenaKit = 网页套壳(A) + 取证 HUD(B) + 提示词注入。整合了以下�
 
 完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 
+## 界面
+
+一套**扁平、极简**的设计系统(`src/theme.css`),亮 / 暗两套主题(跟随系统或手动切换),无渐变无投影,单一强调色,全部用 CSS 变量驱动:
+
+| 界面 | 位置 | 说明 |
+|---|---|---|
+| **侧栏 Dock** | 桌面端窗口右侧独立 WebView(`src/dock.html`) | 服务端模型(含最近记录)、今日额度仪表、功能开关、提示词注入;可折叠卡片、主题切换 |
+| **页内 HUD** | 注入 arena.ai 页面的 Shadow DOM(`src/hud.js`) | 可拖动胶囊,点击展开模型 / 额度卡片;移动端默认开启,桌面端可在 Dock 里打开 |
+| **预览页** | `src/index.html` | 浏览器里无需 Tauri 即可审阅亮 / 暗两版 Dock 与 HUD(`npm run preview`) |
+
 ## 技术栈
 
-**Tauri 2.0**(Rust 核心 + Web 前端 + 各平台系统 WebView)。一套代码,`cargo tauri build` 出 macOS `.dmg`,`cargo tauri android build` 出 `.apk`。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+**Tauri 2**(Rust 核心 + 纯 HTML/CSS/JS 前端,无打包器 + 各平台系统 WebView)。一套代码,`tauri build` 出 macOS `.dmg`,`tauri android build` 出 `.apk`。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 快速开始
 
 ```bash
-# 前置:Rust、Node、Tauri CLI v2
-cargo install tauri-cli --version "^2"
+# 前置:Rust、Node ≥ 20、Tauri CLI v2
+npm install -g @tauri-apps/cli@^2
+
+# 前端 / 注入脚本自检(语法门禁 + 单元测试,无需 Rust)
+npm test
+
+# 浏览器里预览界面(亮/暗 Dock + HUD,示例数据)
+npm run preview            # http://localhost:4173/
 
 # 桌面开发
-cargo tauri dev
+tauri dev
 
 # 出 macOS dmg
-cargo tauri build
+tauri build
 
-# 出 Android apk(需 Android SDK/NDK)
-cargo tauri android init   # 首次
-cargo tauri android build
+# 出 Android apk(需 Android SDK/NDK,设置 NDK_HOME)
+tauri android init          # 首次
+tauri android build --apk --debug --target aarch64
+
+# 重新生成应用图标(需 python3 + Pillow)
+npm run icons
 ```
 
 完整开发流程见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
@@ -50,10 +69,22 @@ cargo tauri android build
 arena-kit/
 ├── docs/               开发文档、架构、功能移植清单
 ├── injected/           注入 arena.ai 页面的脚本(MAIN world)
-├── src/                Tauri 前端(HUD overlay + 控制面板)
-├── src-tauri/          Rust 核心(WebView 初始化、trace/额度网络层)
+│   ├── bootstrap.js    window.__ARENAKIT__:IPC 桥 + 模块开关 + 状态上报
+│   ├── gm-shim.js      GM_* 与 chrome.storage/runtime 的 localStorage 垫片
+│   └── *.js            上游移植脚本(snoop / unlock / eni / manager / plus / leaderboard)
+├── src/                前端(无打包器)
+│   ├── theme.css       设计令牌:亮/暗主题、间距、圆角、字体
+│   ├── dock.html/css/js  桌面侧栏 Dock
+│   ├── hud.js/css      页内 HUD(Shadow DOM,由 Rust init script 注入)
+│   ├── lib/format.js   纯函数视图助手(可测)
+│   └── index.html      浏览器预览画廊
+├── src-tauri/          Rust 核心(窗口布局、init script 组装、trace/额度网络层)
+│   ├── capabilities/   default.json(本地 Dock)/ arena.json(远程 arena.ai 页面)
+│   └── permissions/    应用命令的 ACL 权限(tauri-build 自动生成)
+├── scripts/            check-syntax.mjs(init bundle 语法门禁)、serve.mjs、make-icons.py
+├── tests/              node:test 单元测试(format / bootstrap / shim)
 ├── vendor/             上游项目来源与许可说明
-└── .github/workflows/  CI:构建 dmg + apk
+└── .github/workflows/  CI:web 自检 → cargo test → dmg + apk
 ```
 
 ## 上游与许可

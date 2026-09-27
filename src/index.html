@@ -3,21 +3,108 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ArenaKit HUD</title>
-  <link rel="stylesheet" href="hud.css" />
+  <meta name="color-scheme" content="light dark" />
+  <title>ArenaKit · UI 预览</title>
+  <link rel="stylesheet" href="theme.css" />
+  <style>
+    body { background: var(--bg); color: var(--fg); }
+    .page { max-width: 1120px; margin: 0 auto; padding: 48px 32px 80px; }
+    .top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 40px; }
+    h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+    .sub { color: var(--fg-3); font-size: 13px; margin-top: 4px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 28px; align-items: start; }
+    figure { margin: 0; }
+    figcaption { font-size: 12px; color: var(--fg-3); margin-bottom: 10px; letter-spacing: 0.02em; text-transform: uppercase; font-weight: 600; }
+    iframe { width: 340px; height: 720px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg); display: block; }
+    .frame-dark { color-scheme: dark; }
+    .hud-stage { position: relative; height: 720px; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--surface); }
+    .hud-stage .fake { padding: 24px; color: var(--fg-3); font-size: 12px; }
+    .hud-stage .fake p { max-width: 42ch; line-height: 1.6; }
+    .hud-stage .line { height: 10px; border-radius: 5px; background: var(--surface-3); margin: 10px 0; }
+    .hud-stage .line.s { width: 60%; } .hud-stage .line.m { width: 80%; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .controls button { height: 28px; padding: 0 10px; border-radius: 8px; background: var(--surface-2); font-size: 12px; font-weight: 500; color: var(--fg); }
+    .controls button:hover { background: var(--surface-3); }
+    .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-2); }
+    code { font-family: var(--font-mono); font-size: 12px; color: var(--fg-2); }
+  </style>
 </head>
 <body>
-  <!-- ArenaKit HUD overlay. In dev the main window loads arena.ai directly;
-       this file is the bundled frontendDist entry used for the overlay build.
-       M1+: HUD is injected as an overlay DOM into the arena.ai webview. -->
-  <div id="arenakit-hud" hidden>
-    <div class="ak-ball" id="ak-ball">AK</div>
-    <div class="ak-card" id="ak-card">
-      <div class="ak-row"><span class="ak-label">服务端模型</span><span id="ak-model">—</span></div>
-      <div class="ak-row"><span class="ak-label">额度</span><span id="ak-credit">—</span></div>
-      <div class="ak-bar"><div id="ak-bar-fill"></div></div>
-    </div>
-  </div>
-  <script type="module" src="hud.js"></script>
+  <main class="page">
+    <header class="top">
+      <div>
+        <h1>ArenaKit 界面预览</h1>
+        <div class="sub">浏览器中的静态预览:侧栏(亮/暗)与页内 HUD。真实数据来自 Tauri 事件,这里使用示例数据。</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="page-dark" /> 页面暗色</label>
+    </header>
+
+    <section class="grid">
+      <figure>
+        <figcaption>Dock · Light</figcaption>
+        <iframe src="dock.html?demo=1&theme=light" title="dock light"></iframe>
+      </figure>
+      <figure>
+        <figcaption>Dock · Dark</figcaption>
+        <iframe class="frame-dark" src="dock.html?demo=1&theme=dark" title="dock dark"></iframe>
+      </figure>
+      <figure>
+        <figcaption>HUD · 页内悬浮</figcaption>
+        <div class="controls">
+          <button data-hud="models">推送模型</button>
+          <button data-hud="credits-ok">额度 72%</button>
+          <button data-hud="credits-warn">额度 15%</button>
+          <button data-hud="credits-danger">额度 4%</button>
+          <button data-hud="error">错误</button>
+          <button data-hud="toggle">显示/隐藏</button>
+        </div>
+        <div class="hud-stage" id="stage">
+          <div class="fake">
+            <div class="line s"></div><div class="line m"></div><div class="line"></div><div class="line s"></div>
+            <p>HUD 挂载在 arena.ai 页面 <code>&lt;body&gt;</code> 末尾,Shadow DOM 隔离样式;可拖动、点击展开。桌面端默认关闭(用侧栏),移动端默认开启。</p>
+          </div>
+        </div>
+      </figure>
+    </section>
+  </main>
+
+  <script>
+    // page theme toggle (only affects this gallery page + HUD)
+    const dark = document.getElementById('page-dark');
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    dark.checked = mq.matches;
+    const apply = () => { document.documentElement.dataset.theme = dark.checked ? 'dark' : 'light'; document.documentElement.classList.toggle('dark', dark.checked); };
+    dark.addEventListener('change', apply); apply();
+
+    // mount the real hud.js inside the stage (position: fixed → contain to stage via transform)
+    (async () => {
+      const css = await fetch('hud.css').then(r => r.text());
+      window.__ARENAKIT_HUD_CSS__ = css;
+      window.__ARENAKIT_ENV__ = { platform: 'preview', version: '0.1.0', mobile: true };
+      const stage = document.getElementById('stage');
+      stage.style.transform = 'translateZ(0)'; // makes position:fixed relative to the stage
+      const s = document.createElement('script');
+      s.src = 'hud.js';
+      s.onload = () => {
+        const hud = window.__AK_HUD__;
+        const host = document.getElementById('arenakit-hud');
+        stage.appendChild(host);
+        hud.setVisible(true);
+        hud.push('models', { run_id: 'run_0f3a9c2d7e1b', models: [{ model: 'claude-opus-4-1', provider: 'anthropic' }] });
+        hud.push('credits', { remaining: 72, total: 100, resetAt: Date.now() + 135 * 60000 });
+        hud.open();
+        document.querySelectorAll('[data-hud]').forEach(b => b.addEventListener('click', () => {
+          const k = b.dataset.hud;
+          if (k === 'models') hud.push('models', { run_id: 'run_' + Math.random().toString(16).slice(2, 12), models: [{ model: ['gpt-5-chat', 'gemini-2.5-pro', 'claude-sonnet-4'][Math.floor(Math.random() * 3)], provider: 'server' }] });
+          if (k === 'credits-ok') hud.push('credits', { remaining: 72, total: 100, resetAt: Date.now() + 135 * 60000 });
+          if (k === 'credits-warn') hud.push('credits', { remaining: 15, total: 100, resetAt: Date.now() + 40 * 60000 });
+          if (k === 'credits-danger') hud.push('credits', { remaining: 4, total: 100, resetAt: Date.now() + 9 * 60000 });
+          if (k === 'error') hud.push('error', { scope: 'trace', message: 'token 已过期,请刷新页面重新获取' });
+          if (k === 'toggle') hud.setVisible(!hud.isVisible());
+        }));
+      };
+      document.body.appendChild(s);
+    })();
+  </script>
 </body>
 </html>

@@ -10,16 +10,18 @@ name = "arena_kit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["unstable"] }
-tauri-plugin-http = "2"
+# `unstable` is required for multi-webview windows (Window::add_child) and
+# Manager::get_webview, which the desktop split view relies on.
+tauri = { version = "2.12", features = ["unstable"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
 
-[dev-dependencies]
-# unit tests for trace.rs / pulse.rs mirror core.test.mjs and ArenaProtocolTest.kt
+[profile.release]
+strip = true
+lto = "thin"

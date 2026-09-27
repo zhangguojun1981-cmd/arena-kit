@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "arena-page",
+  "description": "The remote arena.ai page (desktop child webview `arena`, mobile window `main`). Only the narrow bridge commands used by injected/bootstrap.js — never arena_command.",
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://arena.ai",
+      "https://*.arena.ai",
+      "https://lmarena.ai",
+      "https://*.lmarena.ai"
+    ]
+  },
+  "windows": [
+    "main"
+  ],
+  "webviews": [
+    "arena",
+    "main"
+  ],
+  "permissions": [
+    "allow-fetch-trace",
+    "allow-proxy-get",
+    "allow-page-event",
+    "allow-get-app-info"
+  ]
+}

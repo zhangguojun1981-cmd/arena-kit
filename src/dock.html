@@ -2,59 +2,187 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ArenaKit Dock</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <title>ArenaKit</title>
+  <link rel="stylesheet" href="theme.css" />
   <link rel="stylesheet" href="dock.css" />
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    try {
+      var t = localStorage.getItem('ak_theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <!-- ArenaKit native side dock. Lives in its OWN webview (not injected into
        arena.ai), docked to the right of the arena.ai webview. Decoupled from
        the page DOM, so arena redesigns never break it. -->
-  <header class="ak-head">
-    <span class="ak-logo">AK</span>
-    <span class="ak-title">ArenaKit</span>
-  </header>
+  <div class="dock" id="dock">
 
-  <!-- Module: server-side model (from the trace forensics pipeline) -->
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>服务端模型</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div id="ak-model" class="ak-big">—</div>
-      <div id="ak-model-sub" class="ak-sub">发一条消息后自动识别</div>
-    </div>
-  </section>
+    <header class="head">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24">
+            <path d="M6.6 17.2 12 6.8l5.4 10.4" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="12" cy="14.6" r="1.7" class="mark-dot"/>
+          </svg>
+        </span>
+        <span class="brand-name">ArenaKit</span>
+      </div>
+      <div class="head-actions">
+        <span class="pill pill-status" id="conn" data-state="idle"><i class="dot"></i><span id="conn-text">连接中</span></span>
+        <button class="icon-btn" id="theme-btn" type="button" title="主题:跟随系统" aria-label="切换主题">
+          <svg class="ic ic-sun" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.5 1.5M17.2 17.2l1.5 1.5M5.3 18.7l1.5-1.5M17.2 6.8l1.5-1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          <svg class="ic ic-moon" viewBox="0 0 24 24" width="16" height="16"><path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          <svg class="ic ic-auto" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3.8v16.4A8.2 8.2 0 0 0 12 3.8Z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </header>
 
-  <!-- Module: daily-free-credit gauge -->
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>额度</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <div class="ak-row"><span id="ak-credit" class="ak-big">—</span><span id="ak-reset" class="ak-sub"></span></div>
-      <div class="ak-bar"><div id="ak-bar-fill"></div></div>
-    </div>
-  </section>
+    <main class="body">
 
-  <!-- Module: enhancement toggles + panels -->
-  <section class="ak-mod" data-open="true">
-    <div class="ak-mod-head"><span>功能模块</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <button class="ak-btn" data-action="manager">模型筛选 / 管理面板</button>
-      <label class="ak-switch"><input type="checkbox" id="ak-unlock-opus" checked /> 解锁 Opus 全系</label>
-      <label class="ak-switch"><input type="checkbox" id="ak-unlock-hidden" /> 解锁隐藏 / 盲测模型</label>
-      <label class="ak-switch"><input type="checkbox" id="ak-plus" checked /> 排行榜性价比列</label>
-    </div>
-  </section>
+      <!-- Module: server-side model (trace forensics) -->
+      <section class="card" data-section="model" data-open="true">
+        <button class="card-head" type="button" aria-expanded="true">
+          <span class="card-title">服务端模型</span>
+          <span class="card-aside" id="model-when"></span>
+          <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="card-body">
+          <div class="card-inner">
+            <div class="model" id="model-block" data-empty="true">
+              <div class="model-name" id="model-name">—</div>
+              <div class="model-meta">
+                <span class="provider" id="model-provider"></span>
+                <span class="run mono" id="model-run"></span>
+                <button class="link-btn" id="copy-model" type="button" hidden>复制</button>
+              </div>
+              <p class="empty-hint" id="model-hint">在左侧发送一条消息,ArenaKit 会截获运行令牌并读取 trace 中的真实模型名。</p>
+            </div>
+            <ul class="recent" id="recent" hidden></ul>
+          </div>
+        </div>
+      </section>
 
-  <!-- Module: system-prompt injection (ENI) -->
-  <section class="ak-mod">
-    <div class="ak-mod-head"><span>提示词注入</span><span class="ak-chev">▾</span></div>
-    <div class="ak-mod-body">
-      <label class="ak-switch"><input type="checkbox" id="ak-eni-on" /> 每新对话注入系统提示词</label>
-      <textarea id="ak-eni-text" class="ak-textarea" placeholder="在此输入系统提示词…"></textarea>
-      <button class="ak-btn ak-btn-sm" data-action="save-eni">保存提示词</button>
-    </div>
-  </section>
+      <!-- Module: daily-free-credit gauge -->
+      <section class="card" data-section="credit" data-open="true">
+        <button class="card-head" type="button" aria-expanded="true">
+          <span class="card-title">今日额度</span>
+          <span class="card-aside" id="credit-reset"></span>
+          <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="card-body">
+          <div class="card-inner">
+            <div class="gauge" id="gauge" data-band="none">
+              <div class="gauge-row">
+                <span class="gauge-value"><span id="credit-pct">—</span><span class="gauge-unit" id="credit-unit" hidden>%</span></span>
+                <span class="gauge-sub" id="credit-sub">等待数据</span>
+              </div>
+              <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar">
+                <div class="bar-fill" id="bar-fill"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-  <footer class="ak-foot"><span id="ak-status">就绪</span></footer>
+      <!-- Module: enhancement toggles -->
+      <section class="card" data-section="modules" data-open="true">
+        <button class="card-head" type="button" aria-expanded="true">
+          <span class="card-title">功能</span>
+          <span class="card-aside" id="modules-aside"></span>
+          <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="card-body">
+          <div class="card-inner list">
+            <button class="row row-btn" type="button" data-action="manager">
+              <span class="row-main">
+                <span class="row-label">模型筛选 / 管理面板</span>
+                <span class="row-desc">Arena-Manager · 70 厂商识别、分组、排序</span>
+              </span>
+              <svg class="row-arrow" viewBox="0 0 16 16" width="14" height="14"><path d="M5 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+
+            <label class="row">
+              <span class="row-main">
+                <span class="row-label">解锁 Opus 全系</span>
+                <span class="row-desc">Direct 模式可直选 Claude Opus</span>
+              </span>
+              <span class="switch"><input type="checkbox" data-unlock="opus" /><i></i></span>
+            </label>
+
+            <label class="row">
+              <span class="row-main">
+                <span class="row-label">解锁隐藏 / 盲测模型</span>
+                <span class="row-desc">150+ 未公开模型出现在选择器</span>
+              </span>
+              <span class="switch"><input type="checkbox" data-unlock="hidden" /><i></i></span>
+            </label>
+
+            <label class="row">
+              <span class="row-main">
+                <span class="row-label">排行榜性价比列</span>
+                <span class="row-desc">价格、模型年龄、模态图标</span>
+              </span>
+              <span class="switch"><input type="checkbox" data-module="plus" /><i></i></span>
+            </label>
+
+            <label class="row">
+              <span class="row-main">
+                <span class="row-label">个人投票统计</span>
+                <span class="row-desc">本地记录每次盲测胜负</span>
+              </span>
+              <span class="switch"><input type="checkbox" data-module="leaderboard" /><i></i></span>
+            </label>
+
+            <label class="row">
+              <span class="row-main">
+                <span class="row-label">页内 HUD</span>
+                <span class="row-desc">在 arena.ai 页面右下角浮动显示</span>
+              </span>
+              <span class="switch"><input type="checkbox" data-module="hud" /><i></i></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Module: system-prompt injection (ENI) -->
+      <section class="card" data-section="eni" data-open="false">
+        <button class="card-head" type="button" aria-expanded="false">
+          <span class="card-title">提示词注入</span>
+          <span class="card-aside" id="eni-aside">关闭</span>
+          <svg class="chev" viewBox="0 0 16 16" width="14" height="14"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="card-body">
+          <div class="card-inner">
+            <label class="row row-flush">
+              <span class="row-main">
+                <span class="row-label">每个新对话自动注入</span>
+                <span class="row-desc">作为系统提示词前置到首条消息</span>
+              </span>
+              <span class="switch"><input type="checkbox" id="eni-on" /><i></i></span>
+            </label>
+            <textarea id="eni-text" class="textarea" rows="5" spellcheck="false" placeholder="在此输入系统提示词…"></textarea>
+            <div class="actions">
+              <span class="hint mono" id="eni-count">0 字</span>
+              <button class="btn btn-primary" type="button" data-action="save-eni">保存</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="foot">
+      <span class="status" id="status">就绪</span>
+      <span class="meta mono" id="app-info"></span>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
   <script type="module" src="dock.js"></script>
 </body>
 </html>

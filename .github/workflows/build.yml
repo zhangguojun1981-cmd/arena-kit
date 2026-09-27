@@ -2,62 +2,118 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [main, "arena/**"]
+  pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  NDK_VERSION: 26.1.10909125
+
 jobs:
-  # Rust core unit tests (trace/pulse logic) — fast gate, runs everywhere.
-  rust-test:
+  # Frontend + injected scripts: syntax gate for the init bundle and unit tests
+  # for the dock helpers / page bootstrap / chrome.* shim. No dependencies.
+  web:
+    name: web (syntax + unit tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm test
+
+  # Rust core unit tests (trace / pulse / init-script assembly).
+  rust-test:
+    name: rust (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev libxdo-dev patchelf build-essential \
+            curl wget file pkg-config
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cargo test (core logic)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
         working-directory: src-tauri
         run: cargo test --lib
 
-  # macOS .dmg — real bundle artifact.
+  # macOS .dmg — real bundle artifact (Apple Silicon).
   macos-dmg:
-    needs: rust-test
+    name: macOS dmg
+    needs: [web, rust-test]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
-      - name: Build dmg
-        run: cargo tauri build
-      - uses: actions/upload-artifact@v4
+        run: npm install -g @tauri-apps/cli@^2
+      - name: tauri build
+        run: tauri build
+      - uses: actions/upload-artifact@v5
         with:
           name: arenakit-macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app/Contents/Info.plist
+          if-no-files-found: error
 
-  # Android .apk — mirrors arena-trace-android's signing approach
-  # (keystore in secrets; unsigned debug apk when secrets absent).
+  # Android .apk — unsigned debug build for arm64 (no keystore needed).
   android-apk:
-    needs: rust-test
+    name: Android apk
+    needs: [web, rust-test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
-      - uses: actions/setup-java@v4
+          node-version: 22
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - name: Install NDK
-        run: sdkmanager "ndk;26.1.10909125"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: npm install -g @tauri-apps/cli@^2
       - name: Android init + build
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
         run: |
-          cargo tauri android init || true
-          cargo tauri android build --apk
-      - uses: actions/upload-artifact@v4
+          export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          export ANDROID_NDK_HOME="$NDK_HOME"
+          echo "NDK_HOME=$NDK_HOME"
+          tauri android init --ci --skip-targets-install
+          tauri icon src-tauri/icons/icon.png
+          tauri android build --apk --debug --target aarch64
+      - uses: actions/upload-artifact@v5
         with:
           name: arenakit-android-apk
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

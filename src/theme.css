@@ -1,0 +1,175 @@
+/* ArenaKit design tokens — one flat, minimal system for the dock and the
+ * preview page. Light and dark are driven by `data-theme` on <html>
+ * ("light" | "dark"); when it is absent the OS preference applies.
+ *
+ * Rules of the system:
+ *   - no gradients, no drop shadows; depth comes from surface steps + hairlines
+ *   - one accent (iris); status colours are used only for status
+ *   - 4px spacing grid, 12px radius for cards, 8px for controls
+ */
+
+:root {
+  /* ── light ─────────────────────────────────────────────── */
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f0f1f4;
+  --surface-3: #e7e9ee;
+  --line: rgba(15, 23, 42, 0.08);
+  --line-strong: rgba(15, 23, 42, 0.16);
+  --fg: #0f172a;
+  --fg-2: #5b6472;
+  --fg-3: #98a2b3;
+  --accent: #5b5bd6;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(91, 91, 214, 0.12);
+  --ok: #1f9d6a;
+  --ok-soft: rgba(31, 157, 106, 0.14);
+  --warn: #d48806;
+  --warn-soft: rgba(212, 136, 6, 0.16);
+  --danger: #e0434a;
+  --danger-soft: rgba(224, 67, 74, 0.14);
+  --focus: rgba(91, 91, 214, 0.35);
+  --selection: rgba(91, 91, 214, 0.2);
+  --scroll: rgba(15, 23, 42, 0.18);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --r-card: 12px;
+  --r-ctl: 8px;
+  --r-pill: 999px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 140ms;
+  --t-med: 240ms;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0c0f;
+  --surface: #121317;
+  --surface-2: #191a1f;
+  --surface-3: #222329;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --fg: #eceef1;
+  --fg-2: #9aa1ab;
+  --fg-3: #646b76;
+  --accent: #7f7ff2;
+  --accent-fg: #0b0c0f;
+  --accent-soft: rgba(127, 127, 242, 0.16);
+  --ok: #34c68a;
+  --ok-soft: rgba(52, 198, 138, 0.16);
+  --warn: #f0b429;
+  --warn-soft: rgba(240, 180, 41, 0.16);
+  --danger: #f06a6f;
+  --danger-soft: rgba(240, 106, 111, 0.16);
+  --focus: rgba(127, 127, 242, 0.45);
+  --selection: rgba(127, 127, 242, 0.28);
+  --scroll: rgba(255, 255, 255, 0.16);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0c0f;
+    --surface: #121317;
+    --surface-2: #191a1f;
+    --surface-3: #222329;
+    --line: rgba(255, 255, 255, 0.08);
+    --line-strong: rgba(255, 255, 255, 0.16);
+    --fg: #eceef1;
+    --fg-2: #9aa1ab;
+    --fg-3: #646b76;
+    --accent: #7f7ff2;
+    --accent-fg: #0b0c0f;
+    --accent-soft: rgba(127, 127, 242, 0.16);
+    --ok: #34c68a;
+    --ok-soft: rgba(52, 198, 138, 0.16);
+    --warn: #f0b429;
+    --warn-soft: rgba(240, 180, 41, 0.16);
+    --danger: #f06a6f;
+    --danger-soft: rgba(240, 106, 111, 0.16);
+    --focus: rgba(127, 127, 242, 0.45);
+    --selection: rgba(127, 127, 242, 0.28);
+    --scroll: rgba(255, 255, 255, 0.16);
+    color-scheme: dark;
+  }
+}
+
+/* ── base ───────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 var(--font-sans);
+  font-feature-settings: "tnum" 1, "cv11" 1;
+  letter-spacing: -0.005em;
+  transition: background-color var(--t-med) var(--ease), color var(--t-med) var(--ease);
+}
+
+::selection {
+  background: var(--selection);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+:hover::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scroll);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  background: none;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

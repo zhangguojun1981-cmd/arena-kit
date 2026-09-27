@@ -1,0 +1,16 @@
+{
+  "name": "arena-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ArenaKit — cross-platform arena.ai enhancement client (Tauri 2)",
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/check-syntax.mjs && node --test \"tests/**/*.test.mjs\"",
+    "check": "node scripts/check-syntax.mjs",
+    "preview": "node scripts/serve.mjs",
+    "icons": "python3 scripts/make-icons.py"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

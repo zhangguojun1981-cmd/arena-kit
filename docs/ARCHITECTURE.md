@@ -17,25 +17,35 @@
 │   ├── [MAIN world 注入] eni.js     fetch 钩子注入系统提示词    │
 │   └── [idle 注入]       manager.js 筛选/分类/排序 UI(油猴移植)│
 │         plus.js / leaderboard.js  排行榜列 / 投票统计          │
+│   ├── [MAIN world 注入] bootstrap.js  window.__ARENAKIT__ 桥 + 模块开关 │
+│   ├── [MAIN world 注入] gm-shim.js    GM_* / chrome.storage 垫片       │
+│   └── [idle 注入]       hud.js        页内 HUD(Shadow DOM,可拖动)    │
 ├──────────────── IPC (window.__ARENAKIT__ / invoke) ───────────┤
-│  Rust 核心 (src-tauri) —— 两端共用                            │
+│  Rust 核心 (src-tauri/src/lib.rs) —— 两端共用                 │
+│   ├── build_init_script  组装 env + bootstrap + shim + 各模块(按开关) │
 │   ├── trace.rs   validate_token → poll Trigger.dev → 抽模型名  │
-│   ├── pulse.rs   60s 轮询额度,切账号即刷,429 退避            │
-│   ├── cookies.rs 从 WebView 读 arena.ai Cookie 供原生请求      │
-│   └── inject.rs  按平台把 injected/*.js 装进 WebView           │
+│   ├── pulse.rs   额度阈值 / 退避(轮询循环待接入)              │
+│   └── broadcast  事件同时 emit 给 Dock + eval 进页内 HUD        │
 ├─────────────────────────────────────────────────────────────┤
-│  前端 HUD (src/) —— 两端共用 DOM overlay                     │
-│   悬浮球 / 模型名卡片 / 额度进度条 / 探针控制 / 设置面板       │
+│  桌面 Dock (src/dock.html) —— 独立本地 WebView,窗口右侧 340px │
+│   模型卡 / 额度仪表 / 功能开关 / 提示词注入 / 主题切换          │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## 界面设计系统
+
+- **令牌化**:`src/theme.css` 定义颜色、字体、圆角、动效的 CSS 变量;亮/暗由 `<html data-theme="light|dark">` 驱动,缺省跟随 `prefers-color-scheme`。Dock 的主题偏好存 `localStorage.ak_theme`,首屏前内联脚本先行应用避免闪烁。
+- **扁平极简**:无渐变、无投影,层次全部来自表面色阶(`--bg` → `--surface` → `--surface-2/3`)与 1px 发丝线;单一强调色(iris),状态色只用于状态(ok / warn / danger)。
+- **两套壳,一套语言**:Dock(桌面,独立 WebView)与 HUD(页内 Shadow DOM,不受 arena 样式影响)共享同一组令牌值与排版规则;HUD 自动跟随 arena 的 `html.dark`。
+- **可预览**:`npm run preview` 起静态服务,`src/index.html` 用 iframe 并排展示亮/暗 Dock 与 HUD,均使用示例数据,无需 Tauri。
 
 ## 令牌截获数据流(核心取证链)
 
 1. 用户在 arena.ai 发一条消息 → 页面向 `/ai-proxy/realtime/.../sessions/<id>/stream` 发 SSE 请求。
 2. `snoop.js`(MAIN world,`tee()` 分流响应体,不干扰页面)从 SSE 帧里提取 `public-access-token`(Trigger.dev JWT)+ `sessionId`。
-3. 通过 `window.postMessage` → Tauri IPC 把 `{token, sessionId}` 送到 Rust。
+3. 通过 `window.__ARENAKIT__.onToken` → Tauri IPC(`fetch_trace`)把 `{token, sessionId}` 送到 Rust;远程页面的 IPC 由 `capabilities/arena.json` 精确授权(只开放 fetch_trace / proxy_get / page_event / get_app_info)。
 4. Rust `trace.rs`:`validate_token`(校验 pub/iss/aud/exp/单一 run scope/session 匹配)→ 轮询 `https://api.trigger.dev/api/v1/runs/<runId>/events`(8 次 × 3s,带 `Authorization: Bearer <token>`)→ `extract_models` 从 `ai.streamText.doStream` 等 span 的 cube 标签抽出服务端真实模型名。
-5. 结果经 IPC 回前端 HUD 显示。**盲测模型也能看出真实身份。**
+5. 结果经 `broadcast` 同时发到 Dock(`arenakit://models` 事件)与页内 HUD(`__AK_HUD__.push`)。**盲测模型也能看出真实身份。**
 
 > 关键:令牌校验/解析/SSE 解析规则来自 `core.js`(扩展版)与 `ArenaProtocol.kt`(安卓版),两者已逐条对齐,移植到 Rust 时必须保持规则一致(见 DEVELOPMENT.md 的移植表)。
 
@@ -53,7 +63,8 @@ Tauri 里用 `WebviewWindowBuilder::initialization_script`(MAIN world 等价,页
 | WebView 初始化 | Tauri 默认 | 需 `minSdk 26`,启用 `mixedContent`/DOM storage |
 | 注入 MAIN world 脚本 | `initialization_script` | 同,Tauri 2 mobile 支持 |
 | 原生 HTTP 带 Cookie | reqwest + WKHTTPCookieStore 导出 | reqwest + CookieManager 导出 |
-| 悬浮 HUD | 前端 overlay(窗口内) | 前端 overlay;如需系统级悬浮球再加 `SYSTEM_ALERT_WINDOW`(二期) |
+| 界面 | 窗口内两个 WebView:arena.ai + 右侧 Dock(`add_child`) | 单个全屏 WebView(`WebviewWindowBuilder`),页内 HUD 默认开启 |
+| 悬浮 HUD | 可在 Dock 里打开(默认关) | 默认开;如需系统级悬浮球再加 `SYSTEM_ALERT_WINDOW`(二期) |
 | 签名 | Apple 开发者证书(或自签本地用) | keystore(复用 arena-trace-android 的 CI 方案) |
 
 ## 网络与代理注意

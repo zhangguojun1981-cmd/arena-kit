@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-trace"
+description = "Enables the fetch_trace command without any pre-configured scope."
+commands.allow = ["fetch_trace"]
+
+[[permission]]
+identifier = "deny-fetch-trace"
+description = "Denies the fetch_trace command without any pre-configured scope."
+commands.deny = ["fetch_trace"]

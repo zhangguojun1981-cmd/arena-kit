@@ -1,10 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "ArenaKit default capability set",
-  "windows": ["main"],
+  "description": "Local (bundled) webviews: the native dock on desktop. Full command surface, including arena_command which evals into the arena.ai page.",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "webviews": [
+    "dock"
+  ],
   "permissions": [
     "core:default",
-    "http:default"
+    "allow-arena-command",
+    "allow-get-app-info",
+    "allow-fetch-trace",
+    "allow-proxy-get",
+    "allow-page-event"
   ]
 }
