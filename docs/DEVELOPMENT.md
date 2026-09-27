@@ -179,6 +179,7 @@
 - **桌面**:`cargo tauri dev`,用户在自己的浏览器登录态里操作;助手采集截图/日志核对,**不代替用户点击**准备/出牌/支付/授权。区分已验证事实/推断/未知。
 - **Android**:CI 出 debug apk(GitHub Actions 跑单测 + 构建),真机安装验证。产物在 **Releases**(每次构建一个 `build-<run>` 预发布,附件就是 `.dmg` / `.apk` 原文件;Actions 的 Artifacts 下载永远是 zip,所以只用作 job 间中转,1 天过期)。
 - 排障沿真实会话/请求转储/服务日志对齐;取证先落地(把错误体、状态码写进可见日志)再改;禁"听起来合理"的推测修复。
+- **账号功能真机清单**(沙箱只能用假 DOM / 假 Cookie 罐验证,见 `tests/account-flow.test.mjs`):① 登录后打开「账号」页应自动出现当前账号(邮箱 / 头像 / `Cookie 作用域`);若显示「检测到登录 Cookie,但无法解析」= Cookie 名或编码变了,先看 `document.cookie` 里 `arena-auth-*` 的样子。② 「添加另一个账号」→ 页面应回到未登录 → 登第二个 → 列表两项。③ 点「切换」→ 刷新后应是目标账号且提示「已切换到 …」;若提示「登录状态已失效」= 服务端拒绝了换回去的刷新令牌(令牌轮换族被吊销),需要缩短快照间隔或改走登录助手。④ 填好邮箱 / 密码 / 2FA 后点「保存并登录」:看「登录助手」状态行的阶段;Google 页若出现 `disallowed_useragent` = UA 处理失效;若卡在某一步 = 选择器不匹配,把当时的输入框 / 按钮 outerHTML 记下来。⑤ 邮箱验证码流程应弹到账号页要验证码,输入后代填。
 
 ---
 
@@ -204,6 +205,8 @@ Tauri 命令(`src-tauri/src/lib.rs`,由 `build.rs` 的 `AppManifest::commands` �
 | `proxy_get {url}` | 两者 | 白名单原生 GET(Logo/价格/Gist) |
 | `arena_command {js}` | **仅 dock** | 在 arena 页面 eval(远程页面永远拿不到此权限) |
 | `open_tab {url}` | arena 页面(`injected/links.js`) | 桌面:为 http(s) 链接开一个独立窗口(无注入脚本、无 IPC);安卓:返回 false(页面直接走 `ArenaKitAndroid` 原生链接页) |
+| `login_set {creds}` | dock(内嵌时即 arena 页面) | 登录助手:把 `{accountId, email, password, totp, provider, startedAt}` 存进 Rust 内存(10 min TTL);之后每次 `on_page_load`(arena 域 + `links.rs` 认定的登录域)eval `window.__AK_LOGIN_APPLY__(creds)` |
+| `login_clear` | 两者 | 忘掉待登录凭据(account.js 在会话 Cookie 出现时调用;dock 在切换成功 / 停止时调用) |
 
 capabilities:`capabilities/arena.json`(`remote.urls: https://arena.ai/*`,只给页面必需的 7 个命令)与 `capabilities/default.json`(dock,含 `arena_command`)。远程页面要用 IPC 必须有 `remote` capability,且启用了 app manifest 后所有自定义命令都走 ACL。
 
@@ -228,15 +231,23 @@ Rust → dock 事件:
 | `link-tab` | links.js(原生 LinkTab 经 `setOpen` 回写) | `{open}` |
 | `menu` | Rust `menu.rs`(桌面菜单栏「页面」,非页面发出) | `{action: 'reload' \| 'back' \| 'forward'}` → dock `requestReload('menu')` / `navBack` / `navForward` |
 | `pulse` | pulse.js | `{ok:true, percent, refreshedAt, at}` / `{ok:false, error, retryAfterMs, at}` |
+| `account` | account.js(监视器,仅 arena 域) | `{reason:'init'|'poll'|'wake', loggedIn, hasAuthCookie, scope:'host'|'domain'|'', userId, email, name, avatar, provider, expiresAt, cookies:[{name,value}], sig, at}`(仅 auth Cookie 签名变化时发) |
+| `account-result` | account.js | `{reqId, ok, data}` / `{reqId, ok:false, error}`(账号 RPC 应答) |
+| `login` | account.js(登录助手进度) | `{stage:'arena-open'|'arena-google'|'arena-email'|'need-code'|'google-*'|'done'|'stopped'|'timeout'|…, host, accountId, at, error?}`;`need-code` 时 dock 打开账号页让用户输入邮件验证码 |
 
 dock → 页面:`arena_command` eval;约定入口 `window.__ARENAKIT__.dispatch(name, payload)`(如 `pulse-refresh`)、`window.ArenaProbe.call(action, argsJson, reqId)`(探针 RPC)、`__AK_*_SET__`(增强脚本开关)。
 
 探针 RPC 动作(probe.js):`precheck` `newChat` `ensureAgentMode` `send{prompt}`(仅算式、仅新对话、不覆盖草稿)`sendToCurrent{text}`(当前对话,生成中拒绝)`sidebarList{expand}` `collapseSidebar` `openConversation` `revealSidebarItem{sessionId}` `rename{sessionId,title}` `archive{sessionId,requireCurrentUrl,manageSidebar}`。
 
+账号 RPC 动作(account.js,`window.ArenaAccount.call(action, argsJson, reqId)` → `account-result`,dock 经 `lib/page-actions.js` 的 `accountCall`):`snapshot`(含作用域探测)`restore{cookies, scope}`(先删旧 auth 块,再按 host / Domain 作用域写入)`clear`(删所有 auth Cookie,不调 signOut)`login{creds}`(启动页面侧登录助手)`fill{code|password}`(把用户输入的验证码填进页面)`stop` `status`。dock 侧状态存 store 键 `accounts`:`{list:[{id,userId,email,name,avatar,provider,label,cookies,sig,expiresAt,capturedAt,lastUsedAt,login:{email,password,totp,auto}}], activeId, pending:{type:'switch'|'add'|'login', id, at}|null}`(`src/lib/accounts.js` 归一化;`pending` 5 min 过期)。
+
 ## 8. 测试与本地检查
 
 ```bash
 node --test 'tests/**/*.test.mjs'   # 纯逻辑库直接 import;注入脚本用 node:vm + fakePage 跑
+                                    # 账号:tests/account.test.mjs(account.js 单元)+ tests/account-flow.test.mjs
+                                    # (真实 account.js + rpc + account-flow 走完整切换 / 添加 / 登录助手旅程,
+                                    #  Cookie 罐懂 Domain / Max-Age;夹具 tests/account-fixture.mjs)+ totp / accounts
 node scripts/check-syntax.mjs       # 注入脚本按 script、dock 按 module 做语法检查
 cargo test --manifest-path src-tauri/Cargo.toml   # trace/usage/store/pulse 单测 + init 包隔离测试
 ```

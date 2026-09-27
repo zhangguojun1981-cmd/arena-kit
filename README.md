@@ -14,7 +14,7 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | 解锁 Claude Opus 全系 + 150+ 隐藏/盲测模型 | [Model-Unlocker](https://github.com/theraker526/Arena-AI-Model-Unlocker-Extension) | A 前端注入 |
 | 排行榜"性价比"列、价格、模型年龄、模态图标 | [Arena.ai-Plus](https://github.com/chen-dahan/Arena.ai-Plus) | A 前端注入 |
 | 个人投票胜负统计 | [personal-leaderboard](https://github.com/wrapss/lmarena-personal-leaderboard) | A 前端注入 |
-| 每新对话自动注入系统提示词 | [Arena-Ai (ENI)](https://github.com/peyton2065/Arena-Ai) | 提示词注入 |
+| 每新对话自动注入系统提示词(默认关;开启后输入框旁显示「ENI」徽章,经典与 Agent 模式都生效) | [Arena-Ai (ENI)](https://github.com/peyton2065/Arena-Ai) | 提示词注入 |
 | **截获运行令牌 → 拉 trace → 显示服务端真实模型名**,按**轮次**解析模型(非首轮模型高亮) | [arena-trace-inspector](https://github.com/AI-modelsAPI/arena-trace-inspector) / [-android](https://github.com/AI-modelsAPI/arena-trace-android) | B 取证 |
 | **使用额度(Token / 费用,非百分比)**:本轮 / 本会话 / 累计,Token / 费用覆盖率,按运行查看历史记录,证据来源折叠(span 级 ID 可复制),证据 JSON 导出 | arena-trace-inspector | B 取证 |
 | **额度百分比** + 三色进度条 + 锚定的重置倒计时 | arena-trace-android (pulse) | B 取证 |
@@ -24,11 +24,12 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | **自动清理**:归档算式标题的探针残留(仅归档不删除),并同步删除其本地记录 | arena-trace-android / arena-trace-inspector | B 取证 |
 | **会话探针**:向当前对话发一条探针,识别「这一轮」实际模型 | arena-trace-android (quickSend) | B 取证 |
 | **回复监控**:空回复 / 报错 / 中断 / 停滞自动标记到轮次 | ArenaKit 新增 | B 取证 |
-| **状态胶囊 + 底部面板**(安卓与 macOS 同一套,按参考安卓应用 v0.6.4 还原;macOS 默认即此布局,设置里可切回「右侧面板」分栏,重启生效):扁平胶囊 = 额度环(百分比在环内,蓝 / 琥珀 / 红)+ 模型名(切换模型时橙黄)/ 探针·清理进度 + 可选 ⟳;单击开面板、长按快捷菜单(探针 / 会话探针 / 清理 / 刷新 / 面板)、拖动后自动贴边;面板为贴底 Bottom Sheet:模型 + 状态行 + 额度倒计时 + 活动日志 + 对话 / 探针 / 工具 / 更多页签 | arena-trace-android (StatusPillView / ControlPanel) | B 取证 |
-| **刷新**:胶囊 ⟳ / 表头 ⟳ / 工具页 / 快捷菜单 / 对话滚到底后按住上拉,刷新时顶部进度条;**回复出错或空白时自动刷新**(看门狗,可关) | arena-trace-android (requestReload / ReplyWatchdog) | B 取证 |
+| **悬浮球 + 底部面板**(安卓,按参考安卓应用 v0.6.4 还原):悬浮球 = 霓虹额度环(蓝 / 琥珀 / 红,告警时红色闪烁)+ 球心显示模型名或百分比(设置里可选);单击开面板、长按快捷菜单(探针 / 会话探针 / 清理 / 刷新 / 切换账号 / 面板)、拖动后自动贴边;面板为贴底 Bottom Sheet(右上 ✕ 关闭,无刷新按钮):模型 + 状态行 + 额度倒计时 + 活动日志 + 对话 / 探针 / 工具 / 账号 / 更多页签。**macOS 只有右侧面板(dock)分栏**,页面里没有悬浮球 | arena-trace-android (StatusPillView / ControlPanel) | B 取证 |
+| **账号**:登录 Arena 后自动记录当前账号(会话 Cookie 快照,随令牌轮换持续刷新);**一键切换**已保存的账号 = 换 Cookie + 刷新;「添加另一个账号」清掉当前登录去登第二个;每个账号可填邮箱 / 密码 / **2FA 密钥(TOTP,支持 otpauth:// 链接)**——列表里实时显示 6 位动态码与剩余秒数、一键复制;已保存会话失效时**登录助手**自动填写 Arena 登录框 → Google 账号 / 密码 / 验证器动态码(邮箱验证码流程会在面板里等你输入邮件里的验证码并代填)。凭据明文存本机 store,不上传 | ArenaKit 新增 | 通用 |
+| **刷新**:工具页 / 快捷菜单 / 对话滚到底后按住上拉 / macOS ⌘R,刷新时顶部进度条;**回复出错或空白时自动刷新**(看门狗,可关) | arena-trace-android (requestReload / ReplyWatchdog) | B 取证 |
 | **页面链接标签**:点到其他站点的链接、target=_blank、window.open 在应用内「链接页」打开(安卓原生 WebView 图层:✕ / 标题 / 域名 / ⟳ / 在浏览器中打开 / 复制 / 分享;桌面独立窗口),对话不被替换;登录 / 验证域名留在原地,mailto / tel 交给其他应用 | arena-trace-android (LinkPolicy / LinkTab) | B 取证 |
 | **设置**:主题(跟随系统 / 亮色 / 暗色)、悬浮球显示(百分比 + 模型 / 百分比 / 模型,仅内嵌)、截获会话流 / 额度轮询 / 回复监控 / 悬浮窗刷新按钮 / 自动刷新开关 | arena-trace-android (DayNight) / arena-trace-inspector(监听开关) | 通用 |
-| **macOS 键鼠 + 菜单栏**:胶囊右键 = 长按快捷菜单、Esc 逐层关闭(对话框 → 菜单 → 面板)、悬停高亮;菜单栏「页面」:刷新 ⌘R(经 dock:防抖 + 忙碌确认 + 进度条)、后退 ⌘[ / 前进 ⌘]、在浏览器中打开 ⌘⇧O、复制链接 ⌘⇧C,对焦点所在的链接标签窗口同样生效(对应安卓链接页工具栏) | ArenaKit 新增(桌面对齐安卓) | 通用 |
+| **macOS 键鼠 + 菜单栏**:Esc 逐层关闭(对话框 → 菜单)、悬停高亮;菜单栏「页面」:刷新 ⌘R(经 dock:防抖 + 忙碌确认 + 进度条)、后退 ⌘[ / 前进 ⌘]、在浏览器中打开 ⌘⇧O、复制链接 ⌘⇧C,对焦点所在的链接标签窗口同样生效(对应安卓链接页工具栏) | ArenaKit 新增(桌面对齐安卓) | 通用 |
 
 完整链接、许可与克隆命令见 [vendor/UPSTREAM.md](vendor/UPSTREAM.md)。
 

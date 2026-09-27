@@ -20,6 +20,8 @@
 │    unlock.js / eni.js              │   自动清理(runner.cleanup)        │
 │    conversation-rename.js          │   会话探针(session-probe.js)      │
 │    probe.js   ArenaProbe RPC 动作  │   重命名对话(rename.js, rpc.js)   │
+│    account.js 会话 Cookie 快照/恢复│   账号切换(accounts.js,          │
+│               + 登录助手(totp.gen) │     account-flow.js, totp.js)    │
 │   [DOMContentLoaded]               │   功能开关 / 提示词注入            │
 │    manager.js plus.js leaderboard  │                                  │
 ├───────────────────────────────────┴──────────────────────────────────┤
@@ -28,6 +30,8 @@
 │   store.rs             arenakit-store.json (prefs/历史/闸门)           │
 │   lib.rs               on_token · page_event → 'arenakit://page'       │
 │                        arena_command(dock→页面 eval)· proxy_get 白名单 │
+│                        login_set/clear:待登录凭据(内存,10 min TTL)   │
+│                        → on_page_load 推给 arena / accounts.google.com │
 │   pulse.rs             阈值常量(轮询在页面侧)                          │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -55,6 +59,18 @@
 - 探针只发送裸算式 `N op N =`,只在全新 `/agent` 且确认 Agent Mode 后发送,**绝不覆盖人工草稿**;清理只归档算式标题、跳过当前打开的对话。
 - 额度轮询是页面内同源 GET,Cookie 不导出;`/api/**` 只读这一条。
 - 回复监控上报的只有计数/标志和 ≤160 字符的服务端错误信息。
+- 账号:会话 Cookie 快照与登录凭据(邮箱 / 密码 / TOTP 密钥)**明文**存在本机 `arenakit-store.json` 的 `accounts` 键,不上传、不经任何第三方;待登录凭据只在 Rust 内存里放 10 分钟,且只推给 arena 域和 `links.rs` 认定的登录域(`login_host_ok`),其他页面永远拿不到。切换账号不调用 signOut(那会吊销刷新令牌),只换 Cookie。
+
+## 账号:一键切换与登录助手
+
+Arena 的登录 = Supabase SSR 分块 Cookie(`arena-auth-prod-v1.0/.1`,值 `base64-` + base64url JSON,含 access/refresh token 与 user),没有站内 2FA;Google 登录是整页跳转到 `accounts.google.com`(`links.js` 让登录域留在主 webview)。因此:
+
+- **快照**:`injected/account.js` 读 `document.cookie`,拼块、解码,得到 `{userId, email, name, avatar, provider, expiresAt, cookies, sig, scope}`;每 4 s 轮询 + `visibilitychange`,签名变了就 `send('account')`(刷新令牌会轮换,旧令牌复用会吊销整族,所以快照必须跟着变)。`dock` 侧 `applySnapshot` 合并进 `accounts` store,登录后的账号自动被记录。
+- **切换**(`src/lib/account-flow.js` `switchTo`):先 RPC `snapshot` 让当前账号最新 → 存 `pending:{type:'switch',id}` → RPC `restore{cookies, scope}`(按站点原有的 host / `Domain=.arena.ai` 作用域写回,先删旧块)→ 刷新。刷新后第一份快照由 `resolvePending` 定夺:是目标 → `switched`;别的账号 → `other`;未登录 → `lost`(目标有凭据且 `auto` 开则直接进登录助手)。pending 持久化,因为安卓内嵌 dock 随页面一起消亡。
+- **添加账号**(`add`):保存当前 → `pending:add` → RPC `clear` → 刷新 → 用户登录 → 第一份已登录快照 → `added`。
+- **登录助手**(`startLogin`):dock `invoke('login_set',{creds})`,Rust 存内存;页面还有别的会话就 `clear` + 刷新,否则直接 RPC `login{creds}`。之后每次页面加载 Rust 在 `on_page_load` 里 eval `__AK_LOGIN_APPLY__(creds)`(arena 与 Google 域都推,因为 `accounts.google.com` 没有 IPC)。account.js 在 arena 打开登录框、按 provider 选「Continue with Google」或填邮箱;在 Google 依次填账号 / 密码 / 验证器动态码(`__AK_TOTP__`,`injected/totp.gen.js` 由 `src/lib/totp.js` 打包);邮箱验证码流程 `send('login',{stage:'need-code'})`,dock 打开账号页让用户输入,再 RPC `fill{code}`。会话 Cookie 出现即 `done` → `invoke('login_clear')`。
+- UA:WKWebView 默认 UA 会被 Google 判为内嵌浏览器(`disallowed_useragent`),桌面用 Safari 等价 UA(`DESKTOP_USER_AGENT`),安卓 `MainActivity.kt` 去掉 `; wv` / `Version/4.0`。
+- 已在沙箱里实测的部分(`tests/account-flow.test.mjs`、`tests/account.test.mjs`):真实的 account.js 跑在带 Domain / Max-Age 语义的 Cookie 罐上,经真实 RPC + flow 完成「首登自动记录 → 添加第二个 → 令牌轮换跟随 → 来回切换 → 会话失效转登录助手 → Google 三步填表(RFC 6238 向量)→ 登录成功清理」。**未在真机验证**:arena.ai / Google 的真实 DOM 选择器、服务端是否接受换回去的刷新令牌、Rust `on_page_load` 时序。
 
 ## 为什么注入分两个时机
 
