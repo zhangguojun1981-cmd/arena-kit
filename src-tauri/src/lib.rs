@@ -11,6 +11,7 @@
 pub mod pulse;
 pub mod store;
 pub mod trace;
+pub mod usage;
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -229,13 +230,14 @@ async fn poll_trace(
         if !is_live(&app, &session_id, generation) {
             return;
         }
+        let retry = |label: &str| format!("{}，等待重试 {}/{}", label, attempt, TRACE_MAX_ATTEMPTS);
         // Outcome of this attempt: Ok(status text) = retry later, Err((fatal, msg)) = stop.
         let outcome: Result<String, (bool, String)> = match resp {
             Err(_) => {
                 if attempt >= TRACE_MAX_ATTEMPTS {
                     Err((false, "trace 请求失败或超时，请检查网络".into()))
                 } else {
-                    Ok("trace 请求失败或超时，请检查网络".into())
+                    Ok(retry("trace 请求失败或超时"))
                 }
             }
             Ok(r) => {
@@ -245,11 +247,11 @@ async fn poll_trace(
                     if trace::is_fatal_trace_status(status) || attempt >= TRACE_MAX_ATTEMPTS {
                         Err((trace::is_fatal_trace_status(status), label))
                     } else {
-                        Ok(label)
+                        Ok(retry(&label))
                     }
                 } else {
                     match r.text().await {
-                        Err(_) => Ok("trace 读取失败".into()),
+                        Err(_) => Ok(retry("trace 读取失败")),
                         Ok(text) if text.len() > 4 * 1024 * 1024 => {
                             Err((true, "trace 超过 4 MB，停止解析".into()))
                         }
@@ -278,7 +280,7 @@ async fn poll_trace(
                     forget_token(&app, &token);
                     return;
                 }
-                emit_trace(&app, base(json!({"stage":"poll","attempt":attempt,"max":TRACE_MAX_ATTEMPTS,"status":format!("{}，等待重试 {}/{}", status, attempt, TRACE_MAX_ATTEMPTS)})));
+                emit_trace(&app, base(json!({"stage":"poll","attempt":attempt,"max":TRACE_MAX_ATTEMPTS,"status":status})));
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(TRACE_POLL_SECS)).await;
@@ -295,35 +297,47 @@ fn handle_trace(
     trace_json: &Value,
     attempt: u32,
 ) -> Result<String, (bool, String)> {
+    let retry = |label: &str| format!("{}，等待重试 {}/{}", label, attempt, TRACE_MAX_ATTEMPTS);
     let models = match trace::extract_models(trace_json, run_id) {
         Ok(m) => m,
         Err(e) => {
             if attempt >= TRACE_MAX_ATTEMPTS {
                 return Err((false, e));
             }
-            return Ok(e);
+            return Ok(retry(&e));
         }
     };
     if models.is_empty() {
         if attempt >= TRACE_MAX_ATTEMPTS {
             return Err((false, "trace 未包含模型标签；不猜测模型".into()));
         }
-        return Ok("trace 暂无模型标签".into());
+        return Ok(retry("trace 暂无模型标签"));
     }
     let model_json: Vec<Value> = models
         .iter()
         .map(|m| json!({"model": m.model, "provider": m.provider, "partial": m.partial}))
         .collect();
-    let partial = models.iter().any(|m| m.partial);
-    let complete = !partial || attempt >= TRACE_MAX_ATTEMPTS;
-    let status = if complete { "已识别模型" } else { "已识别模型，等待调用完成" };
+    // Span-level Token / cost labels (usage.rs). Polling continues while any
+    // span is partial or lacks a token/cost label, so the usage can catch up.
+    let spans = usage::extract_usage(trace_json, run_id);
+    let usage_complete = usage::is_complete(&spans) && !models.iter().any(|m| m.partial);
+    let complete = usage_complete || attempt >= TRACE_MAX_ATTEMPTS;
+    let status = if usage_complete {
+        "已识别模型".to_string()
+    } else if complete {
+        "已识别模型（用量标签未补齐）".to_string()
+    } else {
+        format!("已识别模型，等待用量补齐 {}/{}", attempt, TRACE_MAX_ATTEMPTS)
+    };
     let checked_at = now_millis();
+    let spans_json = serde_json::to_value(&spans).unwrap_or(Value::Array(Vec::new()));
     emit_trace(
         app,
         base(json!({
             "stage":"model","attempt":attempt,"max":TRACE_MAX_ATTEMPTS,
             "checkedAt": checked_at,
             "models": model_json,
+            "spans": spans_json,
             "complete": complete,
             "status": status
         })),
@@ -331,7 +345,7 @@ fn handle_trace(
     if complete {
         Ok("__done__".into())
     } else {
-        Ok(status.to_string())
+        Ok(status)
     }
 }
 

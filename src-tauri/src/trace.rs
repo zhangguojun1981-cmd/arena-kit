@@ -3,9 +3,9 @@
 //! `ArenaProtocol.kt`. Rules are kept in lockstep with both; the unit tests
 //! at the bottom mirror `tests/core.test.mjs` and `ArenaProtocolTest.kt`.
 //!
-//! STATUS (M0 scaffold): validate_token + extract_models are implemented and
-//! unit-tested. The HTTP polling loop (fetch_models) is stubbed with the exact
-//! contract but no live call yet — wire it in M3.
+//! validate_token + extract_models are implemented and unit-tested here; the
+//! HTTP polling loop lives in lib.rs (`on_token` / `poll_trace`) and the
+//! span-level Token/cost extraction in usage.rs.
 
 use base64::Engine;
 use serde_json::Value;
@@ -128,15 +128,15 @@ pub fn trace_status_label(status: u16) -> String {
     }
 }
 
-const MODEL_SPANS: [&str; 4] = [
+pub(crate) const MODEL_SPANS: [&str; 4] = [
     "ai.streamText.doStream",
     "ai.generateText.doGenerate",
     "ai.streamObject.doStream",
     "ai.generateObject.doGenerate",
 ];
-const CUBE_ICONS: [&str; 3] = ["tabler-cube", "cube", "tabler-box"];
+pub(crate) const CUBE_ICONS: [&str; 3] = ["tabler-cube", "cube", "tabler-box"];
 
-fn span_name(event: &Value) -> String {
+pub(crate) fn span_name(event: &Value) -> String {
     for key in ["message", "name", "spanName"] {
         if let Some(s) = event.get(key).and_then(|v| v.as_str()) {
             return s.to_string();
@@ -145,7 +145,7 @@ fn span_name(event: &Value) -> String {
     String::new()
 }
 
-fn trace_events(trace: &Value) -> Option<Vec<Value>> {
+pub(crate) fn trace_events(trace: &Value) -> Option<Vec<Value>> {
     for path in [["events"], ["spans"]] {
         if let Some(arr) = trace.get(path[0]).and_then(|v| v.as_array()) {
             return Some(arr.clone());

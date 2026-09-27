@@ -8,6 +8,7 @@
  * node:test); this file only wires DOM + IPC. */
 
 import { getTauri, createStore, jsString } from './lib/tauri-api.js';
+import { usageFromReport, mergeUsage, summarizeUsage, formatUsage, formatTokens, formatMoney, completion, exportEvidence } from './lib/usage.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -18,7 +19,16 @@ const state = {
   store: null,
   nav: { sessionId: null, path: '/', title: '' },
   prefs: {},
+  // sessionId → { runs: [...mergeUsage shape], models: [{model,provider}], title }
+  sessions: new Map(),
+  // the run currently shown in the model/usage modules
+  current: { sessionId: null, runId: null },
 };
+
+function sessionRecord(sessionId) {
+  if (!state.sessions.has(sessionId)) state.sessions.set(sessionId, { runs: [], models: [], title: '' });
+  return state.sessions.get(sessionId);
+}
 
 const DEFAULT_PREFS = {
   unlockOpus: true,
@@ -54,20 +64,61 @@ async function savePrefs(patch) {
 
 // ── module: server-side model (trace pipeline) ──────────────────────────
 function onTrace(p) {
-  if (!p || typeof p !== 'object') return;
+  if (!p || typeof p !== 'object' || typeof p.sessionId !== 'string') return;
   const sub = q('ak-model-sub');
   if (p.stage === 'token') {
+    state.current = { sessionId: p.sessionId, runId: p.runId || null };
     q('ak-model').textContent = '识别中…';
     sub.textContent = 'run ' + String(p.runId || '').slice(0, 14);
   } else if (p.stage === 'model') {
-    const models = (p.models || []).map((m) => m.model).filter(Boolean);
-    q('ak-model').textContent = models.join(' / ') || '未识别';
-    const providers = [...new Set((p.models || []).map((m) => m.provider).filter(Boolean))];
-    sub.textContent = ['run ' + String(p.runId || '').slice(0, 14), providers.join(', '), p.complete ? '' : '进行中'].filter(Boolean).join(' · ');
+    const rec = sessionRecord(p.sessionId);
+    const models = (p.models || []).filter((m) => m && typeof m.model === 'string' && m.model.trim())
+      .map((m) => ({ model: m.model.slice(0, 200), provider: String(m.provider || '').slice(0, 100) }));
+    if (models.length) rec.models = models;
+    const usage = usageFromReport(p);
+    if (usage) rec.runs = mergeUsage(rec.runs, usage);
+    state.current = { sessionId: p.sessionId, runId: p.runId || null };
+    q('ak-model').textContent = models.map((m) => m.model).join(' / ') || '未识别';
+    const providers = [...new Set(models.map((m) => m.provider).filter(Boolean))];
+    const run = rec.runs.find((r) => r.runId === p.runId);
+    sub.textContent = ['run ' + String(p.runId || '').slice(0, 14), providers.join(', '), completion(run?.spans || [])].filter(Boolean).join(' · ');
+    renderUsage();
   } else if (p.stage === 'error' && p.fatal) {
     q('ak-model-sub').textContent = p.status || '错误';
   }
   if (p.status) setStatus(p.status);
+}
+
+// ── module: Token / trace cost ──────────────────────────────────────────
+function allRuns() {
+  const out = [];
+  for (const rec of state.sessions.values()) out.push(...rec.runs);
+  return out;
+}
+function renderUsage() {
+  const { sessionId, runId } = state.current;
+  const rec = sessionId ? state.sessions.get(sessionId) : null;
+  const run = rec?.runs.find((r) => r.runId === runId) || null;
+  q('ak-usage-run').textContent = formatUsage(run ? summarizeUsage([run]) : null);
+  const st = rec ? summarizeUsage(rec.runs) : null;
+  q('ak-usage-session').textContent = st && st.spanCount ? formatUsage(st) + ` · ${st.runCount} 轮` : '未提供';
+  const tt = summarizeUsage(allRuns());
+  q('ak-usage-total').textContent = tt.spanCount ? formatUsage(tt) + ` · ${tt.runCount} 轮 / ${state.sessions.size} 会话` : '未提供';
+  const calls = run?.spans || [];
+  q('ak-usage-calls').innerHTML = calls.map((c) => {
+    const flags = [c.partial === true ? '<span class="ak-flag">进行中</span>' : '', c.error === true ? '<span class="ak-err">报错</span>' : '', c.cancelled === true ? '<span class="ak-flag">已取消</span>' : ''].filter(Boolean).join(' ');
+    return `<div class="ak-call"><span>${esc(c.model || '未知模型')}${c.provider ? ' <span class="ak-sub">' + esc(c.provider) + '</span>' : ''}</span><span>${esc(formatTokens(c.tokens, c.tokensApproximate))} · ${esc(formatMoney(c.costUsd))} ${flags}</span></div>`;
+  }).join('') + (calls.length ? `<div class="ak-sub">共 ${calls.length} 次模型调用 · 仅统计 trace 标签，不推算价格</div>` : '');
+}
+async function exportCurrentEvidence() {
+  const { sessionId } = state.current;
+  const rec = sessionId ? state.sessions.get(sessionId) : null;
+  if (!rec || !rec.runs.length) { setStatus('当前会话还没有可导出的记录'); return; }
+  const text = JSON.stringify(exportEvidence({ sessionId, title: rec.title || state.nav.title, runs: rec.runs }), null, 2);
+  const box = q('ak-export');
+  box.value = text;
+  box.hidden = false;
+  try { await navigator.clipboard.writeText(text); setStatus('证据 JSON 已复制到剪贴板'); } catch { setStatus('证据 JSON 已生成（请手动复制）'); }
 }
 
 // ── module: navigation (restore per-conversation display) ───────────────
@@ -76,10 +127,21 @@ onPage('nav', (n) => {
   const switched = n.sessionId !== state.nav.sessionId;
   state.nav = { sessionId: n.sessionId || null, path: n.path || '/', title: n.title || '' };
   q('ak-session').textContent = state.nav.sessionId ? '会话 ' + state.nav.sessionId.slice(0, 8) + '…' : (n.agentPath ? '新对话' : n.path || '');
+  if (state.nav.sessionId && state.sessions.has(state.nav.sessionId)) sessionRecord(state.nav.sessionId).title = state.nav.title;
   if (switched && !state.nav.sessionId) {
     // Fresh /agent composer: nothing identified yet for this conversation.
+    state.current = { sessionId: null, runId: null };
     q('ak-model').textContent = '—';
     q('ak-model-sub').textContent = '发一条消息后自动识别';
+    renderUsage();
+  } else if (switched && state.sessions.has(state.nav.sessionId)) {
+    // Back to a conversation seen this session: show its last run again.
+    const rec = state.sessions.get(state.nav.sessionId);
+    const last = rec.runs.at(-1);
+    state.current = { sessionId: state.nav.sessionId, runId: last?.runId || null };
+    q('ak-model').textContent = rec.models.map((m) => m.model).join(' / ') || '—';
+    q('ak-model-sub').textContent = last ? 'run ' + last.runId.slice(0, 14) + ' · ' + completion(last.spans) : '';
+    renderUsage();
   }
 });
 
@@ -90,6 +152,8 @@ function wireControls() {
       const a = el.dataset.action;
       if (a === 'manager') {
         arenaCmd('window.__AK_MANAGER_TOGGLE__ && window.__AK_MANAGER_TOGGLE__()');
+      } else if (a === 'export-evidence') {
+        exportCurrentEvidence();
       } else if (a === 'save-eni') {
         const eniText = q('ak-eni-text').value;
         const eniOn = q('ak-eni-on').checked;

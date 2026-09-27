@@ -93,3 +93,12 @@ html, body {
 }
 
 .ak-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.ak-kv { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 12px; }
+.ak-kv .ak-k { color: var(--ak-sub); white-space: nowrap; }
+.ak-kv .ak-v { text-align: right; word-break: break-word; }
+.ak-calls { margin-top: 6px; line-height: 1.5; }
+.ak-calls .ak-call { display: flex; justify-content: space-between; gap: 6px; border-top: 1px dashed var(--ak-line); padding: 3px 0; }
+.ak-calls .ak-call .ak-flag { color: #f59e0b; }
+.ak-calls .ak-call .ak-err { color: #ef4444; }
+.ak-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ak-btns .ak-btn { margin: 0; }
