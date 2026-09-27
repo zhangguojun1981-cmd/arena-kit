@@ -190,6 +190,7 @@ Dock 只渲染激活标签;其他标签的事件写入 `perTab` 缓存,`setActiv
 - `sessions.rs` 是纯数据层(可 `cargo test`):`AccountBook`(加载 / 原子写入 `accounts.json`、`upsert` 校验)、`normalize_proxy`(补 scheme、只收 http/socks5、拒绝鉴权与路径、补默认端口)、`store_identifier`(账号 UUID → 16 字节 WebKit 数据存储 id)、`TabList`(分配 `arena-<n>` 标签、关闭后激活左邻)。
 - 子 WebView 的几何由 Rust 唯一掌管:`TOPBAR_H` / `DOCK_W` 与 `shell.css` 的 `.topbar` 高度、`.dock-col` 宽度必须一致(`tests/shell.test.mjs` 检查两边常量)。
 - 每个标签的 Rust 侧请求(`fetch_trace` / `proxy_get`)通过 `proxy_for_label(webview.label())` 拿到账号代理,`reqwest` 需 `socks` feature。没有代理的账号沿用 reqwest 默认(系统 / 环境变量代理)行为。
+- **无人值守自检**:`ARENAKIT_SMOKE=1 ./ArenaKit.app/Contents/MacOS/arena-kit` —— 桌面端启动后自动:内存里造一个临时账号(不落盘)→ `open_tab` 建子 WebView → 等 arena.ai 加载并等页面 bootstrap 经远程源 IPC 上报 `state` → `close_tab` → 打印 `SMOKE OK` 退出码 0(失败打印 `SMOKE FAIL …` 退出码 2)。用来在没人能点击的真机(如经 arena-bridge 远程操作)上验证标签 / ACL / 注入链。
 - Android 原生层只有一个文件:`src-tauri/android-overlay/app/src/main/java/com/ati/arenakit/MainActivity.kt`,CI 在 `tauri android init` 之后用 `scripts/apply-android-overlay.sh` 覆盖模板(gen/android 不入库)。本地构建同样先 init 再跑该脚本。
 
 ---
