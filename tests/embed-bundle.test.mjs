@@ -358,7 +358,7 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.ok(byId['ak-turn-list'].innerHTML.includes('暂无轮次记录'));
 
   // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
-  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true }));
+  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, autoRefresh: true }));
   assert.equal(byId['ak-pill-refresh'].checked, true, 'pill ⟳ switch defaults on');
   assert.equal(byId['ak-auto-refresh'].checked, true, 'auto-refresh switch defaults on');
   assert.equal(sandbox.__ARENAKIT_EMBED__.host.dataset.embed, 'true');
@@ -401,4 +401,40 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   wrapEl.listeners.pointerup[0]({ pointerId: 3, clientX: 30, clientY: 130 });
   await settle();
   assert.equal(reloaded, 1, '800 ms debounce swallows the second tap');
+
+  // reply watchdog: the page reports an error card twice (≥ 2 s apart) for the
+  // OPEN conversation → auto reload; the switch off → nothing.
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: 's9', path: '/agent/s9', title: '', agentPath: true } });
+  const t0 = Date.now();
+  const watch = (at) => emit('arenakit://page', { name: 'watch', payload: { k: 'error:Something went wrong', path: '/agent/s9', generating: false, len: 0, at, act: at } });
+  const realNow = Date.now;
+  try {
+    Date.now = () => t0 + 40_000; // past the 30 s reload safety window of the previous tap
+    watch(t0 + 40_000);
+    await settle();
+    assert.equal(reloaded, 1, 'first sighting only tracks');
+    Date.now = () => t0 + 43_000;
+    watch(t0 + 43_000);
+    await settle();
+    assert.equal(reloaded, 2, 'confirmed problem reloads the page');
+    assert.ok(byId['ak-status'].textContent.includes('刷新'), byId['ak-status'].textContent);
+    // a report for another conversation never reloads the current one
+    Date.now = () => t0 + 80_000;
+    emit('arenakit://page', { name: 'watch', payload: { k: 'empty', path: '/agent/other', at: t0 + 80_000, act: t0 + 80_000 } });
+    emit('arenakit://page', { name: 'watch', payload: { k: 'empty', path: '/agent/other', at: t0 + 80_000, act: t0 + 80_000 } });
+    await settle();
+    assert.equal(reloaded, 2);
+    // switch off: reports are ignored entirely
+    byId['ak-auto-refresh'].checked = false;
+    byId['ak-auto-refresh'].listeners.change[0]();
+    assert.equal(sandbox.__ARENAKIT_FLAGS__.autoRefresh, false, 'flag pushed to the page');
+    Date.now = () => t0 + 120_000;
+    watch(t0 + 120_000);
+    Date.now = () => t0 + 123_000;
+    watch(t0 + 123_000);
+    await settle();
+    assert.equal(reloaded, 2, 'auto refresh off');
+  } finally {
+    Date.now = realNow;
+  }
 });

@@ -58,7 +58,7 @@
 
 ## 为什么注入分两个时机
 
-- **`document_start`(init script,MAIN world)**:`bridge.js`(其余脚本都依赖它)、`snoop.js`(要在 Next.js fetch 前挂钩子)、`monitor.js`、`pulse.js`、`unlock.js`(要在 `__next_f` push 前接管)、`eni.js`(fetch 拦截)、`conversation-rename.js`、`probe.js`。
+- **`document_start`(init script,MAIN world)**:`bridge.js`(其余脚本都依赖它)、`snoop.js`(要在 Next.js fetch 前挂钩子)、`monitor.js`、`pulse.js`、`unlock.js`(要在 `__next_f` push 前接管)、`eni.js`(fetch 拦截)、`conversation-rename.js`、`probe.js`、`watchdog.js`(对话看门狗,只上报状态)。
 - **`DOMContentLoaded`**:`manager.js` / `plus.js` / `leaderboard.js` 等 UI 脚本,等 DOM 就绪后再挂面板。
 
 两组都由 `lib.rs::build_init_script` 打成一个 `initialization_script`(每次导航前自动重跑,SPA 路由冲不掉),每个模块各自 try/catch 隔离(一个模块顶层抛错不影响其他模块,有 Rust 单测保证)。

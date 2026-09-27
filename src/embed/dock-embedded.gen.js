@@ -2178,6 +2178,159 @@ function createPulseState({ now = Date.now } = {}) {
 
 __exports.QUOTA_WINDOW_MS = QUOTA_WINDOW_MS; __exports.DRIFT_TOLERANCE_MS = DRIFT_TOLERANCE_MS; __exports.resetTimeFromRefreshedAt = resetTimeFromRefreshedAt; __exports.anchorReset = anchorReset; __exports.band = band; __exports.formatCountdown = formatCountdown; __exports.formatReset = formatReset; __exports.createPulseState = createPulseState;
 });
+__define("lib/watchdog.js", function (__exports, __require) {
+'use strict';
+/* Reply watchdog policy (port of the reference app's web/ReplyWatchdog.kt).
+ *
+ * Auto-refresh for the failure mode where the conversation UI stops updating:
+ * the reply shows an error card ("Something went wrong with this response,
+ * please try again." / "出现了一些问题…请重试"), or the model finished but
+ * nothing was rendered. Page-side injected/watchdog.js reports a compact
+ * status ({k, path, generating, len, at, act}, the `watch` page event); this
+ * module decides when an automatic reload is allowed:
+ *
+ *  - the page only reports within 2 minutes of real conversation activity
+ *    (send / stream growth / Stop button); the policy re-checks that window —
+ *    a conversation the user is merely READING is never refreshed;
+ *  - one sighting is suspicious, two (≥ CONFIRM_MS apart) are evidence;
+ *  - the same problem (same path + same error key) auto-reloads at most twice,
+ *    then nudges for a manual refresh once, then stays silent;
+ *  - ≥ COOLDOWN_MS between two auto reloads of the same path; never while a
+ *    link tab covers the page, a load is in flight, or a probe / cleanup /
+ *    quick send started less than TASK_BLOCK_MS ago.
+ *
+ * Pure: no DOM, no timers. State is a plain immutable-by-convention object. */
+
+const COOLDOWN_MS = 30_000;
+const TASK_BLOCK_MS = 120_000;
+const FRESH_MS = 120_000;
+const ERROR_ACCEPT_MS = 45_000;
+const STALE_EMPTY_MS = 20_000;
+const MAX_SAME_KEY_RELOADS = 2;
+const MAX_SNIPPET_CHARS = 24;
+const CONFIRM_MS = 2_000;
+const MAX_SEEN_PROBLEMS = 64;
+
+const KEY_EMPTY = 'empty';
+const KEY_ERROR_PREFIX = 'error:';
+
+const Reason = Object.freeze({
+  BUSY: 'busy', TASK_RUNNING: 'task-running', COOLDOWN: 'cooldown', STALE: 'stale', NAG: 'nag', CAPPED: 'capped', WAIT: 'wait',
+});
+
+const RELOAD = Object.freeze({ action: 'reload' });
+const IGNORE = Object.freeze({ action: 'ignore' });
+const track = (reason) => ({ action: 'track', reason });
+
+function initialState() {
+  return { lastReloadAt: {}, reloads: {}, nagged: [], firstSeen: {} };
+}
+
+const AGENT_PATH = /^\/(?:agent|c\/)/;
+
+/* Parse one page report. Returns null for anything malformed and for
+ * non-conversation paths (the page only scans those anyway). */
+function parseStatus(o) {
+  if (!o || typeof o !== 'object') return null;
+  const key = typeof o.k === 'string' ? o.k : '';
+  const path = typeof o.path === 'string' ? o.path : '';
+  if (!key || !path || !AGENT_PATH.test(path)) return null;
+  let textKey;
+  if (key === KEY_EMPTY) textKey = KEY_EMPTY;
+  else if (key.startsWith(KEY_ERROR_PREFIX)) textKey = KEY_ERROR_PREFIX + key.slice(KEY_ERROR_PREFIX.length).slice(0, MAX_SNIPPET_CHARS);
+  else return null;
+  const num = (v, lo, hi) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 0; };
+  return {
+    key: textKey,
+    path: path.slice(0, 128),
+    generating: o.generating === true,
+    textLen: Math.trunc(num(o.len, 0, 1_000_000)),
+    at: num(o.at, 0, Number.MAX_SAFE_INTEGER),
+    act: num(o.act, 0, Number.MAX_SAFE_INTEGER),
+  };
+}
+
+const problemOf = (status) => status.path + '|' + status.key;
+
+/* Decide what to do with a page status.
+ * @param opts.linkTabOpen   the in-app link tab covers the page
+ * @param opts.loading       a page load is in flight (auto reload would fight it)
+ * @param opts.taskStartedAt epoch ms when the current task started; 0 = no task */
+function decide(state, status, nowMs, { linkTabOpen = false, loading = false, taskStartedAt = 0 } = {}) {
+  if (!status) return IGNORE;
+  if (linkTabOpen || loading) return track(Reason.BUSY);
+  if (taskStartedAt > 0 && nowMs - taskStartedAt < TASK_BLOCK_MS) return track(Reason.TASK_RUNNING);
+
+  // No known/recent conversation activity: an idle chat is never ours to fix.
+  // act=0 (the page knows of none) counts as idle.
+  if (nowMs - (status.act || 0) > FRESH_MS) return IGNORE;
+
+  // A streaming reply usually gets its content in the end — don't interrupt.
+  if (status.generating && status.key === KEY_EMPTY) return IGNORE;
+
+  // Stale reports: empty goes cold quickly, errors stay actionable longer.
+  if (status.at > 0) {
+    const age = nowMs - status.at;
+    const limit = status.key === KEY_EMPTY ? STALE_EMPTY_MS : ERROR_ACCEPT_MS;
+    if (age > limit) return track(Reason.STALE);
+  }
+
+  // Budget per problem: at most MAX_SAME_KEY_RELOADS automatic reloads, then
+  // one manual-refresh nudge, then silence.
+  const problem = problemOf(status);
+  if ((state.reloads[problem] || 0) >= MAX_SAME_KEY_RELOADS) {
+    return track(state.nagged.includes(problem) ? Reason.CAPPED : Reason.NAG);
+  }
+
+  // Two observations, at least CONFIRM_MS apart, before any action.
+  const first = state.firstSeen[problem];
+  if (!first) return track(Reason.WAIT);
+  if (nowMs - first < CONFIRM_MS) return track(Reason.WAIT);
+
+  const last = state.lastReloadAt[status.path] || 0;
+  if (last > 0 && nowMs - last < COOLDOWN_MS) return track(Reason.COOLDOWN);
+  return RELOAD;
+}
+
+/* Apply the outcome of decide() to the state (returns a new state). */
+function applied(state, status, decision, nowMs) {
+  if (!status || !decision) return state;
+  const problem = problemOf(status);
+  if (decision.action === 'reload') {
+    const firstSeen = { ...state.firstSeen };
+    delete firstSeen[problem]; // a reload starts a fresh observation cycle
+    return {
+      ...state,
+      lastReloadAt: { ...state.lastReloadAt, [status.path]: nowMs },
+      reloads: { ...state.reloads, [problem]: (state.reloads[problem] || 0) + 1 },
+      firstSeen,
+    };
+  }
+  if (decision.action === 'track') {
+    if (decision.reason === Reason.NAG) {
+      return state.nagged.includes(problem) ? state : { ...state, nagged: [...state.nagged, problem] };
+    }
+    if (decision.reason === Reason.WAIT) {
+      if (Object.prototype.hasOwnProperty.call(state.firstSeen, problem)) return state;
+      const firstSeen = { ...state.firstSeen, [problem]: nowMs };
+      const keys = Object.keys(firstSeen);
+      if (keys.length > MAX_SEEN_PROBLEMS) {
+        let oldest = keys[0];
+        for (const k of keys) if (firstSeen[k] < firstSeen[oldest]) oldest = k;
+        delete firstSeen[oldest];
+      }
+      return { ...state, firstSeen };
+    }
+  }
+  return state;
+}
+
+/* Human-readable log lines (reference strings.xml). */
+const LOG_RELOADING = '回复异常，正在自动刷新…';
+const LOG_NAG = '当前对话回复异常仍未恢复，请手动刷新（自动刷新已达上限）';
+
+__exports.COOLDOWN_MS = COOLDOWN_MS; __exports.TASK_BLOCK_MS = TASK_BLOCK_MS; __exports.FRESH_MS = FRESH_MS; __exports.ERROR_ACCEPT_MS = ERROR_ACCEPT_MS; __exports.STALE_EMPTY_MS = STALE_EMPTY_MS; __exports.MAX_SAME_KEY_RELOADS = MAX_SAME_KEY_RELOADS; __exports.MAX_SNIPPET_CHARS = MAX_SNIPPET_CHARS; __exports.CONFIRM_MS = CONFIRM_MS; __exports.MAX_SEEN_PROBLEMS = MAX_SEEN_PROBLEMS; __exports.KEY_EMPTY = KEY_EMPTY; __exports.KEY_ERROR_PREFIX = KEY_ERROR_PREFIX; __exports.Reason = Reason; __exports.RELOAD = RELOAD; __exports.IGNORE = IGNORE; __exports.track = track; __exports.initialState = initialState; __exports.parseStatus = parseStatus; __exports.decide = decide; __exports.applied = applied; __exports.LOG_RELOADING = LOG_RELOADING; __exports.LOG_NAG = LOG_NAG;
+});
 __define("dock.js", function (__exports, __require) {
 'use strict';
 /* ArenaKit native side dock logic.
@@ -2209,6 +2362,7 @@ const { sessionProbePrecheck, sessionProbeText, awaitTurnModel } = __require("li
 const { createReplyMonitor } = __require("lib/monitor.js");
 const { createPulseState } = __require("lib/pulse.js");
 const { pillLabel, turnHeadline } = __require("lib/pill-layout.js");
+const { initialState: watchdogInitialState, parseStatus: watchdogParse, decide: watchdogDecide, applied: watchdogApplied, Reason: WatchdogReason, LOG_RELOADING: WATCHDOG_LOG_RELOADING, LOG_NAG: WATCHDOG_LOG_NAG } = __require("lib/watchdog.js");
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -2289,6 +2443,9 @@ const state = {
   // task (probe / cleanup / recovery) and a transient flash message
   hud: { model: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
   reloadAt: 0,              // last requestReload() (800 ms debounce, reference MainActivity)
+  loadingAt: 0,             // epoch ms a page reload we asked for started (blocks the watchdog ≤ 30 s)
+  taskStartedAt: 0,         // epoch ms the running probe / cleanup / session probe started (0 = none)
+  watchdog: watchdogInitialState(), // reply watchdog policy state (src/lib/watchdog.js)
 };
 
 function sessionRecord(sessionId) {
@@ -2338,10 +2495,11 @@ function wireTheme() {
 
 // ── settings: page-side feature flags + ball centre ─────────────────────
 const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn', 'ak-pulse-on'], ['monitor', 'monitorOn', 'ak-monitor-on']];
-/* Push the three switches into the arena page (injected snoop / pulse /
- * monitor read window.__ARENAKIT_FLAGS__). Re-applied on every page load. */
+/* Push the switches into the arena page (injected snoop / pulse / monitor /
+ * watchdog read window.__ARENAKIT_FLAGS__). Re-applied on every page load. */
 function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
+  page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
 }
 function wireSettings() {
   for (const [flag, key, id] of FLAG_PREFS) {
@@ -2371,6 +2529,7 @@ function wireSettings() {
     autoRefresh.checked = state.prefs.autoRefresh !== false;
     autoRefresh.addEventListener('change', () => {
       savePrefs({ autoRefresh: autoRefresh.checked });
+      page('flagSet', 'autoRefresh', autoRefresh.checked);
       setStatus(autoRefresh.checked ? '已开启：回复出错或空白时自动刷新' : '已关闭自动刷新（回复异常仍会记录）');
     });
   }
@@ -2398,21 +2557,26 @@ async function requestReload(source = 'panel') {
   state.reloadAt = now;
   const running = state.probe?.isRunning ? state.probe.mode : null;
   if (running) {
-    const what = running === 'cleanup' ? '清理正在进行，刷新会中断本次清理。' : '探针正在运行，刷新会中断本次探针。';
-    const ok = await confirmDialog({ title: '刷新页面？', message: what, ok: '停止并刷新', cancel: '取消' });
-    if (!ok) return false;
+    if (source !== 'watchdog') {
+      const what = running === 'cleanup' ? '清理正在进行，刷新会中断本次清理。' : '探针正在运行，刷新会中断本次探针。';
+      const ok = await confirmDialog({ title: '刷新页面？', message: what, ok: '停止并刷新', cancel: '取消' });
+      if (!ok) return false;
+    }
     state.probe.stop();
     await new Promise((r) => setTimeout(r, 300));
   }
-  setStatus(source === 'pull' ? '上拉刷新页面…' : '刷新页面…');
+  if (source === 'watchdog') setStatus(WATCHDOG_LOG_RELOADING);
+  else setStatus(source === 'pull' ? '上拉刷新页面…' : '刷新页面…');
   const btn = root.querySelector('[data-action="page-reload"]');
   if (btn) btn.dataset.loading = 'true';
+  state.loadingAt = now;
   if (EMBED && typeof EMBED.setLoading === 'function') EMBED.setLoading(true);
   if (EMBED) EMBED.close();
   await page('reload');
   // Desktop: the arena webview reloads in place; the dock keeps running, so
-  // clear the header spinner after a moment.
-  if (!EMBED) setTimeout(() => { if (btn) btn.dataset.loading = 'false'; }, 1500);
+  // clear the header spinner after a moment. Embedded, the page (and this
+  // dock) go away — the timer is only a safety net if the reload never came.
+  setTimeout(() => { if (btn) btn.dataset.loading = 'false'; state.loadingAt = 0; }, EMBED ? 30_000 : 1500);
   return true;
 }
 
@@ -2465,6 +2629,8 @@ function flashPill(text, ms = 2500) {
  * {kind:'cleanup', archived} | {kind:'recovery'} | null. */
 function setTask(task) {
   state.hud.task = task || null;
+  if (task && task.kind !== 'recovery') { if (!state.taskStartedAt) state.taskStartedAt = Date.now(); }
+  else if (!state.quickBusy) state.taskStartedAt = 0;
   renderPill();
 }
 
@@ -3080,12 +3246,41 @@ onPage('reply-monitor', (summary) => {
   }
 });
 
+// ── reply watchdog: auto refresh on error card / empty reply (reference ReplyWatchdog) ──
+/* injected/watchdog.js reports {k, path, generating, len, at, act} for the
+ * open conversation; the pure policy (src/lib/watchdog.js) decides. The
+ * switch (工具 → 回复出错或空白时自动刷新) is read fresh every time, and a
+ * report about a page we already left never reloads the current one. */
+onPage('watch', (payload) => {
+  const status = watchdogParse(payload);
+  if (!status) return;
+  if (state.prefs.autoRefresh === false) return;
+  const here = String(state.nav.path || '').replace(/\/+$/, '');
+  if (here && here !== '/' && here !== status.path.replace(/\/+$/, '')) return;
+  const now = Date.now();
+  const linkTabOpen = !!(EMBED && typeof EMBED.linkTabOpen === 'function' && EMBED.linkTabOpen());
+  const loading = state.loadingAt > 0 && now - state.loadingAt < (EMBED ? 30_000 : 1500);
+  const decision = watchdogDecide(state.watchdog, status, now, { linkTabOpen, loading, taskStartedAt: state.taskStartedAt });
+  state.watchdog = watchdogApplied(state.watchdog, status, decision, now);
+  if (decision.action === 'reload') {
+    const what = status.key === 'empty' ? '模型已结束但页面空白' : '回复显示错误';
+    setStatus(`回复监控：${what}，自动刷新页面`);
+    setTask({ kind: 'recovery' });
+    setTimeout(() => { if (state.hud.task && state.hud.task.kind === 'recovery') setTask(null); }, 4000);
+    requestReload('watchdog');
+  } else if (decision.action === 'track' && decision.reason === WatchdogReason.NAG) {
+    setStatus(WATCHDOG_LOG_NAG);
+    flashPill('回复异常 · 请手动刷新', 4000);
+  }
+});
+
 // ── module: session probe (send into the OPEN conversation, identify this turn)
 const quickState = (t) => { q('ak-quick-state').textContent = t; };
 async function sessionProbe() {
   if (!state.probe || !state.rpc) { quickState('无 Tauri 运行时'); return; }
   if (state.quickBusy) { quickState('上一条探针仍在等待识别…'); return; }
   state.quickBusy = true;
+  if (!state.taskStartedAt) state.taskStartedAt = Date.now();
   const btn = root.querySelector('[data-action="quick-send"]');
   btn.disabled = true;
   try {
@@ -3119,6 +3314,7 @@ async function sessionProbe() {
     }
   } finally {
     state.quickBusy = false;
+    if (!state.hud.task || state.hud.task.kind === 'recovery') state.taskStartedAt = 0;
     btn.disabled = false;
   }
 }

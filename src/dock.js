@@ -27,6 +27,7 @@ import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/se
 import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
 import { pillLabel, turnHeadline } from './lib/pill-layout.js';
+import { initialState as watchdogInitialState, parseStatus as watchdogParse, decide as watchdogDecide, applied as watchdogApplied, Reason as WatchdogReason, LOG_RELOADING as WATCHDOG_LOG_RELOADING, LOG_NAG as WATCHDOG_LOG_NAG } from './lib/watchdog.js';
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -107,6 +108,9 @@ const state = {
   // task (probe / cleanup / recovery) and a transient flash message
   hud: { model: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
   reloadAt: 0,              // last requestReload() (800 ms debounce, reference MainActivity)
+  loadingAt: 0,             // epoch ms a page reload we asked for started (blocks the watchdog ≤ 30 s)
+  taskStartedAt: 0,         // epoch ms the running probe / cleanup / session probe started (0 = none)
+  watchdog: watchdogInitialState(), // reply watchdog policy state (src/lib/watchdog.js)
 };
 
 function sessionRecord(sessionId) {
@@ -156,10 +160,11 @@ function wireTheme() {
 
 // ── settings: page-side feature flags + ball centre ─────────────────────
 const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn', 'ak-pulse-on'], ['monitor', 'monitorOn', 'ak-monitor-on']];
-/* Push the three switches into the arena page (injected snoop / pulse /
- * monitor read window.__ARENAKIT_FLAGS__). Re-applied on every page load. */
+/* Push the switches into the arena page (injected snoop / pulse / monitor /
+ * watchdog read window.__ARENAKIT_FLAGS__). Re-applied on every page load. */
 function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
+  page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
 }
 function wireSettings() {
   for (const [flag, key, id] of FLAG_PREFS) {
@@ -189,6 +194,7 @@ function wireSettings() {
     autoRefresh.checked = state.prefs.autoRefresh !== false;
     autoRefresh.addEventListener('change', () => {
       savePrefs({ autoRefresh: autoRefresh.checked });
+      page('flagSet', 'autoRefresh', autoRefresh.checked);
       setStatus(autoRefresh.checked ? '已开启：回复出错或空白时自动刷新' : '已关闭自动刷新（回复异常仍会记录）');
     });
   }
@@ -216,21 +222,26 @@ async function requestReload(source = 'panel') {
   state.reloadAt = now;
   const running = state.probe?.isRunning ? state.probe.mode : null;
   if (running) {
-    const what = running === 'cleanup' ? '清理正在进行，刷新会中断本次清理。' : '探针正在运行，刷新会中断本次探针。';
-    const ok = await confirmDialog({ title: '刷新页面？', message: what, ok: '停止并刷新', cancel: '取消' });
-    if (!ok) return false;
+    if (source !== 'watchdog') {
+      const what = running === 'cleanup' ? '清理正在进行，刷新会中断本次清理。' : '探针正在运行，刷新会中断本次探针。';
+      const ok = await confirmDialog({ title: '刷新页面？', message: what, ok: '停止并刷新', cancel: '取消' });
+      if (!ok) return false;
+    }
     state.probe.stop();
     await new Promise((r) => setTimeout(r, 300));
   }
-  setStatus(source === 'pull' ? '上拉刷新页面…' : '刷新页面…');
+  if (source === 'watchdog') setStatus(WATCHDOG_LOG_RELOADING);
+  else setStatus(source === 'pull' ? '上拉刷新页面…' : '刷新页面…');
   const btn = root.querySelector('[data-action="page-reload"]');
   if (btn) btn.dataset.loading = 'true';
+  state.loadingAt = now;
   if (EMBED && typeof EMBED.setLoading === 'function') EMBED.setLoading(true);
   if (EMBED) EMBED.close();
   await page('reload');
   // Desktop: the arena webview reloads in place; the dock keeps running, so
-  // clear the header spinner after a moment.
-  if (!EMBED) setTimeout(() => { if (btn) btn.dataset.loading = 'false'; }, 1500);
+  // clear the header spinner after a moment. Embedded, the page (and this
+  // dock) go away — the timer is only a safety net if the reload never came.
+  setTimeout(() => { if (btn) btn.dataset.loading = 'false'; state.loadingAt = 0; }, EMBED ? 30_000 : 1500);
   return true;
 }
 
@@ -283,6 +294,8 @@ function flashPill(text, ms = 2500) {
  * {kind:'cleanup', archived} | {kind:'recovery'} | null. */
 function setTask(task) {
   state.hud.task = task || null;
+  if (task && task.kind !== 'recovery') { if (!state.taskStartedAt) state.taskStartedAt = Date.now(); }
+  else if (!state.quickBusy) state.taskStartedAt = 0;
   renderPill();
 }
 
@@ -898,12 +911,41 @@ onPage('reply-monitor', (summary) => {
   }
 });
 
+// ── reply watchdog: auto refresh on error card / empty reply (reference ReplyWatchdog) ──
+/* injected/watchdog.js reports {k, path, generating, len, at, act} for the
+ * open conversation; the pure policy (src/lib/watchdog.js) decides. The
+ * switch (工具 → 回复出错或空白时自动刷新) is read fresh every time, and a
+ * report about a page we already left never reloads the current one. */
+onPage('watch', (payload) => {
+  const status = watchdogParse(payload);
+  if (!status) return;
+  if (state.prefs.autoRefresh === false) return;
+  const here = String(state.nav.path || '').replace(/\/+$/, '');
+  if (here && here !== '/' && here !== status.path.replace(/\/+$/, '')) return;
+  const now = Date.now();
+  const linkTabOpen = !!(EMBED && typeof EMBED.linkTabOpen === 'function' && EMBED.linkTabOpen());
+  const loading = state.loadingAt > 0 && now - state.loadingAt < (EMBED ? 30_000 : 1500);
+  const decision = watchdogDecide(state.watchdog, status, now, { linkTabOpen, loading, taskStartedAt: state.taskStartedAt });
+  state.watchdog = watchdogApplied(state.watchdog, status, decision, now);
+  if (decision.action === 'reload') {
+    const what = status.key === 'empty' ? '模型已结束但页面空白' : '回复显示错误';
+    setStatus(`回复监控：${what}，自动刷新页面`);
+    setTask({ kind: 'recovery' });
+    setTimeout(() => { if (state.hud.task && state.hud.task.kind === 'recovery') setTask(null); }, 4000);
+    requestReload('watchdog');
+  } else if (decision.action === 'track' && decision.reason === WatchdogReason.NAG) {
+    setStatus(WATCHDOG_LOG_NAG);
+    flashPill('回复异常 · 请手动刷新', 4000);
+  }
+});
+
 // ── module: session probe (send into the OPEN conversation, identify this turn)
 const quickState = (t) => { q('ak-quick-state').textContent = t; };
 async function sessionProbe() {
   if (!state.probe || !state.rpc) { quickState('无 Tauri 运行时'); return; }
   if (state.quickBusy) { quickState('上一条探针仍在等待识别…'); return; }
   state.quickBusy = true;
+  if (!state.taskStartedAt) state.taskStartedAt = Date.now();
   const btn = root.querySelector('[data-action="quick-send"]');
   btn.disabled = true;
   try {
@@ -937,6 +979,7 @@ async function sessionProbe() {
     }
   } finally {
     state.quickBusy = false;
+    if (!state.hud.task || state.hud.task.kind === 'recovery') state.taskStartedAt = 0;
     btn.disabled = false;
   }
 }

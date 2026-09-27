@@ -40,6 +40,9 @@ const ENI_JS: &str = include_str!("../../injected/eni.js");
 // session probe): stateless DOM actions, answered via bridge 'probe-result'.
 const CONVERSATION_RENAME_JS: &str = include_str!("../../injected/conversation-rename.js");
 const PROBE_JS: &str = include_str!("../../injected/probe.js");
+// Conversation watchdog: reports error-card / empty-reply states of the open
+// conversation (`watch` page event); the dock's policy decides on auto reload.
+const WATCHDOG_JS: &str = include_str!("../../injected/watchdog.js");
 // document_idle UI scripts.
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
 const PLUS_JS: &str = include_str!("../../injected/plus.js");
@@ -82,6 +85,7 @@ fn build_init_script(embedded_dock: Option<&str>) -> String {
     guarded(&mut s, "eni", ENI_JS);
     guarded(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
     guarded(&mut s, "probe", PROBE_JS);
+    guarded(&mut s, "watchdog", WATCHDOG_JS);
     // defer UI scripts until the DOM is ready.
     s.push_str("(function(){var run=function(){\n");
     guarded(&mut s, "manager", MANAGER_JS);
@@ -544,7 +548,7 @@ mod tests {
         // bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("try{\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "manager", "plus", "leaderboard"] {
+        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));

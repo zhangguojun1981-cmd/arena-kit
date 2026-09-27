@@ -77,6 +77,7 @@
 | **自动清理**(归档算式标题残留,`onArchived` 钩子同步删本地记录) | 自动清理 | `probe-runner.cleanup` | `probe.js` sidebarList/revealSidebarItem/archive | android `ProbeController.cleanup`、inspector 归档后删记录 |
 | **会话探针**(向当前对话发探针,识别本轮模型) | 会话探针 | `src/lib/session-probe.js` | `probe.js` sendToCurrent | android `quickSend` + TurnTracker |
 | **回复监控**(空回复/报错/中断/停滞 自动标记轮次) | 回复监控 | `src/lib/monitor.js` | `injected/monitor.js`(snoop 帧钩子) | ArenaKit 新增(用户需求) |
+| **回复出错或空白时自动刷新**(页面出现「Something went wrong…please try again / 出现了一些问题…请重试」错误卡,或已发送、流已结束但页面没有任何新输出 → 自动刷新;只在最近 2 分钟有对话活动时评估;同一问题两次观察(≥2 s)才动手,最多自动刷新 2 次(同路径间隔 ≥30 s),再异常只在活动行提醒;链接页 / 加载中 / 探针·清理·会话探针开始 2 分钟内不刷新) | 工具 → 回复监控 开关(`prefs.autoRefresh`,默认开) | `src/lib/watchdog.js`(纯策略,`decide`/`applied`,单测对齐参考 `ReplyWatchdogTest`)+ `dock.js onPage('watch')` → `requestReload('watchdog')` + 胶囊任务 `recovery` | `injected/watchdog.js`(600 ms 轮询 DOM,仅上报 `{k,path,generating,len,at,act}`;`__ARENAKIT_FLAGS__.autoRefresh===false` 时不扫描) | android `assets/watchdog.js` v3 + `web/ReplyWatchdog.kt` |
 | **安卓悬浮球 / 径向工具条 / 卡片面板**(额度环、中心额度% + 模型、路由橙黄、探针/清理进度、单击/双击/长按/拖动) | 内嵌壳 | `src/embed/shell.js`(`ringPalette` / `fitFont` 单测)+ `dock.js renderBall` | — | android `FloatingBallView.kt` / `MainActivity.kt`(ball、dock、gestures、applyBallModel、flashBall) |
 | **顶部 HUD**(模型绿色 / 路由橙黄、`第 N 轮 · 已截获令牌…` → `第 N 轮 · 模型` / `已切换模型 → m`、额度倒计时、后退/前进/刷新) | 顶部 | `dock.js setModelDisplay / setHudStatus` | `lib/page-actions.js navBack/navForward/reload` | android `hudModel` / `hudStatus` / `hudPulse` / nav 按钮 |
 | **设置**(主题 / 悬浮球中心 / 截获会话流 / 额度轮询 / 回复监控) | 设置 | `dock.js wireTheme / wireSettings` | `page-actions flagSet` → `window.__ARENAKIT_FLAGS__` | android DayNight、inspector 监听开关 |
@@ -114,6 +115,7 @@
 | `injected/bridge.js` | ArenaKit 新增 | JS | 页面侧 `window.__ARENAKIT__`:`onToken`/`send`(页面事件→dock)/`on`+`dispatch`(dock→页面)/`storeGet|Set`/`proxyGet`/SPA 导航 `nav` 事件。**必须第一个注入** |
 | `injected/snoop.js` | inspector `snoop.js` | JS→JS | 几乎原样。`postMessage` 目标改为 `__ARENAKIT__.onToken`。**sessionFromUrl 正则必须与 trace.rs 的 streamSession 保持 lockstep**。ArenaKit 加了页面内帧钩子 `__ARENAKIT_MONITOR__`(会话文本不出页面) |
 | `injected/monitor.js` | ArenaKit 新增 | JS | 把 SSE 帧归约为帧数/字节/文本长度/错误帧/结束方式/空闲时长,只上报摘要(`reply-monitor` 事件);停止按钮仍在且 2 分钟无帧 → 停滞 |
+| `injected/watchdog.js` | android `assets/watchdog.js`(v3) | JS→JS | 对话看门狗:错误卡正则 + 「发送后零增长」空回复判定,活动/发送时间戳存 sessionStorage(刷新后仍有参照);`ArenaProbeBridge.onLog('WATCH|…')` 改为 `__ARENAKIT__.send('watch', …)`,`PATH|` 推送省略(bridge.js `nav` 已覆盖) |
 | `injected/pulse.js` | inspector `pulse.js` + android `PulseClient.kt`/`startPulseLoop` | JS/Kotlin→JS | 页面内同源 GET(Cookie 留在页面);60s / 切账号 15s / 429 退避;`pulse` 事件 |
 | `injected/conversation-rename.js` | android `assets/conversation-rename.js` | JS→JS | 逐字节同源。只走 Arena 自带的侧栏 ⋯ 菜单与 Rename/Archive 对话框;归档≠删除 |
 | `injected/probe.js` | android `assets/probe.js` | JS→JS | 无状态 RPC 层 `window.ArenaProbe.call(action, argsJson, reqId)`,结果改由 `__ARENAKIT__.send('probe-result', …)` 回传;`precheck` 增加 `hasDraft/draftIsOwnPrompt/title`。全部安全护栏保留(不覆盖人工草稿、只发算式、发送前确认 Agent Mode) |
@@ -209,6 +211,7 @@ Rust → dock 事件:
 | `nav` | bridge.js | `{path, sessionId, agentPath, title, url, reason}`(SPA 导航) |
 | `probe-result` | probe.js | `{reqId, ok, data}` / `{reqId, ok:false, error}` |
 | `reply-monitor` | monitor.js | `{sessionId, ended:'done'|'abort'|'stalled'|'http', frames, bytes, textChars, errorFrames, lastError, durationMs, idleMs, generating, at}` |
+| `watch` | watchdog.js | `{k:'empty'|'error:<≤40 字>', path, generating, len, at, act}`(仅 `/agent*` `/c/*`;dock 侧再截到 24 字) |
 | `pulse` | pulse.js | `{ok:true, percent, refreshedAt, at}` / `{ok:false, error, retryAfterMs, at}` |
 
 dock → 页面:`arena_command` eval;约定入口 `window.__ARENAKIT__.dispatch(name, payload)`(如 `pulse-refresh`)、`window.ArenaProbe.call(action, argsJson, reqId)`(探针 RPC)、`__AK_*_SET__`(增强脚本开关)。
