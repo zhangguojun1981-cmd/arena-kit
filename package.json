@@ -8,9 +8,13 @@
     "test": "node scripts/check-syntax.mjs && node --test \"tests/**/*.test.mjs\"",
     "check": "node scripts/check-syntax.mjs",
     "preview": "node scripts/serve.mjs",
-    "icons": "python3 scripts/make-icons.py"
+    "icons": "python3 scripts/make-icons.py",
+    "tauri": "tauri"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
   }
 }

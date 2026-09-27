@@ -38,8 +38,8 @@ ArenaKit = 网页套壳(A) + 取证 HUD(B) + 提示词注入。整合了以下�
 ## 快速开始
 
 ```bash
-# 前置:Rust、Node ≥ 20、Tauri CLI v2
-npm install -g @tauri-apps/cli@^2
+# 前置:Rust、Node ≥ 20;Tauri CLI 作为 devDependency 安装
+npm ci
 
 # 前端 / 注入脚本自检(语法门禁 + 单元测试,无需 Rust)
 npm test
@@ -48,14 +48,15 @@ npm test
 npm run preview            # http://localhost:4173/
 
 # 桌面开发
-tauri dev
+npm run tauri dev
 
 # 出 macOS dmg
-tauri build
+npm run tauri build
 
 # 出 Android apk(需 Android SDK/NDK,设置 NDK_HOME)
-tauri android init          # 首次
-tauri android build --apk --debug --target aarch64
+# 注意:必须经 `npm run tauri` 调用,init 会把调用方式记进 Gradle 工程
+npm run tauri -- android init          # 首次
+npm run tauri -- android build --apk --debug --target aarch64
 
 # 重新生成应用图标(需 python3 + Pillow)
 npm run icons

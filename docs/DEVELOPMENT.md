@@ -177,5 +177,5 @@ invoke('arena_command', {js})              → 在 arena WebView 里 eval;Dock �
 
 - **设计令牌**只在 `src/theme.css`(Dock)与 `src/hud.css`(HUD,因在 Shadow DOM 内需自带一份)两处;改色先改令牌,不在组件里写死颜色。
 - **本地自检**:`npm test` = `scripts/check-syntax.mjs`(逐个 classic 脚本 + 组装后的 init bundle 用 `vm.Script` 解析,ESM 用 `node --check`,JSON / HTML 引用检查)+ `node --test tests/`(format / bootstrap / shim)。零依赖,不需要 Rust。
-- **CI(`.github/workflows/build.yml`)**:`web`(npm test)与 `rust-test`(Ubuntu 装 webkit2gtk 等前置后 `cargo test --lib`)并行;都绿后 `macos-dmg`(`tauri build`,产物 dmg)与 `android-apk`(setup-android@v4 装 NDK 26,`tauri android init --ci` → `tauri icon` → `tauri android build --apk --debug --target aarch64`)并行。触发:push 到 `main` / `arena/**`、PR、手动。
+- **CI(`.github/workflows/build.yml`)**:`web`(npm test)与 `rust-test`(Ubuntu 装 webkit2gtk 等前置后 `cargo test --lib`)并行;都绿后 `macos-dmg`(`tauri build`,产物 dmg)与 `android-apk`(setup-android@v4 装 NDK 26,`npm ci` 后 `npm run tauri -- android init --ci` → `tauri icon` → `tauri android build --apk --debug --target aarch64`;**必须经 `npm run tauri` 调用**,因为 init 会把启动方式写进 Gradle 的 rust 插件,裸的全局 `tauri` shim 会被记成 `node tauri` 而找不到模块)并行。触发:push 到 `main` / `arena/**`、PR、手动。
 - **图标**:`scripts/make-icons.py`(Pillow)从矢量描述渲染 1024 主图并派生 32/128/256 PNG 与 `.icns`;Android 图标由 CI 里 `tauri icon` 生成。

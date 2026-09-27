@@ -66,10 +66,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@^2
+      - name: Install Tauri CLI (package-lock pinned)
+        run: npm ci --no-audit --no-fund
       - name: tauri build
-        run: tauri build
+        run: npm run tauri -- build
       - uses: actions/upload-artifact@v5
         with:
           name: arenakit-macos-dmg
@@ -102,16 +102,21 @@ jobs:
         with:
           workspaces: src-tauri
           key: android
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@^2
+      - name: Install Tauri CLI (package-lock pinned)
+        run: npm ci --no-audit --no-fund
+      # The CLI must be invoked through `npm run tauri` here: `tauri android init`
+      # records how it was launched into the generated Gradle project, and the
+      # Gradle rust plugin re-invokes it as `npm run -- tauri android ...`.
+      # A bare global `tauri` shim gets recorded as `node tauri`, which Gradle
+      # cannot resolve (MODULE_NOT_FOUND).
       - name: Android init + build
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
           export ANDROID_NDK_HOME="$NDK_HOME"
           echo "NDK_HOME=$NDK_HOME"
-          tauri android init --ci --skip-targets-install
-          tauri icon src-tauri/icons/icon.png
-          tauri android build --apk --debug --target aarch64
+          npm run tauri -- android init --ci --skip-targets-install
+          npm run tauri -- icon src-tauri/icons/icon.png
+          npm run tauri -- android build --apk --debug --target aarch64
       - uses: actions/upload-artifact@v5
         with:
           name: arenakit-android-apk
