@@ -391,7 +391,7 @@ async fn run_cleanup(app: &AppHandle, host: &dyn Host, label: &str, cancel: Arc<
     let mut ok = 0u32;
     let mut failed = 0u32;
     let mut sidebar_opened = false;
-    let mut outcome;
+    let outcome;
     log(host, label, "扫描侧栏算式标题…".into());
     'sweep: {
         // Open the sidebar ONCE up front; later scans pass expand=false.

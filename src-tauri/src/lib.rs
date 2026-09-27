@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use probe::Host;
 use sessions::{tab_id_from_label, Account, AccountBook, AccountInput, TabList};
 
 // ── injected scripts (bundled at compile time) ───────────────────────────
