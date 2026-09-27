@@ -15,6 +15,7 @@ import { createRpc } from './lib/rpc.js';
 import { buildTitle, sanitizePrefix, createRenameGate } from './lib/rename.js';
 import { parseTargets, DEFAULT_TARGETS } from './lib/probe-logic.js';
 import { createProbeController } from './lib/probe-runner.js';
+import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/session-probe.js';
 
 const q = (id) => document.getElementById(id);
 const setStatus = (t) => { q('ak-status').textContent = t; };
@@ -38,6 +39,7 @@ const state = {
   renameGate: null,         // createRenameGate() — auto-rename once per conversation
   renaming: false,          // a rename dialog is being driven right now
   probe: null,              // createProbeController() — auto probe / cleanup / quick send
+  quickBusy: false,         // a session probe is in flight
 };
 
 function sessionRecord(sessionId) {
@@ -58,6 +60,8 @@ const DEFAULT_PREFS = {
   probeFindAll: true,
   probeRename: true,
   cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
+  quickText: '',            // session probe text ('' = random arithmetic)
+  quickRename: false,       // rename the conversation after the session probe identifies its model
 };
 
 // ── page event routing (arena page → dock) ──────────────────────────────
@@ -457,6 +461,54 @@ function wireProbe() {
   setProbeRunningUi(false);
 }
 
+// ── module: session probe (send into the OPEN conversation, identify this turn)
+const quickState = (t) => { q('ak-quick-state').textContent = t; };
+async function sessionProbe() {
+  if (!state.probe || !state.rpc) { quickState('无 Tauri 运行时'); return; }
+  if (state.quickBusy) { quickState('上一条探针仍在等待识别…'); return; }
+  state.quickBusy = true;
+  const btn = document.querySelector('[data-action="quick-send"]');
+  btn.disabled = true;
+  try {
+    await savePrefs({ quickText: q('ak-quick-text').value, quickRename: q('ak-quick-rename').checked });
+    let text;
+    try { text = sessionProbeText(state.prefs.quickText); } catch (e) { quickState(String(e.message || e)); return; }
+    const pre = await state.rpc.call('precheck').catch((e) => { quickState('无法读取页面状态: ' + (e.message || e)); return null; });
+    if (!pre) return;
+    const go = sessionProbePrecheck(pre, { probeRunning: state.probe.isRunning });
+    if (!go.ok) { quickState(go.reason); return; }
+    const sessionId = pre.session || null;
+    const afterTurn = sessionId && state.tracker.sessionId === sessionId ? state.tracker.turnCount : 0;
+    quickState(`发送 "${text.slice(0, 40)}"…${go.reason ? ' · ' + go.reason : ''}`);
+    const sent = await state.probe.quickSend(text);
+    if (!sent.ok) { quickState(sent.message); return; }
+    quickState('已发送，等待本轮 trace 识别模型…');
+    const hit = await awaitTurnModel({ tracker: state.tracker, afterTurn, sessionId });
+    if (!hit) { quickState('等待超时：本轮未识别到模型（trace 可能未包含模型标签）'); return; }
+    const routed = state.tracker.firstModel && hit.model !== state.tracker.firstModel;
+    quickState(`第 ${hit.turn} 轮实际模型：${hit.models.join(' / ')}${routed ? `（非首轮模型 ${state.tracker.firstModel}）` : ''}`);
+    setStatus(`会话探针：第 ${hit.turn} 轮 → ${hit.model}`);
+    if (state.prefs.quickRename) {
+      const sid = sessionId || state.tracker.sessionId || state.nav.sessionId;
+      if (!sid) { quickState(q('ak-quick-state').textContent + ' · 无会话 ID，未重命名'); return; }
+      try {
+        await renameConversation(sid, buildTitle({ prefix: state.prefs.renamePrefix, model: hit.model }), { reason: '会话探针' });
+      } catch (e) {
+        quickState(q('ak-quick-state').textContent + ' · 重命名失败: ' + (e.message || e));
+      }
+    }
+  } finally {
+    state.quickBusy = false;
+    btn.disabled = false;
+  }
+}
+function wireSessionProbe() {
+  q('ak-quick-text').value = state.prefs.quickText || '';
+  q('ak-quick-rename').checked = !!state.prefs.quickRename;
+  q('ak-quick-text').addEventListener('change', () => savePrefs({ quickText: q('ak-quick-text').value }));
+  q('ak-quick-rename').addEventListener('change', (e) => savePrefs({ quickRename: e.target.checked }));
+}
+
 // ── module: rename conversation (prefix + manual / auto) ────────────────
 // Rename goes through Arena's own sidebar ⋯ → Rename dialog (probe.js →
 // conversation-rename.js), never a private endpoint. Auto-rename fires at most
@@ -561,6 +613,8 @@ function wireControls() {
         startProbe();
       } else if (a === 'probe-stop') {
         if (state.probe?.stop()) probeLog('正在停止…');
+      } else if (a === 'quick-send') {
+        sessionProbe();
       } else if (a === 'cleanup-start') {
         startCleanup();
       } else if (a === 'cleanup-stop') {
@@ -607,6 +661,7 @@ async function boot() {
   wireRename();
   wireProbe();
   wireCleanup();
+  wireSessionProbe();
   if (state.rpc) state.probe = createDockProbe();
   await loadHistoryIndex();
   if (!state.tauri) {

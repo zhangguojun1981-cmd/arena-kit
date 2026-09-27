@@ -101,6 +101,21 @@
   </section>
 
   <section class="ak-mod">
+    <div class="ak-mod-head"><span>会话探针（当前对话）</span><span class="ak-chev">▾</span></div>
+    <div class="ak-mod-body">
+      <div class="ak-sub">在当前打开的对话里发送一条探针消息（消耗额度，不新建对话），用本轮 trace 识别「这一轮」实际应答的模型。留空则发送随机算式。</div>
+      <label class="ak-field"><span>探针内容（可选）</span>
+        <input id="ak-quick-text" class="ak-input" type="text" maxlength="8000" placeholder="留空 = 随机算式，如 473×82=" autocomplete="off" />
+      </label>
+      <label class="ak-switch"><input type="checkbox" id="ak-quick-rename" /> 识别后按模型名重命名当前对话</label>
+      <div class="ak-btns">
+        <button class="ak-btn ak-btn-sm" data-action="quick-send">发送到当前对话</button>
+      </div>
+      <div id="ak-quick-state" class="ak-sub"></div>
+    </div>
+  </section>
+
+  <section class="ak-mod">
     <div class="ak-mod-head"><span>重命名对话</span><span class="ak-chev">▾</span></div>
     <div class="ak-mod-body">
       <label class="ak-field"><span>标题前缀（可选）</span>
