@@ -1,7 +1,7 @@
 {
   "name": "arena-kit-tests",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Zero-dependency node:test suites for ArenaKit's pure JS logic (src/lib) and injected page scripts (injected/*.js). No bundler, no npm install needed.",
   "type": "module",
   "scripts": {
