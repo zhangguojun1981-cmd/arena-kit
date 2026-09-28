@@ -30,6 +30,7 @@ import { pillLabel, turnHeadline } from './lib/pill-layout.js';
 import { initialState as watchdogInitialState, parseStatus as watchdogParse, decide as watchdogDecide, applied as watchdogApplied, Reason as WatchdogReason, LOG_RELOADING as WATCHDOG_LOG_RELOADING, LOG_NAG as WATCHDOG_LOG_NAG } from './lib/watchdog.js';
 import { accountLabel, accountEmail, initialOf, hasSession, canLogin, loginStageText, sessionAgeText } from './lib/accounts.js';
 import { createAccountFlow } from './lib/account-flow.js';
+import { resolveModel, SOURCE_TEXT } from './lib/model-resolve.js';
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -114,7 +115,7 @@ const state = {
   pulse: createPulseState(), // daily quota % + anchored reset countdown
   // header + status-pill display state: model/routed/pending, the running
   // task (probe / cleanup / recovery) and a transient flash message
-  hud: { model: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
+  hud: { model: '', source: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
   reloadAt: 0,              // last requestReload() (800 ms debounce, reference MainActivity)
   loadingAt: 0,             // epoch ms a page reload we asked for started (blocks the watchdog ≤ 30 s)
   taskStartedAt: 0,         // epoch ms the running probe / cleanup / session probe started (0 = none)
@@ -150,6 +151,10 @@ function aliasSession(pageId, streamId) {
   state.aliases.set(pageId, streamId);
   // drop the oldest instead of forgetting everything
   while (state.aliases.size > MAX_ALIASES) state.aliases.delete(state.aliases.keys().next().value);
+  // 0.4.9: the history record remembers its page ids too (survives a lost alias map)
+  if (state.history && state.historyIndex.has(streamId)) {
+    state.history.linkPage(streamId, pageId).then((r) => { if (r) state.historyIndex.set(streamId, r); }).catch(() => {});
+  }
   clearTimeout(aliasSaveTimer);
   aliasSaveTimer = setTimeout(() => {
     state.store?.set(ALIASES_KEY, Object.fromEntries(state.aliases)).catch(() => {});
@@ -351,10 +356,11 @@ async function requestReload(source = 'panel') {
 /* Every place that learns something about the current conversation's model
  * goes through here, so the header, the 服务端模型 module and (on Android)
  * the floating ball never disagree. `known` false = placeholder text. */
-function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '' } = {}) {
+function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '', source = 'live' } = {}) {
   const t = String(text || '');
   const hud = q('ak-hud-model');
-  const label = known && t ? t + (strength ? ' · ' + strength : '') : '模型待确认';
+  const label = known && t ? t + (strength ? ' · ' + strength : '') + (source === 'title' ? '（标题推断）' : '') : '模型待确认';
+  state.hud.source = known && t ? source : '';
   hud.textContent = label;
   hud.dataset.known = String(!!(known && t));
   hud.dataset.routed = String(!!routed);
@@ -369,7 +375,60 @@ function setModelDisplay(text, { routed = false, known = true, pending = false, 
 function showLastKnownModel() {
   const t = state.tracker;
   if (t && t.lastModel) { setModelDisplay(t.lastModel, { routed: !!t.routed, known: true }); return; }
+  // nothing identified in this run → the local record / runs / title (0.4.9)
+  if (refreshCurrentModel('fallback', { force: true })) return;
   setModelDisplay('', { known: false });
+}
+/* Re-resolve the on-screen conversation's model from every local source
+ * (lib/model-resolve.js). Runs when a source changes: history / aliases
+ * loaded, a trace ended without labels, a same-conversation nav while the
+ * header is empty. Only fills an empty / weaker display; never overrides a
+ * model identified in this run or the 识别中… state (unless forced by the
+ * trace ending). Returns true when something is shown. */
+const SOURCE_RANK = { '': 0, title: 1, turns: 2, runs: 3, history: 4, live: 5 };
+function resolveCurrent() {
+  return resolveModel({
+    pageId: state.nav.sessionId,
+    conversationFor,
+    sessions: state.sessions,
+    historyIndex: state.historyIndex,
+    tracker: state.tracker,
+    title: state.nav.title,
+    prefix: state.prefs.renamePrefix || '',
+  });
+}
+function refreshCurrentModel(reason, { force = false } = {}) {
+  if (!state.nav.sessionId) return false;
+  if (state.hud.pending && !force) return false;
+  const r = resolveCurrent();
+  if (!r.models.length) return false;
+  if (state.hud.model && (SOURCE_RANK[state.hud.source] || 0) >= (SOURCE_RANK[r.source] || 0)) return true;
+  applyResolved(r, { rebuild: r.source !== 'turns' && (state.tracker.sessionId !== r.sid || !state.tracker.turns.length) });
+  if (reason !== 'fallback') console.debug('[dock] model re-resolved', reason, r.source);
+  return true;
+}
+/* Show a resolveModel() result for the conversation on screen. */
+function applyResolved(r, { rebuild = true } = {}) {
+  if (r.pageMatch && r.sid) aliasSession(state.nav.sessionId, r.sid); // learned from record.pageIds
+  const sid = r.sid || conversationFor(state.nav.sessionId);
+  if (r.record && !state.sessions.has(sid)) restoreFromHistory(sid);
+  const rec = state.sessions.get(sid);
+  const last = rec?.runs?.at(-1);
+  if (!state.current.sessionId || state.current.sessionId !== sid) state.current = { sessionId: sid, runId: last?.runId || null };
+  if (rebuild) {
+    if (r.record) rebuildTrackerFromRecord(sid, r.record);
+    else if (state.tracker.sessionId !== sid) { state.tracker.reset(sid); renderTurns(); }
+  }
+  if (r.models.length) {
+    setModelDisplay(r.models.map((m) => m.model).join(' / '), { known: true, source: r.source, routed: r.source === 'live' && !!state.tracker.routed });
+    q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', SOURCE_TEXT[r.source] || ''].filter(Boolean).join(' · ');
+    setHudStatus(r.source === 'live' ? (state.turnHead || SOURCE_TEXT.live) : r.source === 'title' ? '按会话标题推断的模型（未验证）· 发一条消息后识别' : '已恢复本地记录的模型（非重新验证）');
+  } else {
+    setModelDisplay('', { known: false });
+    q('ak-model-sub').textContent = '此对话尚无本地记录';
+    setHudStatus('此对话尚无本地记录 · 发一条消息后识别');
+  }
+  renderUsage();
 }
 function setHudStatus(text) {
   state.hud.status = String(text || '');
@@ -672,7 +731,8 @@ async function saveHistory(sessionId, runId, models, usage, runKey = runId) {
   const title = conversationFor(state.nav.sessionId) === sessionId ? state.nav.title : undefined;
   try {
     const turn = state.tracker.sessionId === sessionId ? state.tracker.turnOf(runKey) : undefined;
-    const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: turn ?? undefined });
+    const pageId = state.nav.sessionId && state.nav.sessionId !== sessionId && conversationFor(state.nav.sessionId) === sessionId ? state.nav.sessionId : undefined;
+    const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: turn ?? undefined, pageId });
     state.historyIndex.set(sessionId, record);
     renderHistory();
     renderUsage();
@@ -680,15 +740,26 @@ async function saveHistory(sessionId, runId, models, usage, runKey = runId) {
     setStatus('已识别模型，但本地保存失败: ' + (e?.message || e));
   }
 }
-async function loadHistoryIndex() {
-  if (!state.history) return;
+const HISTORY_RETRY_MS = [2000, 5000, 15000, 30000];
+async function loadHistoryIndex(attempt = 0) {
+  if (!state.history) return false;
+  let ok = false;
   try {
     const list = await state.history.list();
-    state.historyIndex = new Map(list.map((r) => [r.sessionId, r]));
+    // keep records saved while the read was in flight
+    const next = new Map(list.map((r) => [r.sessionId, r]));
+    for (const [k, v] of state.historyIndex) if (!next.has(k)) next.set(k, v);
+    state.historyIndex = next;
     state.historyCarry = await state.history.carry();
-  } catch (e) { setStatus('读取历史失败: ' + (e?.message || e)); }
+    ok = true;
+  } catch (e) {
+    setStatus('读取历史失败: ' + (e?.message || e) + (attempt < HISTORY_RETRY_MS.length ? '（稍后重试）' : ''));
+    if (attempt < HISTORY_RETRY_MS.length) setTimeout(() => { loadHistoryIndex(attempt + 1); }, HISTORY_RETRY_MS[attempt]);
+  }
   renderHistory();
   renderUsage();
+  if (ok) refreshCurrentModel('history');
+  return ok;
 }
 function historyRows() {
   return [...state.historyIndex.values()].sort((a, b) => String(b.lastSeen).localeCompare(String(a.lastSeen)));
@@ -859,26 +930,15 @@ onPage('nav', (n) => {
     // Same conversation the tracker is already following (e.g. URL caught up
     // after the token) — keep the live turn state.
     state.current = { sessionId: sid, runId: state.current.runId };
-  } else if (switched && (state.sessions.has(sid) || restoreFromHistory(sid))) {
-    // Back to a known conversation: show its remembered model (local record,
-    // not re-verified) until a new turn produces a fresh trace.
-    const rec = state.sessions.get(sid);
-    const last = rec.runs.at(-1);
-    state.current = { sessionId: sid, runId: last?.runId || null };
-    const record = state.historyIndex.get(sid);
-    if (record) rebuildTrackerFromRecord(sid, record); else { state.tracker.reset(sid); renderTurns(); }
-    setModelDisplay(rec.models.map((m) => m.model).join(' / '), { known: rec.models.length > 0 });
-    q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', rec.historical ? '本地记录 · 非重新验证' : ''].filter(Boolean).join(' · ');
-    setHudStatus(rec.historical ? '已恢复本地记录的模型（非重新验证）' : (state.turnHead || '本次运行已识别'));
-    renderUsage();
   } else if (switched) {
+    // Another conversation: whatever the local sources know about it (live
+    // runs, the history record by stream id / page id / pageIds, runs, title).
     state.current = { sessionId: sid, runId: null };
-    state.tracker.reset(sid);
-    setModelDisplay('', { known: false });
-    q('ak-model-sub').textContent = '此对话尚无本地记录';
-    setHudStatus('此对话尚无本地记录 · 发一条消息后识别');
-    renderTurns();
-    renderUsage();
+    applyResolved(resolveCurrent(), { rebuild: true });
+  } else if (!state.hud.model && !state.hud.pending) {
+    // same conversation, header still empty (e.g. the page announced it before
+    // the history was loaded, or the title just arrived) → look again
+    refreshCurrentModel('nav');
   }
   renderPill(); // "新对话" / model label follows the page
 });
@@ -1236,7 +1296,9 @@ function firstModelOf(sessionId) {
   const rec = state.sessions.get(sid);
   const live = rec?.models?.[0]?.model;
   if (live) return live;
-  return state.historyIndex.get(sid)?.models?.[0]?.model || state.historyIndex.get(sessionId)?.models?.[0]?.model || '';
+  // stored record by stream id / page id / pageIds (never a title guess: this names conversations)
+  const r = resolveModel({ pageId: sessionId, conversationFor, sessions: state.sessions, historyIndex: state.historyIndex });
+  return r.source && r.source !== 'title' ? (r.models[0]?.model || '') : '';
 }
 
 function renderRenamePreview() {

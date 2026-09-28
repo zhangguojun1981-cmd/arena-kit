@@ -783,6 +783,20 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   // a real switch to an unknown conversation still clears
   emit('arenakit://page', { name: 'nav', payload: { sessionId: 'zz', path: '/agent/zz', title: '', agentPath: true } });
   assert.equal(byId['ak-hud-model'].textContent, '模型待确认');
+  // 0.4.9 hardening: the title arrives a moment later on the SAME page → the
+  // header looks again; a model this device already knows inside the title
+  // is shown as 标题推断 (last resort, never saved)
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: 'zz', path: '/agent/zz', title: '对比 claude-opus-4-1 的回答', agentPath: true } });
+  assert.equal(byId['ak-hud-model'].textContent, 'claude-opus-4-1（标题推断）');
+  assert.match(byId['ak-model-sub'].textContent, /标题推断/);
+  // back to p7: the alias learned earlier resolves to the stored s7 record
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: 'p7', path: '/agent/p7', title: '', agentPath: true } });
+  assert.equal(byId['ak-hud-model'].textContent, 'claude-sonnet-4-5');
+  await settle();
+  const saved = store.get('rs.history.s7');
+  assert.ok(saved && Array.isArray(saved.pageIds) && saved.pageIds.includes('p7'), 'the s7 record remembers its page id p7');
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: 'zz9', path: '/agent/zz9', title: 'Plain question', agentPath: true } });
+  assert.equal(byId['ak-hud-model'].textContent, '模型待确认', 'no source → still honest');
   emit('arenakit://page', { name: 'nav', payload: { sessionId: null, path: '/agent', title: '', agentPath: true } });
   assert.equal(label.textContent, '新对话');
 

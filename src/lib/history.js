@@ -17,6 +17,16 @@ export function conversationUrl(sessionId) {
   return 'https://arena.ai/agent/' + sessionId;
 }
 
+/* Page conversation ids (/agent/{id}) that belong to a record keyed by its
+ * stream session id (0.4.9): the model can be found again after a restart
+ * even when the page id → stream id alias was never learned / got lost. */
+export const MAX_PAGE_IDS = 8;
+export function addPageId(list, pageId, sessionId) {
+  const out = (Array.isArray(list) ? list : []).filter((x) => typeof x === 'string' && x && x !== pageId);
+  if (pageId && pageId !== sessionId && /^[a-zA-Z0-9-]{1,128}$/.test(pageId)) out.push(pageId);
+  return out.slice(-MAX_PAGE_IDS);
+}
+
 export function mergeRecord(previous, input) {
   const url = conversationUrl(input.sessionId);
   if (!Array.isArray(input.models) || !input.models.length) throw new Error('没有已确认模型，不能保存');
@@ -34,7 +44,8 @@ export function mergeRecord(previous, input) {
   const usage = input.usage ? { ...input.usage, ...(Number.isInteger(input.turn) && input.turn > 0 ? { turn: input.turn } : {}) } : null;
   const runs = mergeUsage(old?.runs, usage);
   const title = String(input.title || old?.title || 'Arena 会话').slice(0, 300);
-  return { schemaVersion: 1, sessionId: input.sessionId, url, title, firstSeen: old?.firstSeen || time, lastSeen: time, observations, runs, totals: summarizeUsage(runs) };
+  const pageIds = addPageId(old?.pageIds, input.pageId, input.sessionId);
+  return { schemaVersion: 1, sessionId: input.sessionId, url, title, firstSeen: old?.firstSeen || time, lastSeen: time, observations, runs, totals: summarizeUsage(runs), ...(pageIds.length ? { pageIds } : {}) };
 }
 
 export function isRecord(r) {
@@ -140,6 +151,16 @@ export function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
       const old = await store.get(key(sessionId));
       if (!isRecord(old) || old.sessionId !== sessionId) return null;
       const record = { ...old, title: String(title || old.title).slice(0, 300) };
+      await store.set(key(sessionId), record);
+      return record;
+    }),
+    /* Remember a page id for an existing record (alias learned later). */
+    linkPage: (sessionId, pageId) => enqueue(async () => {
+      const old = await store.get(key(sessionId));
+      if (!isRecord(old) || old.sessionId !== sessionId) return null;
+      const pageIds = addPageId(old.pageIds, pageId, sessionId);
+      if (JSON.stringify(pageIds) === JSON.stringify(old.pageIds || [])) return old;
+      const record = { ...old, pageIds };
       await store.set(key(sessionId), record);
       return record;
     }),

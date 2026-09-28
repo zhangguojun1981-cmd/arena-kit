@@ -1303,6 +1303,16 @@ function conversationUrl(sessionId) {
   return 'https://arena.ai/agent/' + sessionId;
 }
 
+/* Page conversation ids (/agent/{id}) that belong to a record keyed by its
+ * stream session id (0.4.9): the model can be found again after a restart
+ * even when the page id → stream id alias was never learned / got lost. */
+const MAX_PAGE_IDS = 8;
+function addPageId(list, pageId, sessionId) {
+  const out = (Array.isArray(list) ? list : []).filter((x) => typeof x === 'string' && x && x !== pageId);
+  if (pageId && pageId !== sessionId && /^[a-zA-Z0-9-]{1,128}$/.test(pageId)) out.push(pageId);
+  return out.slice(-MAX_PAGE_IDS);
+}
+
 function mergeRecord(previous, input) {
   const url = conversationUrl(input.sessionId);
   if (!Array.isArray(input.models) || !input.models.length) throw new Error('没有已确认模型，不能保存');
@@ -1320,7 +1330,8 @@ function mergeRecord(previous, input) {
   const usage = input.usage ? { ...input.usage, ...(Number.isInteger(input.turn) && input.turn > 0 ? { turn: input.turn } : {}) } : null;
   const runs = mergeUsage(old?.runs, usage);
   const title = String(input.title || old?.title || 'Arena 会话').slice(0, 300);
-  return { schemaVersion: 1, sessionId: input.sessionId, url, title, firstSeen: old?.firstSeen || time, lastSeen: time, observations, runs, totals: summarizeUsage(runs) };
+  const pageIds = addPageId(old?.pageIds, input.pageId, input.sessionId);
+  return { schemaVersion: 1, sessionId: input.sessionId, url, title, firstSeen: old?.firstSeen || time, lastSeen: time, observations, runs, totals: summarizeUsage(runs), ...(pageIds.length ? { pageIds } : {}) };
 }
 
 function isRecord(r) {
@@ -1429,6 +1440,16 @@ function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
       await store.set(key(sessionId), record);
       return record;
     }),
+    /* Remember a page id for an existing record (alias learned later). */
+    linkPage: (sessionId, pageId) => enqueue(async () => {
+      const old = await store.get(key(sessionId));
+      if (!isRecord(old) || old.sessionId !== sessionId) return null;
+      const pageIds = addPageId(old.pageIds, pageId, sessionId);
+      if (JSON.stringify(pageIds) === JSON.stringify(old.pageIds || [])) return old;
+      const record = { ...old, pageIds };
+      await store.set(key(sessionId), record);
+      return record;
+    }),
     get: (sessionId) => enqueue(async () => { conversationUrl(sessionId); const r = await store.get(key(sessionId)); return isRecord(r) && r.sessionId === sessionId ? r : null; }),
     list: () => enqueue(loadAll),
     remove: (sessionId) => enqueue(async () => { conversationUrl(sessionId); await store.set(key(sessionId), null); }),
@@ -1437,7 +1458,7 @@ function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
   };
 }
 
-__exports.HISTORY_PREFIX = HISTORY_PREFIX; __exports.CARRY_KEY = CARRY_KEY; __exports.MAX_ENTRIES = MAX_ENTRIES; __exports.conversationUrl = conversationUrl; __exports.mergeRecord = mergeRecord; __exports.isRecord = isRecord; __exports.recordModels = recordModels; __exports.recordTurns = recordTurns; __exports.searchRecords = searchRecords; __exports.addToCarry = addToCarry; __exports.grandTotals = grandTotals; __exports.exportHistory = exportHistory; __exports.createHistoryStore = createHistoryStore;
+__exports.HISTORY_PREFIX = HISTORY_PREFIX; __exports.CARRY_KEY = CARRY_KEY; __exports.MAX_ENTRIES = MAX_ENTRIES; __exports.conversationUrl = conversationUrl; __exports.MAX_PAGE_IDS = MAX_PAGE_IDS; __exports.addPageId = addPageId; __exports.mergeRecord = mergeRecord; __exports.isRecord = isRecord; __exports.recordModels = recordModels; __exports.recordTurns = recordTurns; __exports.searchRecords = searchRecords; __exports.addToCarry = addToCarry; __exports.grandTotals = grandTotals; __exports.exportHistory = exportHistory; __exports.createHistoryStore = createHistoryStore;
 });
 __define("lib/turns.js", function (__exports, __require) {
 'use strict';
@@ -3076,6 +3097,152 @@ function createAccountFlow(deps) {
 
 __exports.HOME_PATH = HOME_PATH; __exports.VERIFY_MS = VERIFY_MS; __exports.createAccountFlow = createAccountFlow;
 });
+__define("lib/model-resolve.js", function (__exports, __require) {
+'use strict';
+/* Which model does the conversation on screen belong to? (0.4.9)
+ *
+ * The header / pill / 服务端模型 module used to know a conversation's model
+ * only through ONE path: page id → alias → stream id → live runs or the
+ * history record keyed by that stream id. Any gap left "模型待确认":
+ *   - the page announced its conversation before the history / aliases were
+ *     loaded (app start) and nothing looked again;
+ *   - the alias page id → stream id was never learned (conversation opened
+ *     from the sidebar after a restart, stream id ≠ /agent/{id});
+ *   - the history read failed once;
+ *   - a trace arrived without model labels and cleared the display.
+ * resolveModel() walks every local source in order of trust and says where
+ * the answer came from; the dock re-runs it whenever one of those sources
+ * changes. Pure functions, no DOM.
+ *
+ * Sources, best first:
+ *   live      models identified in this app session (trace pipeline)
+ *   history   the stored record: by stream id, by page id, or by a record
+ *             that lists the page id in `pageIds` (saved since 0.4.9)
+ *   runs      the record / live runs' span labels when observations are empty
+ *   turns     the turn tracker's last identified model for this conversation
+ *   title     last resort: a known model name (or the probe's
+ *             "<prefix><model>-NNN" pattern) inside the conversation title —
+ *             shown as 标题推断, never saved as an observation
+ */
+const { recordModels, addPageId, MAX_PAGE_IDS } = __require("lib/history.js");
+const { normalizeModel, sanitizePrefix } = __require("lib/rename.js");
+
+
+
+const uniq = (list) => {
+  const out = [];
+  for (const m of list) if (m && m.model && !out.some((x) => x.model === m.model && x.provider === m.provider)) out.push(m);
+  return out;
+};
+
+/* Span model labels of the newest run that has any. */
+function modelsFromRuns(runs) {
+  const list = Array.isArray(runs) ? runs : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const spans = Array.isArray(list[i] && list[i].spans) ? list[i].spans : [];
+    const models = uniq(spans.map((s) => (s && typeof s.model === 'string' && s.model.trim() ? { model: s.model.trim().slice(0, 200), provider: String(s.provider || '').slice(0, 100) } : null)));
+    if (models.length) return models;
+  }
+  return [];
+}
+
+/* The stored record for a page / stream id: direct key, then pageIds. */
+function findRecord(historyIndex, ids) {
+  if (!historyIndex || typeof historyIndex.get !== 'function') return null;
+  const want = [...new Set((ids || []).filter(Boolean))];
+  for (const id of want) { const r = historyIndex.get(id); if (r) return r; }
+  for (const r of historyIndex.values()) {
+    if (Array.isArray(r && r.pageIds) && want.some((id) => r.pageIds.includes(id))) return r;
+  }
+  return null;
+}
+
+/* Every model name this device has seen (vocabulary for title inference). */
+function knownModels(historyIndex, sessions) {
+  const names = new Set();
+  if (historyIndex && typeof historyIndex.values === 'function') {
+    for (const r of historyIndex.values()) for (const o of (r && r.observations) || []) if (o && o.model) names.add(o.model);
+  }
+  if (sessions && typeof sessions.values === 'function') {
+    for (const s of sessions.values()) for (const m of (s && s.models) || []) if (m && m.model) names.add(m.model);
+  }
+  return [...names];
+}
+
+const MODELISH = /^[a-z0-9][a-z0-9._:/-]{2,99}$/i;
+/* Model name from a conversation title, or ''. */
+function inferModelFromTitle(title, { vocabulary = [], prefix = '' } = {}) {
+  const t = String(title || '').trim();
+  if (!t) return '';
+  // 1. a model this device has already identified, anywhere in the title
+  //    (longest match wins: "claude-opus-4-1" over "claude-opus-4")
+  const nt = normalizeModel(t);
+  let best = '';
+  for (const m of vocabulary) {
+    const nm = normalizeModel(m);
+    if (nm.length >= 4 && nt.includes(nm) && nm.length > normalizeModel(best).length) best = m;
+  }
+  if (best) return best;
+  // 2. the probe / auto-rename pattern "<prefix><model>[-NNN]"
+  let rest = t;
+  const p = sanitizePrefix(prefix);
+  const hadPrefix = !!p && rest.startsWith(p);
+  if (hadPrefix) rest = rest.slice(p.length);
+  const numbered = /-\d{3}$/.test(rest);
+  rest = rest.replace(/-\d{3}$/, '').replace(/…$/, '').trim();
+  if ((hadPrefix || numbered) && MODELISH.test(rest) && /\d/.test(rest) && /[a-z]/i.test(rest)) return rest;
+  return '';
+}
+
+/* Resolve the model(s) to show for a page conversation id.
+ * → { sid, models:[{model,provider}], source, record, pageMatch } */
+function resolveModel({
+  pageId = null,
+  conversationFor = (id) => id,
+  sessions = new Map(),
+  historyIndex = new Map(),
+  tracker = null,
+  title = '',
+  prefix = '',
+} = {}) {
+  const none = { sid: null, models: [], source: '', record: null, pageMatch: false };
+  if (!pageId) return none;
+  const sid = conversationFor(pageId) || pageId;
+  const live = sessions.get(sid);
+  if (live && Array.isArray(live.models) && live.models.length && !live.historical) {
+    return { sid, models: live.models, source: 'live', record: null, pageMatch: false };
+  }
+  const record = findRecord(historyIndex, [sid, pageId]);
+  if (record) {
+    const pageMatch = record.sessionId !== sid && record.sessionId !== pageId;
+    const fromObs = recordModels(record);
+    if (fromObs.length) return { sid: record.sessionId, models: fromObs, source: 'history', record, pageMatch };
+    const fromRuns = modelsFromRuns(record.runs);
+    if (fromRuns.length) return { sid: record.sessionId, models: fromRuns, source: 'runs', record, pageMatch };
+  }
+  if (live) {
+    if (live.models && live.models.length) return { sid, models: live.models, source: 'history', record: null, pageMatch: false };
+    const fromRuns = modelsFromRuns(live.runs);
+    if (fromRuns.length) return { sid, models: fromRuns, source: 'runs', record: null, pageMatch: false };
+  }
+  if (tracker && tracker.sessionId && (tracker.sessionId === sid || tracker.sessionId === pageId) && tracker.lastModel) {
+    return { sid, models: [{ model: tracker.lastModel, provider: '' }], source: 'turns', record: null, pageMatch: false };
+  }
+  const guess = inferModelFromTitle(title || (record && record.title) || '', { vocabulary: knownModels(historyIndex, sessions), prefix });
+  if (guess) return { sid: record ? record.sessionId : sid, models: [{ model: guess, provider: '' }], source: 'title', record, pageMatch: false };
+  return { ...none, sid: record ? record.sessionId : sid, record };
+}
+
+const SOURCE_TEXT = {
+  live: '本次运行已识别',
+  history: '本地记录 · 非重新验证',
+  runs: '本地记录（运行标签）· 非重新验证',
+  turns: '本轮追踪 · 最近识别',
+  title: '标题推断 · 未验证',
+};
+
+__exports.modelsFromRuns = modelsFromRuns; __exports.findRecord = findRecord; __exports.knownModels = knownModels; __exports.inferModelFromTitle = inferModelFromTitle; __exports.resolveModel = resolveModel; __exports.SOURCE_TEXT = SOURCE_TEXT; __exports.addPageId = addPageId; __exports.MAX_PAGE_IDS = MAX_PAGE_IDS;
+});
 __define("dock.js", function (__exports, __require) {
 'use strict';
 /* ArenaKit native side dock logic.
@@ -3110,6 +3277,7 @@ const { pillLabel, turnHeadline } = __require("lib/pill-layout.js");
 const { initialState: watchdogInitialState, parseStatus: watchdogParse, decide: watchdogDecide, applied: watchdogApplied, Reason: WatchdogReason, LOG_RELOADING: WATCHDOG_LOG_RELOADING, LOG_NAG: WATCHDOG_LOG_NAG } = __require("lib/watchdog.js");
 const { accountLabel, accountEmail, initialOf, hasSession, canLogin, loginStageText, sessionAgeText } = __require("lib/accounts.js");
 const { createAccountFlow } = __require("lib/account-flow.js");
+const { resolveModel, SOURCE_TEXT } = __require("lib/model-resolve.js");
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -3194,7 +3362,7 @@ const state = {
   pulse: createPulseState(), // daily quota % + anchored reset countdown
   // header + status-pill display state: model/routed/pending, the running
   // task (probe / cleanup / recovery) and a transient flash message
-  hud: { model: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
+  hud: { model: '', source: '', routed: false, strength: '', pending: false, status: '', task: null, flash: '', flashTimer: 0, alertTimer: 0 },
   reloadAt: 0,              // last requestReload() (800 ms debounce, reference MainActivity)
   loadingAt: 0,             // epoch ms a page reload we asked for started (blocks the watchdog ≤ 30 s)
   taskStartedAt: 0,         // epoch ms the running probe / cleanup / session probe started (0 = none)
@@ -3230,6 +3398,10 @@ function aliasSession(pageId, streamId) {
   state.aliases.set(pageId, streamId);
   // drop the oldest instead of forgetting everything
   while (state.aliases.size > MAX_ALIASES) state.aliases.delete(state.aliases.keys().next().value);
+  // 0.4.9: the history record remembers its page ids too (survives a lost alias map)
+  if (state.history && state.historyIndex.has(streamId)) {
+    state.history.linkPage(streamId, pageId).then((r) => { if (r) state.historyIndex.set(streamId, r); }).catch(() => {});
+  }
   clearTimeout(aliasSaveTimer);
   aliasSaveTimer = setTimeout(() => {
     state.store?.set(ALIASES_KEY, Object.fromEntries(state.aliases)).catch(() => {});
@@ -3431,10 +3603,11 @@ async function requestReload(source = 'panel') {
 /* Every place that learns something about the current conversation's model
  * goes through here, so the header, the 服务端模型 module and (on Android)
  * the floating ball never disagree. `known` false = placeholder text. */
-function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '' } = {}) {
+function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '', source = 'live' } = {}) {
   const t = String(text || '');
   const hud = q('ak-hud-model');
-  const label = known && t ? t + (strength ? ' · ' + strength : '') : '模型待确认';
+  const label = known && t ? t + (strength ? ' · ' + strength : '') + (source === 'title' ? '（标题推断）' : '') : '模型待确认';
+  state.hud.source = known && t ? source : '';
   hud.textContent = label;
   hud.dataset.known = String(!!(known && t));
   hud.dataset.routed = String(!!routed);
@@ -3449,7 +3622,60 @@ function setModelDisplay(text, { routed = false, known = true, pending = false, 
 function showLastKnownModel() {
   const t = state.tracker;
   if (t && t.lastModel) { setModelDisplay(t.lastModel, { routed: !!t.routed, known: true }); return; }
+  // nothing identified in this run → the local record / runs / title (0.4.9)
+  if (refreshCurrentModel('fallback', { force: true })) return;
   setModelDisplay('', { known: false });
+}
+/* Re-resolve the on-screen conversation's model from every local source
+ * (lib/model-resolve.js). Runs when a source changes: history / aliases
+ * loaded, a trace ended without labels, a same-conversation nav while the
+ * header is empty. Only fills an empty / weaker display; never overrides a
+ * model identified in this run or the 识别中… state (unless forced by the
+ * trace ending). Returns true when something is shown. */
+const SOURCE_RANK = { '': 0, title: 1, turns: 2, runs: 3, history: 4, live: 5 };
+function resolveCurrent() {
+  return resolveModel({
+    pageId: state.nav.sessionId,
+    conversationFor,
+    sessions: state.sessions,
+    historyIndex: state.historyIndex,
+    tracker: state.tracker,
+    title: state.nav.title,
+    prefix: state.prefs.renamePrefix || '',
+  });
+}
+function refreshCurrentModel(reason, { force = false } = {}) {
+  if (!state.nav.sessionId) return false;
+  if (state.hud.pending && !force) return false;
+  const r = resolveCurrent();
+  if (!r.models.length) return false;
+  if (state.hud.model && (SOURCE_RANK[state.hud.source] || 0) >= (SOURCE_RANK[r.source] || 0)) return true;
+  applyResolved(r, { rebuild: r.source !== 'turns' && (state.tracker.sessionId !== r.sid || !state.tracker.turns.length) });
+  if (reason !== 'fallback') console.debug('[dock] model re-resolved', reason, r.source);
+  return true;
+}
+/* Show a resolveModel() result for the conversation on screen. */
+function applyResolved(r, { rebuild = true } = {}) {
+  if (r.pageMatch && r.sid) aliasSession(state.nav.sessionId, r.sid); // learned from record.pageIds
+  const sid = r.sid || conversationFor(state.nav.sessionId);
+  if (r.record && !state.sessions.has(sid)) restoreFromHistory(sid);
+  const rec = state.sessions.get(sid);
+  const last = rec?.runs?.at(-1);
+  if (!state.current.sessionId || state.current.sessionId !== sid) state.current = { sessionId: sid, runId: last?.runId || null };
+  if (rebuild) {
+    if (r.record) rebuildTrackerFromRecord(sid, r.record);
+    else if (state.tracker.sessionId !== sid) { state.tracker.reset(sid); renderTurns(); }
+  }
+  if (r.models.length) {
+    setModelDisplay(r.models.map((m) => m.model).join(' / '), { known: true, source: r.source, routed: r.source === 'live' && !!state.tracker.routed });
+    q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', SOURCE_TEXT[r.source] || ''].filter(Boolean).join(' · ');
+    setHudStatus(r.source === 'live' ? (state.turnHead || SOURCE_TEXT.live) : r.source === 'title' ? '按会话标题推断的模型（未验证）· 发一条消息后识别' : '已恢复本地记录的模型（非重新验证）');
+  } else {
+    setModelDisplay('', { known: false });
+    q('ak-model-sub').textContent = '此对话尚无本地记录';
+    setHudStatus('此对话尚无本地记录 · 发一条消息后识别');
+  }
+  renderUsage();
 }
 function setHudStatus(text) {
   state.hud.status = String(text || '');
@@ -3752,7 +3978,8 @@ async function saveHistory(sessionId, runId, models, usage, runKey = runId) {
   const title = conversationFor(state.nav.sessionId) === sessionId ? state.nav.title : undefined;
   try {
     const turn = state.tracker.sessionId === sessionId ? state.tracker.turnOf(runKey) : undefined;
-    const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: turn ?? undefined });
+    const pageId = state.nav.sessionId && state.nav.sessionId !== sessionId && conversationFor(state.nav.sessionId) === sessionId ? state.nav.sessionId : undefined;
+    const record = await state.history.save({ sessionId, title, models, runId, checkedAt: usage?.checkedAt, usage, turn: turn ?? undefined, pageId });
     state.historyIndex.set(sessionId, record);
     renderHistory();
     renderUsage();
@@ -3760,15 +3987,26 @@ async function saveHistory(sessionId, runId, models, usage, runKey = runId) {
     setStatus('已识别模型，但本地保存失败: ' + (e?.message || e));
   }
 }
-async function loadHistoryIndex() {
-  if (!state.history) return;
+const HISTORY_RETRY_MS = [2000, 5000, 15000, 30000];
+async function loadHistoryIndex(attempt = 0) {
+  if (!state.history) return false;
+  let ok = false;
   try {
     const list = await state.history.list();
-    state.historyIndex = new Map(list.map((r) => [r.sessionId, r]));
+    // keep records saved while the read was in flight
+    const next = new Map(list.map((r) => [r.sessionId, r]));
+    for (const [k, v] of state.historyIndex) if (!next.has(k)) next.set(k, v);
+    state.historyIndex = next;
     state.historyCarry = await state.history.carry();
-  } catch (e) { setStatus('读取历史失败: ' + (e?.message || e)); }
+    ok = true;
+  } catch (e) {
+    setStatus('读取历史失败: ' + (e?.message || e) + (attempt < HISTORY_RETRY_MS.length ? '（稍后重试）' : ''));
+    if (attempt < HISTORY_RETRY_MS.length) setTimeout(() => { loadHistoryIndex(attempt + 1); }, HISTORY_RETRY_MS[attempt]);
+  }
   renderHistory();
   renderUsage();
+  if (ok) refreshCurrentModel('history');
+  return ok;
 }
 function historyRows() {
   return [...state.historyIndex.values()].sort((a, b) => String(b.lastSeen).localeCompare(String(a.lastSeen)));
@@ -3939,26 +4177,15 @@ onPage('nav', (n) => {
     // Same conversation the tracker is already following (e.g. URL caught up
     // after the token) — keep the live turn state.
     state.current = { sessionId: sid, runId: state.current.runId };
-  } else if (switched && (state.sessions.has(sid) || restoreFromHistory(sid))) {
-    // Back to a known conversation: show its remembered model (local record,
-    // not re-verified) until a new turn produces a fresh trace.
-    const rec = state.sessions.get(sid);
-    const last = rec.runs.at(-1);
-    state.current = { sessionId: sid, runId: last?.runId || null };
-    const record = state.historyIndex.get(sid);
-    if (record) rebuildTrackerFromRecord(sid, record); else { state.tracker.reset(sid); renderTurns(); }
-    setModelDisplay(rec.models.map((m) => m.model).join(' / '), { known: rec.models.length > 0 });
-    q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', rec.historical ? '本地记录 · 非重新验证' : ''].filter(Boolean).join(' · ');
-    setHudStatus(rec.historical ? '已恢复本地记录的模型（非重新验证）' : (state.turnHead || '本次运行已识别'));
-    renderUsage();
   } else if (switched) {
+    // Another conversation: whatever the local sources know about it (live
+    // runs, the history record by stream id / page id / pageIds, runs, title).
     state.current = { sessionId: sid, runId: null };
-    state.tracker.reset(sid);
-    setModelDisplay('', { known: false });
-    q('ak-model-sub').textContent = '此对话尚无本地记录';
-    setHudStatus('此对话尚无本地记录 · 发一条消息后识别');
-    renderTurns();
-    renderUsage();
+    applyResolved(resolveCurrent(), { rebuild: true });
+  } else if (!state.hud.model && !state.hud.pending) {
+    // same conversation, header still empty (e.g. the page announced it before
+    // the history was loaded, or the title just arrived) → look again
+    refreshCurrentModel('nav');
   }
   renderPill(); // "新对话" / model label follows the page
 });
@@ -4316,7 +4543,9 @@ function firstModelOf(sessionId) {
   const rec = state.sessions.get(sid);
   const live = rec?.models?.[0]?.model;
   if (live) return live;
-  return state.historyIndex.get(sid)?.models?.[0]?.model || state.historyIndex.get(sessionId)?.models?.[0]?.model || '';
+  // stored record by stream id / page id / pageIds (never a title guess: this names conversations)
+  const r = resolveModel({ pageId: sessionId, conversationFor, sessions: state.sessions, historyIndex: state.historyIndex });
+  return r.source && r.source !== 'title' ? (r.models[0]?.model || '') : '';
 }
 
 function renderRenamePreview() {
