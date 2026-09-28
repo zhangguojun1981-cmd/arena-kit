@@ -4,7 +4,7 @@ import { plain } from './helpers.mjs';
 import { jwt, supabaseSession, anonymousSession, chunked, fakeDom } from './account-fixture.mjs';
 
 /* injected/account.js: Supabase cookie → identity, snapshot / restore /
- * clear on a document.cookie jar, watcher events, and the login helper on
+ * clear on a document.cookie jar, watcher events, and the one-tap re-login on
  * fake arena.ai / accounts.google.com pages. The jar honours Max-Age=0 and
  * the Domain attribute so scope detection is exercised for real. */
 
@@ -275,96 +275,9 @@ test('watcher announces the initial state and every auth-cookie change (not unre
   assert.equal(d.lastEvent('account').payload.loggedIn, false);
 });
 
-/* Google's Next controls are wrapper DIVs around the real button
- * (`#identifierNext > div > button`, seen in every public automation recipe
- * for accounts.google.com). Clicking the wrapper does nothing; the helper
- * must click the inner <button>. */
-test('login helper clicks the <button> inside Google\'s #identifierNext / #passwordNext wrapper divs', () => {
-  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/identifier' });
-  const creds = { accountId: 'acc1', email: 'alice@gmail.com', password: 'pw-123', totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', provider: 'google' };
-  const emailIn = d.mk('input', { type: 'email', id: 'identifierId' });
-  const wrap1 = d.mk('div', { id: 'identifierNext' });
-  const mid1 = d.mk('div', {}, '', { parent: wrap1 });
-  const btn1 = d.mk('button', { type: 'button' }, 'Next', { parent: mid1 });
-  assert.equal(plain(d.sandbox.__AK_LOGIN_APPLY__(creds)).started, true);
-  d.flushTimeouts(); d.flushTimeouts();
-  assert.equal(emailIn.value, 'alice@gmail.com');
-  assert.equal(btn1.clicks, 1, 'inner button clicked');
-  assert.equal(wrap1.clicks, 0, 'wrapper div not clicked');
-  assert.equal(mid1.clicks, 0);
-  // password page: same wrapper shape; a role=button wrapper is clicked directly
-  d.clearElements(); d.location.pathname = '/v3/signin/challenge/pwd';
-  const pwdIn = d.mk('input', { type: 'password', name: 'Passwd' });
-  const wrap2 = d.mk('div', { id: 'passwordNext', role: 'button' });
-  const btn2 = d.mk('button', {}, 'Next', { parent: wrap2 });
-  d.tickIntervals(); d.flushTimeouts();
-  assert.equal(pwdIn.value, 'pw-123');
-  assert.equal(wrap2.clicks, 1, 'role=button wrapper is itself the control');
-  assert.equal(btn2.clicks, 0);
-  // hidden wrapper without any button inside → fall back to the visible Next button by text
-  d.clearElements(); d.location.pathname = '/v3/signin/challenge/totp';
-  const totpIn = d.mk('input', { type: 'tel', id: 'totpPin', name: 'totpPin' });
-  const wrap3 = d.mk('div', { id: 'totpNext', hidden: true });
-  const byText = d.mk('button', {}, '下一步');
-  const realNow = d.sandbox.Date.now;
-  d.sandbox.Date.now = () => 59_000; // RFC 6238 vector → 287082
-  d.tickIntervals(); d.flushTimeouts();
-  d.sandbox.Date.now = realNow;
-  assert.equal(totpIn.value, '287082');
-  assert.equal(wrap3.clicks, 0);
-  assert.equal(byText.clicks, 1, 'text match fallback');
-});
-
 test('watcher does not run on foreign hosts (accounts.google.com has no IPC)', () => {
   const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/identifier' });
   d.flushTimeouts(); d.tickIntervals();
-  assert.equal(d.events.length, 0);
-});
-
-/* ── login helper: Google 2-step with TOTP ───────────────────────────── */
-test('login helper fills Google identifier → password → TOTP (code from __AK_TOTP__) and presses Next each time', () => {
-  const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
-  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/identifier' });
-  const creds = { accountId: 'acc1', email: 'alice@gmail.com', password: 'pw-123', totp: secret, provider: 'google' };
-  // step 1: identifier page
-  const emailIn = d.mk('input', { type: 'email', id: 'identifierId' });
-  const next1 = d.mk('button', { id: 'identifierNext' }, 'Next');
-  const r = plain(d.sandbox.__AK_LOGIN_APPLY__(creds));
-  assert.equal(r.started, true);
-  d.flushTimeouts(); // the 50 ms first step
-  assert.equal(emailIn.value, 'alice@gmail.com');
-  assert.deepEqual(emailIn.dispatched, ['input', 'change']);
-  d.flushTimeouts(); // the 450 ms submit
-  assert.equal(next1.clicks, 1);
-  d.tickIntervals();
-  assert.equal(next1.clicks, 1, 'never re-submits the same step');
-  // step 2: password page (SPA route change)
-  d.clearElements(); d.location.pathname = '/v3/signin/challenge/pwd';
-  const pwdIn = d.mk('input', { type: 'password', name: 'Passwd' });
-  const next2 = d.mk('button', { id: 'passwordNext' }, 'Next');
-  d.tickIntervals(); d.flushTimeouts();
-  assert.equal(pwdIn.value, 'pw-123');
-  assert.equal(next2.clicks, 1);
-  // step 3: authenticator page
-  d.clearElements(); d.location.pathname = '/v3/signin/challenge/totp';
-  const totpIn = d.mk('input', { type: 'tel', id: 'totpPin', name: 'totpPin' });
-  const next3 = d.mk('button', { id: 'totpNext' }, 'Next');
-  const realNow = d.sandbox.Date.now;
-  d.sandbox.Date.now = () => 59_000; // RFC 6238 vector → 287082
-  d.tickIntervals(); d.flushTimeouts();
-  d.sandbox.Date.now = realNow;
-  assert.equal(totpIn.value, '287082');
-  assert.equal(next3.clicks, 1);
-  // challenge chooser: prefers the authenticator option, else "Try another way"
-  d.clearElements(); d.location.pathname = '/v3/signin/challenge/selection';
-  const other = d.mk('button', {}, 'Try another way');
-  d.tickIntervals();
-  assert.equal(other.clicks, 1);
-  d.clearElements(); d.location.pathname = '/v3/signin/challenge/selection2';
-  d.mk('button', {}, 'Get a verification code from the Google Authenticator app');
-  d.tickIntervals();
-  assert.equal(d.doc.querySelector('button').clicks, 1);
-  // no IPC on google: nothing was sent through the bridge
   assert.equal(d.events.length, 0);
 });
 
@@ -391,208 +304,186 @@ test('snapshot classifies the page: logged-in / guest / none / broken, and reads
   assert.ok(!s.cookies.some((c) => /verifier|error/.test(c.name)), 'verifier / error cookies never saved with an account');
 });
 
-test('login helper, arena LOGGED OUT (guest) + Google account: navigates straight to /nextjs-api/sign-in/google — no dialog, no clicks', () => withClock(5_000_000, () => {
-  const session = new Map();
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar(), session });
-  const loginBtn = d.mk('button', {}, 'Log In');
-  const google = d.mk('button', {}, 'Continue with Google');
-  d.api.startLogin({ accountId: 'acc1', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
-  d.flushTimeouts(); d.tickIntervals(); d.tickIntervals();
-  assert.deepEqual(d.navigations, [{ how: 'assign', url: GOOGLE_URL(true) }], 'one full-page navigation (guest history linked)');
-  assert.equal(loginBtn.clicks + google.clicks, 0, 'the dialog is never touched');
-  assert.equal(d.lastEvent('login').payload.stage, 'arena-google');
-  assert.equal(JSON.parse(session.get('arenakit.login.try')).n, 1, 'round trip stamped');
-}));
+/* ── one-tap re-login (0.4.9): the manual Google round trip, automated ── */
+const ALICE = (extra = {}) => ({ accountId: 'acc-a', email: 'alice@gmail.com', startedAt: Date.now(), ...extra });
+const stages = (d) => d.events.filter((e) => e.name === 'login').map((e) => e.payload.stage);
+const run = (d, n = 1) => { for (let i = 0; i < n; i++) { d.flushTimeouts(); d.tickIntervals(); } };
 
-test('login helper, arena with NO session cookie yet: waits up to 6 s for the guest session, then goes without linking history', () => withClock(6_000_000, (advance) => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
-  d.api.startLogin({ accountId: 'acc1', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
-  d.flushTimeouts(); d.tickIntervals();
-  assert.equal(d.navigations.length, 0);
-  assert.equal(d.lastEvent('login').payload.stage, 'arena-waiting');
-  advance(6500); d.tickIntervals();
-  assert.deepEqual(d.navigations, [{ how: 'assign', url: GOOGLE_URL(false) }]);
-}));
-
-test('login helper, back on arena after the Google round trip: logged in → done; error cookie / still logged out → reported once, never looped', () => withClock(7_000_000, () => {
-  const startedAt = Date.now();
-  const creds = { accountId: 'acc1', email: 'alice@gmail.com', provider: 'google', startedAt };
-  const tripped = () => new Map([['arenakit.login.try', JSON.stringify({ id: String(startedAt), n: 1, at: Date.now(), method: 'google' })]]);
-  // success: the callback wrote Alice's session
-  const ok = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('alice@gmail.com', 'ua'), session: tripped() });
-  ok.api.startLogin(creds); ok.flushTimeouts();
-  assert.equal(ok.lastEvent('login').payload.stage, 'done');
-  assert.deepEqual(ok.invokes.map((i) => i.cmd), ['login_clear']);
-  assert.equal(ok.navigations.length, 0);
-  // failure: __arena_auth_error from the callback
-  const err = Buffer.from(JSON.stringify({ message: 'no_user_data' })).toString('base64');
-  const bad = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: [...guestJar(), { name: '__arena_auth_error', value: 'base64-' + err }], session: tripped() });
-  bad.api.startLogin(creds); bad.flushTimeouts();
-  const e = bad.lastEvent('login').payload;
-  assert.equal(e.stage, 'error'); assert.match(e.error, /Arena 登录失败：no_user_data/);
-  assert.equal(bad.navigations.length, 0, 'no second attempt');
-  assert.deepEqual(bad.invokes.map((i) => i.cmd), ['login_clear'], 'Rust forgets the creds → no restart on the next page load');
-  // cancelled on Google (back button): still a guest, no error cookie
-  const back = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar(), session: tripped() });
-  back.api.startLogin(creds); back.flushTimeouts(); back.tickIntervals();
-  assert.match(back.lastEvent('login').payload.error, /仍未登录/);
-  assert.equal(back.navigations.length, 0);
-}));
-
-test('login helper, arena LOGGED IN: never touches the page — done for the wanted account, wrong-account for another', () => {
-  const same = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('Alice@Gmail.com', 'ua') });
-  const btn = same.mk('button', {}, 'Log In');
-  same.api.startLogin({ accountId: 'a', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
-  same.flushTimeouts();
-  assert.equal(same.lastEvent('login').payload.stage, 'done');
-  assert.equal(btn.clicks, 0); assert.equal(same.navigations.length, 0);
-  const other = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('bob@gmail.com', 'ub') });
-  other.api.startLogin({ accountId: 'a', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
-  other.flushTimeouts();
-  const p = other.lastEvent('login').payload;
-  assert.equal(p.stage, 'wrong-account'); assert.equal(p.email, 'bob@gmail.com');
-  assert.equal(other.navigations.length, 0, 'no sign-in on top of another logged-in account');
-});
-
-test('login helper, email + password account: POST /nextjs-api/sign-in/email, reload on success, error text on failure, dialog when the endpoint is gone', async () => {
-  const creds = { accountId: 'b', email: 'bob@example.com', password: 'secret', provider: 'email', startedAt: Date.now() };
-  const run = async (reply) => {
-    const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-    const calls = [];
-    d.sandbox.fetch = async (url, init) => { calls.push({ url, init }); return reply; };
-    d.api.startLogin(creds); d.flushTimeouts();
-    await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
-    return { d, calls };
-  };
-  const okRun = await run({ ok: true, status: 200, json: async () => ({ ok: true }) });
-  assert.equal(okRun.calls[0].url, '/nextjs-api/sign-in/email');
-  assert.equal(okRun.calls[0].init.method, 'POST');
-  assert.deepEqual(JSON.parse(okRun.calls[0].init.body), { email: 'bob@example.com', password: 'secret', shouldLinkHistory: true });
-  assert.deepEqual(okRun.d.navigations.map((n) => n.url), ['https://arena.ai/agent'], 'reload into the new session');
-  const badRun = await run({ ok: false, status: 400, json: async () => ({ error: 'Invalid email or password' }) });
-  assert.match(badRun.d.lastEvent('login').payload.error, /Invalid email or password/);
-  assert.equal(badRun.d.navigations.length, 0);
-  const goneRun = await run({ ok: false, status: 404, json: async () => { throw new Error('html'); } });
-  assert.equal(goneRun.d.lastEvent('login').payload.stage, 'arena-dialog');
-  const emailIn = goneRun.d.mk('input', { type: 'email', name: 'email' });
-  goneRun.d.tickIntervals();
-  assert.equal(emailIn.value, 'bob@example.com', 'dialog fallback fills the address');
-});
-
-test('login helper, email account without password (mailed code): dialog once (+1 retry after 12 s), fill address, ask for the code', () => withClock(1_000_000, (advance) => {
+test('re-login needs the account email; no password / TOTP is accepted or kept', () => {
   const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-  const loginBtn = d.mk('button', {}, 'Log In');
-  d.api.startLogin({ accountId: 'a', email: 'bob@example.com', provider: 'email', startedAt: Date.now() });
-  d.flushTimeouts();
+  assert.throws(() => d.api.startLogin({ accountId: 'x' }), /邮箱/);
+  const r = plain(d.sandbox.__AK_LOGIN_APPLY__({ accountId: 'x', email: '' }));
+  assert.equal(r.started, false);
+  assert.equal(typeof d.api.googleSignInUrl, 'function');
+  assert.equal(d.sandbox.__AK_TOTP__, undefined, 'the TOTP lib is gone');
+});
+
+test('re-login on arena (guest): 登录 → tick the terms box (never the marketing one) → Continue with Google', () => withClock(5_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: guestJar() });
+  const loginBtn = d.mk('button', {}, 'Login');
+  d.api.startLogin(ALICE());
+  run(d);
+  assert.equal(loginBtn.clicks, 1, '登录 clicked');
+  assert.equal(stages(d).at(-1), 'arena-open');
+  run(d, 3);
+  assert.equal(loginBtn.clicks, 1, 'not re-clicked inside 10 s');
+  // the sign-in dialog renders
+  const dlg = d.mk('div', { role: 'dialog' }, 'Sign in to Arena');
+  const mLabel = d.mk('label', {}, 'Send me product updates and marketing emails', { parent: dlg });
+  const marketing = d.mk('input', { type: 'checkbox' }, '', { parent: mLabel });
+  const tLabel = d.mk('label', {}, 'I agree to the Terms of Use and Privacy Policy', { parent: dlg });
+  const terms = d.mk('input', { type: 'checkbox' }, '', { parent: tLabel });
+  const google = d.mk('button', {}, 'Continue with Google', { parent: dlg });
+  run(d);
+  assert.equal(terms.clicks, 1, 'terms ticked');
+  assert.equal(terms.checked, true);
+  assert.equal(marketing.clicks, 0, 'marketing opt-in never ticked');
+  assert.equal(google.clicks, 0, 'button waits for the next tick');
+  assert.equal(stages(d).at(-1), 'arena-agree');
+  run(d);
+  assert.equal(google.clicks, 1, 'Continue with Google clicked once');
+  assert.equal(stages(d).at(-1), 'arena-google');
+  assert.equal(JSON.parse(d.sessionStorage.getItem('arenakit.relogin.try')).n, 1, 'round trip recorded');
+  run(d, 5);
+  assert.equal(google.clicks, 1, 'no second OAuth start while Google loads');
   assert.equal(loginBtn.clicks, 1);
-  for (let i = 0; i < 10; i++) { advance(1000); d.tickIntervals(); }
-  assert.equal(loginBtn.clicks, 1, 'no re-click inside 12 s');
-  advance(3000); d.tickIntervals();
-  assert.equal(loginBtn.clicks, 2, 'one retry when no dialog showed up');
-  for (let i = 0; i < 30; i++) { advance(1000); d.tickIntervals(); }
-  assert.equal(loginBtn.clicks, 2, 'and never again');
-  // the dialog renders: email → Continue with email → code
-  const emailIn = d.mk('input', { type: 'email', name: 'email' });
-  const cont = d.mk('button', {}, 'Continue with email');
-  d.tickIntervals(); d.flushTimeouts();
-  assert.equal(emailIn.value, 'bob@example.com');
-  assert.equal(cont.clicks, 1);
-  d.clearElements();
-  d.mk('input', { autocomplete: 'one-time-code', inputmode: 'numeric' });
-  d.tickIntervals();
-  assert.equal(d.lastEvent('login').payload.stage, 'need-code');
-  assert.equal(d.navigations.length, 0);
+  // the click never navigated → after 15 s the button's own URL, once
+  advance(16_000); run(d);
+  assert.deepEqual(d.navigations.map((n) => n.url), [GOOGLE_URL('true')]);
+  advance(16_000); run(d);
+  assert.equal(d.navigations.length, 1);
 }));
 
-test('login helper yields to the user: a real tap pauses it for 10 s (no double sign-in start)', () => withClock(2_000_000, (advance) => {
+test('re-login: a role=checkbox terms control and a button enabled only after ticking', () => withClock(5_100_000, () => {
   const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-  d.api.startLogin({ accountId: 'a', email: 'alice@example.com', provider: 'google', startedAt: Date.now() });
-  d.userEvent('pointerdown', { target: { closest: () => ({}) } });
-  d.flushTimeouts(); d.tickIntervals();
-  assert.equal(d.navigations.length, 0, 'helper did not start a second sign-in on top of the user');
-  assert.equal(d.lastEvent('login').payload.stage, 'user-active');
-  // helper-made (untrusted) events never count as the user
-  advance(10_500);
-  d.userEvent('pointerdown', { isTrusted: false, target: { closest: () => ({}) } });
-  d.tickIntervals();
-  assert.equal(d.navigations.length, 1, 'resumes after the pause');
+  const dlg = d.mk('div', { role: 'dialog' }, '');
+  const box = d.mk('button', { role: 'checkbox', 'aria-checked': 'false' }, '', { parent: dlg });
+  d.mk('span', {}, '我已阅读并同意服务条款', { parent: dlg });
+  const google = d.mk('button', { disabled: '' }, '使用 Google 继续', { parent: dlg });
+  d.api.startLogin(ALICE());
+  run(d);
+  assert.equal(box.attrs['aria-checked'], 'true', 'single unlabeled-ish checkbox in the dialog is ticked');
+  run(d);
+  assert.equal(google.clicks, 0, 'disabled button not clicked');
+  assert.equal(stages(d).at(-1), 'arena-waiting');
+  delete google.attrs.disabled;
+  run(d);
+  assert.equal(google.clicks, 1);
 }));
 
-test('Google side, signed in to Google: account chooser → the target row; not listed → "Use another account"; SMS / backup / phone prompt hand over', () => {
-  const creds = { accountId: 'a', email: 'alice@gmail.com', password: 'pw', provider: 'google' };
+test('re-login: model buttons that merely say "Google" are never clicked on the bare page', () => withClock(5_200_000, () => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
+  const model = d.mk('button', {}, 'Google Gemini 2.5 Pro');
+  const login = d.mk('button', {}, 'Log in');
+  d.api.startLogin(ALICE());
+  run(d, 3);
+  assert.equal(model.clicks, 0);
+  assert.equal(login.clicks, 1);
+  const real = d.mk('a', { href: '/nextjs-api/sign-in/google' }, 'Continue with Google');
+  run(d);
+  assert.equal(real.clicks, 1, 'an explicit sign-in label outside a dialog is fine');
+  assert.equal(model.clicks, 0);
+}));
+
+test('re-login fallback: no login UI within 20 s → the Google sign-in URL (history linked only for a guest)', () => withClock(6_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
+  d.api.startLogin(ALICE());
+  run(d);
+  assert.equal(d.navigations.length, 0);
+  assert.equal(stages(d).at(-1), 'arena-waiting');
+  advance(21_000); run(d);
+  assert.deepEqual(d.navigations.map((n) => n.url), [GOOGLE_URL('true')]);
+  assert.equal(stages(d).at(-1), 'arena-google-direct');
+  const d2 = fakeDom({ hostname: 'arena.ai', pathname: '/' });
+  d2.api.startLogin(ALICE());
+  advance(21_000); run(d2);
+  assert.deepEqual(d2.navigations.map((n) => n.url), [GOOGLE_URL('false')], 'no guest session → nothing to link');
+}));
+
+test('re-login, back on arena after Google: right account → done + login_clear; wrong → wrong-account; still logged out → error once, never loops', () => withClock(7_000_000, () => {
+  const tried = (startedAt) => new Map([['arenakit.relogin.try', JSON.stringify({ id: String(startedAt), n: 1, at: Date.now(), how: 'button' })]]);
+  const c = ALICE();
+  const ok = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: userJar('Alice@gmail.com', 'ua'), session: tried(c.startedAt) });
+  ok.sandbox.__AK_LOGIN_APPLY__(c); run(ok);
+  assert.equal(stages(ok).at(-1), 'done');
+  assert.ok(ok.invokes.some((i) => i.cmd === 'login_clear'));
+  assert.equal(ok.sessionStorage.getItem('arenakit.relogin.try'), null);
+  const other = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: userJar('bob@gmail.com', 'ub') });
+  other.sandbox.__AK_LOGIN_APPLY__(c); run(other);
+  const ev = other.lastEvent('login').payload;
+  assert.equal(ev.stage, 'wrong-account');
+  assert.equal(ev.email, 'bob@gmail.com');
+  const lost = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: guestJar(), session: tried(c.startedAt) });
+  const btn = lost.mk('button', {}, 'Login');
+  lost.sandbox.__AK_LOGIN_APPLY__(c); run(lost, 4);
+  assert.deepEqual(stages(lost), ['error']);
+  assert.equal(btn.clicks, 0, 'no second round trip');
+  assert.equal(lost.navigations.length, 0);
+  assert.ok(lost.invokes.some((i) => i.cmd === 'login_clear'));
+}));
+
+test('re-login yields to the user: a real tap pauses it for 10 s', () => withClock(8_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
+  const loginBtn = d.mk('button', {}, 'Login');
+  d.api.startLogin(ALICE());
+  d.userEvent('pointerdown', {});
+  run(d);
+  assert.equal(loginBtn.clicks, 0);
+  assert.equal(stages(d).at(-1), 'user-active');
+  advance(10_500);
+  d.userEvent('pointerdown', { isTrusted: false }); // our own clicks never count
+  run(d);
+  assert.equal(loginBtn.clicks, 1, 'resumes after the pause');
+}));
+
+test('Google side: account chooser → the target row; confirmation → 继续 (not the account chip); each once', () => {
   const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
-  d.mk('div', { 'data-identifier': 'bob@gmail.com' }, 'Bob');
-  const alice = d.mk('div', { 'data-identifier': 'Alice@gmail.com' }, 'Alice');
-  d.sandbox.__AK_LOGIN_APPLY__(creds); d.flushTimeouts(); d.tickIntervals();
-  assert.equal(alice.clicks, 1, 'target row picked once');
-  const d2 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
-  const bob = d2.mk('div', { 'data-identifier': 'bob@gmail.com' }, 'Bob');
-  const another = d2.mk('li', { role: 'link' }, 'Use another account');
-  d2.sandbox.__AK_LOGIN_APPLY__(creds); d2.flushTimeouts();
-  assert.equal(bob.clicks, 0, 'never picks someone else');
-  assert.equal(another.clicks, 1);
-  // SMS code: waits for the code from the dock, then fills #idvPin (not the TOTP)
-  const d3 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/ipp' });
-  const pin = d3.mk('input', { id: 'idvPin', name: 'Pin' });
-  d3.sandbox.__AK_LOGIN_APPLY__({ ...creds, totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' }); d3.flushTimeouts();
-  assert.equal(pin.value, '', 'an SMS pin never gets the TOTP code');
-  d3.api.call('fill', JSON.stringify({ code: '445566' }), 'f'); d3.flushTimeouts();
-  assert.equal(pin.value, '445566');
-  // backup-code page without a TOTP secret, and a phone prompt → the user
-  const d4 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/bc' });
-  d4.mk('input', { id: 'backupCodePinInput' });
-  let stage = '';
-  d4.sandbox.console = { debug: (_t, p) => { stage = p.stage; }, log() {}, warn() {}, error() {} };
-  d4.sandbox.__AK_LOGIN_APPLY__(creds); d4.flushTimeouts();
-  assert.equal(stage, 'need-backup');
-  // method chooser with data-challengetype: Authenticator (6) for a TOTP account
-  const d5 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/selection' });
-  d5.mk('div', { 'data-challengetype': '9' }, 'Get a text message');
-  const auth = d5.mk('div', { 'data-challengetype': '6' }, 'Get a code');
-  d5.sandbox.__AK_LOGIN_APPLY__({ ...creds, totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' }); d5.flushTimeouts();
-  assert.equal(auth.clicks, 1);
+  const bob = d.mk('div', { 'data-identifier': 'bob@gmail.com' }, 'Bob');
+  const alice = d.mk('div', { 'data-identifier': 'Alice@Gmail.com' }, 'Alice');
+  d.mk('div', { role: 'link' }, 'Use another account');
+  assert.equal(plain(d.sandbox.__AK_LOGIN_APPLY__(ALICE())).started, true);
+  run(d, 3);
+  assert.equal(alice.clicks, 1, 'target picked once');
+  assert.equal(bob.clicks, 0);
+  assert.match(d.doc.getElementById('ak-relogin-bar').children[0].textContent, /已选择 alice@gmail.com/);
+  // confirmation page: the chosen account chip + 继续
+  d.clearElements(); d.location.pathname = '/signin/oauth/id';
+  const chip = d.mk('div', { 'data-identifier': 'alice@gmail.com' }, 'alice@gmail.com');
+  d.mk('button', {}, 'Cancel');
+  const cont = d.mk('button', {}, '继续');
+  run(d, 3);
+  assert.equal(cont.clicks, 1);
+  assert.equal(chip.clicks, 0);
+  assert.equal(d.events.length, 0, 'no IPC on google');
 });
 
-test('Google sign-in rescue: same URL 25 s after a tap on an account row → 重试 / 返回 Arena bar; typing clears it', () => withClock(3_000_000, (advance) => {
-  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
-  assert.equal(d.api.checkStall(), '', 'nothing before any tap');
-  const row = d.mk('div', { 'data-identifier': 'alice@gmail.com' }, 'Alice');
-  d.userEvent('pointerdown', { target: { closest: () => row } });
-  advance(20_000);
-  assert.equal(d.api.checkStall(), '', 'still within the grace period');
-  advance(6_000);
-  assert.equal(d.api.checkStall(), 'stall');
-  const bar = d.doc.getElementById('ak-login-rescue');
-  assert.ok(bar, 'rescue bar shown');
-  const labels = bar.children.map((c) => c.textContent);
-  assert.deepEqual(labels.slice(1), ['重试', '返回 Arena']);
-  assert.match(labels[0], /卡住/);
-  // 返回 Arena → leaves for arena.ai
-  bar.children[2].listeners.click[0]({ preventDefault() {}, stopPropagation() {} });
-  assert.equal(d.location.href, 'https://arena.ai/agent');
-  // typing on the page = the user is busy → the timer and the bar go away
-  d.location.href = 'https://accounts.google.com/v3/signin/accountchooser';
-  d.userEvent('keydown', { key: 'a' });
-  assert.equal(d.api.checkStall(), '');
-  assert.equal(d.doc.getElementById('ak-login-rescue'), null);
-  // a tap into a field does not start the timer either
-  d.userEvent('pointerdown', { target: { closest: () => null } });
-  advance(60_000);
-  assert.equal(d.api.checkStall(), '');
-}));
+test('Google side hands over: account not in the chooser, password / 2FA pages, disallowed_useragent — nothing typed or clicked', () => {
+  const notListed = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
+  const bob = notListed.mk('div', { 'data-identifier': 'bob@gmail.com' }, 'Bob');
+  const another = notListed.mk('div', { role: 'link' }, 'Use another account');
+  notListed.sandbox.__AK_LOGIN_APPLY__(ALICE()); run(notListed, 3);
+  assert.equal(bob.clicks + another.clicks, 0);
+  const bar = notListed.doc.getElementById('ak-relogin-bar');
+  assert.match(bar.children[0].textContent, /没有 alice@gmail.com/);
+  assert.equal(bar.children[1].textContent, '返回 Arena');
+  const pwd = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/pwd' });
+  const input = pwd.mk('input', { type: 'password', name: 'Passwd' });
+  const next = pwd.mk('button', {}, 'Continue');
+  pwd.sandbox.__AK_LOGIN_APPLY__(ALICE()); run(pwd, 3);
+  assert.equal(input.value, '', 'no password typed');
+  assert.equal(next.clicks, 0, 'a Continue next to a password field is the user\'s');
+  assert.match(pwd.doc.getElementById('ak-relogin-bar').children[0].textContent, /手动完成/);
+  const blocked = fakeDom({ hostname: 'accounts.google.com', pathname: '/signin/rejected' });
+  blocked.mk('h1', {}, 'Couldn\'t sign you in: This browser or app may not be secure');
+  blocked.sandbox.__AK_LOGIN_APPLY__(ALICE()); run(blocked);
+  assert.match(blocked.doc.getElementById('ak-relogin-bar').children[0].textContent, /disallowed_useragent/);
+});
 
-test('Google sign-in rescue: a pop-up-mode page without an opener is flagged at once (it can never report back in the app)', () => {
-  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/o/oauth2/v2/auth' });
-  d.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&ux_mode=popup&redirect_uri=storagerelay%3A%2F%2Fhttps%2Farena.ai';
-  assert.equal(d.api.checkStall(), 'popup');
-  const bar = d.doc.getElementById('ak-login-rescue');
-  assert.ok(bar);
-  assert.deepEqual(bar.children.slice(1).map((c) => c.textContent), ['返回 Arena']);
-  // a real pop-up (has an opener) is left alone
-  const d2 = fakeDom({ hostname: 'accounts.google.com', pathname: '/o/oauth2/v2/auth' });
-  d2.location.href = d.location.href;
-  d2.sandbox.opener = {};
-  assert.equal(d2.api.checkStall(), '');
-  // never on arena itself
-  assert.equal(fakeDom({ hostname: 'arena.ai', pathname: '/' }).api.checkStall(), '');
+test('re-login on arena that is already logged in as the target: done, the page is not touched', () => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('alice@gmail.com', 'ua') });
+  const btn = d.mk('button', {}, 'Login');
+  d.api.startLogin(ALICE()); run(d);
+  assert.equal(stages(d).at(-1), 'done');
+  assert.equal(btn.clicks, 0);
+  assert.equal(d.navigations.length, 0);
 });

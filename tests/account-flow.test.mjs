@@ -45,7 +45,7 @@ function device(jar = []) {
 /* One page load: page (account.js on the device jar) + dock side (rpc + flow). */
 function boot(dev, { hostname = 'arena.ai', pathname = '/' } = {}) {
   const page = fakeDom({ hostname, pathname, jar: dev.jar, session: dev.session });
-  const log = { status: [], loginStatus: [], toast: [], needLogin: [], navigating: [], saves: 0 };
+  const log = { status: [], loginStatus: [], toast: [], navigating: [], saves: 0 };
   // the page leaving on its own (restore / clear with `navigate`) = a reload
   // of the device onto the new URL; the dock's reload() dep is the fallback
   page.location.replace = (url) => { dev.reloads++; dev.navigations.push(url); dev.jar = cookiesOf(page); page.clearElements(); };
@@ -76,7 +76,6 @@ function boot(dev, { hostname = 'arena.ai', pathname = '/' } = {}) {
     status: (t) => log.status.push(t),
     loginStatus: (t) => log.loginStatus.push(t),
     toast: (t) => log.toast.push(t),
-    needLogin: (a) => log.needLogin.push(a.id),
     sleep: async () => {},
   });
   return { page, flow, rpc, log, dev };
@@ -206,7 +205,7 @@ test('switch: a token rotation between snapshot and restore is caught (expectSig
   const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice', refresh: 'rt-a1' }));
   const app = await start(dev);
   const aliceId = app.flow.accounts.activeId;
-  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', cookies: chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' })), login: { email: '', password: '', totp: '', auto: true } }]) });
+  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', cookies: chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' })) }]) });
   // rotate Alice's token the moment the first restore arrives (before it runs)
   const realCall = app.page.api.call;
   let restores = 0;
@@ -229,9 +228,9 @@ test('switch: a token rotation between snapshot and restore is caught (expectSig
 test('guest leftovers are purged from the store; a switch that lands in the guest state is reported as lost', async () => {
   const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
   dev.store.set('accounts', JSON.stringify({ list: [
-    { id: 'g1', userId: 'anon-111', email: '', cookies: [{ name: 'arena-auth-prod-v1.0', value: 'base64-x' }], login: { email: '', password: '', totp: '', auto: true } },
-    { id: 'g2', userId: 'anon-222', cookies: [], login: {} },
-    { id: 'bob', userId: 'ub', email: 'bob@example.com', cookies: chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' })), login: { email: '', password: '', totp: '', auto: true } },
+    { id: 'g1', userId: 'anon-111', email: '', cookies: [{ name: 'arena-auth-prod-v1.0', value: 'base64-x' }] },
+    { id: 'g2', userId: 'anon-222', cookies: [] },
+    { id: 'bob', userId: 'ub', email: 'bob@example.com', cookies: chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' })) },
   ], activeId: 'g1', pending: null }));
   let app = await start(dev);
   assert.deepEqual(app.flow.accounts.list.map((a) => a.id).filter((id) => id.startsWith('g')), [], 'guest records gone');
@@ -245,14 +244,16 @@ test('guest leftovers are purged from the store; a switch that lands in the gues
   assert.equal(app.flow.accounts.activeId, null);
   assert.ok(app.log.status.some((t) => /bob@example.com 的登录状态已失效（页面回到了游客状态），已清除失效的会话/.test(t)), app.log.status.join(' | '));
   assert.deepEqual(app.flow.find('bob').cookies, [], 'the rejected session is forgotten');
-  // Bob has no typed credentials but an identity email: the helper still
-  // starts (opens the dialog, picks the provider, fills the address; the
-  // password is typed on the page) instead of leaving the user stranded.
+  // no automatic login any more: the card shows 登录 and the user decides
+  assert.equal(app.flow.accounts.pending, null);
+  assert.equal(dev.rust.login, null);
+  assert.match(app.log.status.at(-1), /点该账号的「登录」即可自动重新登录/);
+  // the user taps 登录 → re-login runs on the guest page (no reload needed)
+  assert.equal((await app.flow.startLogin(app.flow.find('bob'))).ok, true);
   assert.deepEqual(app.flow.accounts.pending && { type: app.flow.accounts.pending.type, id: app.flow.accounts.pending.id }, { type: 'login', id: 'bob' });
-  assert.equal(dev.rust.login && dev.rust.login.email, 'bob@example.com');
-  assert.equal(dev.rust.login && dev.rust.login.password, '');
-  assert.match(app.log.loginStatus.at(-1), /未保存密码，请在登录页面输入/);
-  assert.equal((await app.rpc.call('status', {})).running, true, 'page-side helper running on the guest page');
+  assert.deepEqual(Object.keys(dev.rust.login).sort(), ['accountId', 'email', 'startedAt'], 'only who — no credentials');
+  assert.match(app.log.loginStatus.at(-1), /正在重新登录 bob@example.com/);
+  assert.equal((await app.rpc.call('status', {})).running, true, 'page-side re-login running on the guest page');
   await app.flow.stopLogin();
   assert.equal(app.flow.accounts.pending, null);
   assert.equal(await app.flow.saveCurrent(), null);
@@ -263,7 +264,7 @@ test('post-switch verification: the site throwing the restored session away seco
   const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
   let app = await start(dev);
   const bobCookies = chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', name: 'Bob', refresh: 'rt-b' }));
-  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', name: 'Bob', provider: 'google', cookies: bobCookies, capturedAt: Date.now(), login: { email: '', password: '', totp: '', auto: false } }]) });
+  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', name: 'Bob', provider: 'google', cookies: bobCookies, capturedAt: Date.now() }]) });
   assert.equal((await app.flow.switchTo('bob')).ok, true);
   // new page: Bob's cookies are there → first snapshot confirms the switch
   app = await start(dev);
@@ -279,7 +280,7 @@ test('post-switch verification: the site throwing the restored session away seco
   assert.deepEqual(app.flow.find('bob').cookies, [], 'rejected session forgotten');
   assert.equal(app.flow.accounts.activeId, null);
   assert.ok(app.log.status.some((t) => /Bob 的登录状态已失效（页面回到了游客状态），已清除失效的会话/.test(t)), app.log.status.join(' | '));
-  assert.match(app.log.status.at(-1), /请点该账号的「登录」/, 'auto = false → no helper, just the hint');
+  assert.match(app.log.status.at(-1), /点该账号的「登录」即可自动重新登录/, 'no auto-login, just the hint');
   assert.equal(app.flow.accounts.pending, null);
   assert.equal(app.flow.accounts.list.length, 2, 'no guest record');
 
@@ -300,7 +301,7 @@ test('switch race: the old page cannot write its session back after the swap, an
   const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
   let app = await start(dev);
   const bobCookies = chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', name: 'Bob', refresh: 'rt-b' }), 200);
-  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', name: 'Bob', provider: 'google', cookies: bobCookies, capturedAt: Date.now(), login: { email: '', password: '', totp: '', auto: true } }]) });
+  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', name: 'Bob', provider: 'google', cookies: bobCookies, capturedAt: Date.now() }]) });
   const aliceJar = dev.jar.slice();
   assert.equal((await app.flow.switchTo('bob')).ok, true);
   assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
@@ -322,58 +323,52 @@ test('switch race: the old page cannot write its session back after the swap, an
   assert.equal(app.page.api.bootCheck, '', 'stamp consumed by the repair — no loop');
 });
 
-test('switching to an account whose saved session is dead falls back to the login helper (Rust keeps the credentials for accounts.google.com)', async () => {
+test('dead saved session → 需登录; one tap on 登录 runs the manual Google round trip automatically (Rust carries who to accounts.google.com)', async () => {
   const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
   let app = await start(dev);
-  // Carol: an older saved session (cookies present) + credentials for auto-login
+  // Carol: logged in by hand once, an older saved session
   const carolCookies = chunked('arena-auth-prod-v1', supabaseSession({ email: 'carol@gmail.com', id: 'uc', name: 'Carol', refresh: 'rt-stale' }));
-  const seeded = { ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'carol', userId: 'uc', email: 'carol@gmail.com', name: 'Carol', provider: 'google', cookies: carolCookies, capturedAt: Date.now() - 86_400_000, login: { email: 'carol@gmail.com', password: 'pw-c', totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', auto: true } }]) };
+  const seeded = { ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'carol', userId: 'uc', email: 'carol@gmail.com', name: 'Carol', provider: 'google', cookies: carolCookies, capturedAt: Date.now() - 86_400_000 }]) };
   await app.flow.save(seeded);
   assert.equal(await app.flow.switchTo('carol').then((r) => r.mode), 'cookies');
   assert.equal(plain(app.page.api.snapshot()).email, 'carol@gmail.com');
 
-  // The server rejected the stale refresh token: after the reload the site
-  // removed the auth cookies → first snapshot = logged out → 'lost' → helper.
-  rejectRestoredSession(dev, { guest: 'anon-9' }); // the site put its guest session back
+  // The server rejected the stale refresh token → guest page → 'lost'
+  rejectRestoredSession(dev, { guest: 'anon-9' });
   app = await start(dev);
-  assert.ok(app.log.status.some((t) => /Carol 的登录状态已失效（页面回到了游客状态），已清除失效的会话，需要重新登录，正在自动登录/.test(t)), app.log.status.join(' | '));
-  assert.equal(app.flow.accounts.pending.type, 'login');
-  assert.equal(app.flow.accounts.pending.id, 'carol');
-  // the rejected session is forgotten (revoked token families never come back)
+  assert.ok(app.log.status.some((t) => /Carol 的登录状态已失效（页面回到了游客状态），已清除失效的会话/.test(t)), app.log.status.join(' | '));
   assert.deepEqual(app.flow.find('carol').cookies, [], 'dead session dropped from the record');
-  assert.equal(app.flow.find('carol').login.password, 'pw-c', 'typed credentials kept');
-  assert.deepEqual(dev.rust.login && { email: dev.rust.login.email, password: dev.rust.login.password, totp: dev.rust.login.totp, provider: dev.rust.login.provider, accountId: dev.rust.login.accountId },
-    { email: 'carol@gmail.com', password: 'pw-c', totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', provider: 'google', accountId: 'carol' }, 'login_set handed Rust the credentials');
+  assert.equal(app.flow.accounts.pending, null, 'nothing starts by itself');
   assert.equal(app.flow.accounts.activeId, null, 'logged-out page → no current account');
-  assert.match(app.log.loginStatus.at(-1), /登录助手已启动：Carol/);
-  // the page-side helper started on arena.ai (logged-out page → `login` RPC, no reload needed)
-  const status = await app.rpc.call('status', {});
-  assert.equal(status.running, true);
-  // logged OUT (guest) + Google account → straight to the sign-in endpoint,
-  // the site's dialog is never touched
-  const loginBtn = app.page.mk('button', {}, 'Log In');
-  app.page.flushTimeouts();
-  assert.equal(loginBtn.clicks, 0, 'no dialog');
-  assert.match(app.page.navigations.at(-1).url, /^https:\/\/arena\.ai\/nextjs-api\/sign-in\/google\?shouldLinkHistory=true&/);
 
-  // accounts.google.com: no IPC there — Rust's on_page_load evals
-  // __AK_LOGIN_APPLY__(creds) with what login_set stored. Identifier → password → TOTP.
-  const g = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/identifier' });
-  const idIn = g.mk('input', { type: 'email', id: 'identifierId' });
-  g.mk('button', { id: 'identifierNext' }, 'Next');
+  // 登录 tapped
+  assert.equal((await app.flow.startLogin(app.flow.find('carol'))).ok, true);
+  assert.equal(app.flow.accounts.pending.type, 'login');
+  assert.deepEqual({ ...dev.rust.login, startedAt: 0 }, { accountId: 'carol', email: 'carol@gmail.com', startedAt: 0 }, 'login_set: who, not credentials');
+  // arena: 登录 → dialog → 同意 → Continue with Google
+  const page = app.page;
+  const loginBtn = page.mk('button', {}, 'Login');
+  page.flushTimeouts(); page.tickIntervals();
+  assert.equal(loginBtn.clicks, 1);
+  const dlg = page.mk('div', { role: 'dialog' }, '');
+  const lab = page.mk('label', {}, 'I agree to the Terms of Service', { parent: dlg });
+  const agree = page.mk('input', { type: 'checkbox' }, '', { parent: lab });
+  const google = page.mk('button', {}, 'Continue with Google', { parent: dlg });
+  page.tickIntervals(); page.tickIntervals();
+  assert.equal(agree.checked, true);
+  assert.equal(google.clicks, 1);
+
+  // accounts.google.com: no IPC — Rust's on_page_load evals __AK_LOGIN_APPLY__(creds)
+  const g = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
+  g.mk('div', { 'data-identifier': 'alice@example.com' }, 'Alice');
+  const carolRow = g.mk('div', { 'data-identifier': 'carol@gmail.com' }, 'Carol');
   assert.equal(plain(g.sandbox.__AK_LOGIN_APPLY__(dev.rust.login)).started, true);
-  g.flushTimeouts(); g.flushTimeouts();
-  assert.equal(idIn.value, 'carol@gmail.com');
-  g.clearElements(); g.location.pathname = '/v3/signin/challenge/pwd';
-  const pwdIn = g.mk('input', { type: 'password', name: 'Passwd' }); g.mk('button', { id: 'passwordNext' }, 'Next');
-  g.tickIntervals(); g.flushTimeouts();
-  assert.equal(pwdIn.value, 'pw-c');
-  g.clearElements(); g.location.pathname = '/v3/signin/challenge/totp';
-  const totpIn = g.mk('input', { type: 'tel', id: 'totpPin', name: 'totpPin' }); g.mk('button', { id: 'totpNext' }, 'Next');
-  const realNow = g.sandbox.Date.now; g.sandbox.Date.now = () => 59_000; // RFC 6238 vector
-  g.tickIntervals(); g.flushTimeouts();
-  g.sandbox.Date.now = realNow;
-  assert.equal(totpIn.value, '287082', 'the 2FA code came from the saved secret');
+  g.flushTimeouts(); g.tickIntervals();
+  assert.equal(carolRow.clicks, 1, 'chooser: Carol picked');
+  g.clearElements(); g.location.pathname = '/signin/oauth/id';
+  const cont = g.mk('button', {}, 'Continue');
+  g.tickIntervals(); g.tickIntervals();
+  assert.equal(cont.clicks, 1, 'confirmation: 继续');
   assert.equal(g.events.length, 0, 'nothing crosses the bridge on google');
 
   // Back on arena.ai with Carol's new session: pending login → logged-in, Rust cleared.
@@ -387,17 +382,22 @@ test('switching to an account whose saved session is dead falls back to the logi
   assert.equal(app.flow.accounts.list.length, 2, 'no duplicate: matched by userId');
 });
 
-test('targets without a session: credentials → clear + reload into the helper; nothing → refused; failures clear the pending flag', async () => {
+test('targets without a session: an email → clear + reload into the re-login; nothing → refused; failures clear the pending flag; ≤0.4.8 credentials are dropped', async () => {
   const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
   const app = await start(dev);
   const base = app.flow.accounts;
   await app.flow.save({ ...base, list: base.list.concat([
-    { id: 'dave', label: 'Dave', cookies: [], login: { email: 'dave@example.com', password: 'pw-d', totp: '', auto: true } },
-    { id: 'erin', label: 'Erin', cookies: [], login: { email: '', password: '', totp: '', auto: true } },
-    { id: 'junk', email: 'junk@example.com', cookies: [{ name: '_ga', value: 'x' }], login: { email: '', password: '', totp: '', auto: true } },
+    { id: 'dave', label: 'Dave', cookies: [], login: { email: 'dave@example.com', password: 'pw-d', totp: 'SECRET' } },
+    { id: 'erin', label: 'Erin', cookies: [] },
+    { id: 'junk', email: 'junk@example.com', cookies: [{ name: '_ga', value: 'x' }] },
   ]) });
+  // an old record's login block: the email survives, the secrets do not
+  const dave = app.flow.find('dave');
+  assert.equal(dave.email, 'dave@example.com');
+  assert.equal(dave.login, undefined);
+  assert.ok(!JSON.stringify(stored(dev)).includes('pw-d') && !JSON.stringify(stored(dev)).includes('SECRET'), 'no password / TOTP secret persisted');
   // Erin: nothing to go on
-  assert.deepEqual(await app.flow.switchTo('erin'), { ok: false, reason: '该账号没有保存的登录状态，也没有填写登录信息' });
+  assert.deepEqual(await app.flow.switchTo('erin'), { ok: false, reason: '该账号没有保存的登录状态，也没有邮箱可用于重新登录' });
   assert.deepEqual(await app.flow.switchTo(app.flow.accounts.activeId), { ok: false, reason: '已经是当前账号' });
   // junk cookies: restore refuses → pending cleared, page untouched
   const bad = await app.flow.switchTo('junk');
@@ -406,21 +406,21 @@ test('targets without a session: credentials → clear + reload into the helper;
   assert.equal(app.flow.accounts.pending, null);
   assert.equal(plain(app.page.api.snapshot()).email, 'alice@example.com');
   assert.equal(dev.reloads, 0);
-  // Dave: credentials only, page still logged in as Alice → login_set, clear, page leaves for the root
+  // Dave: email only, page still logged in as Alice → login_set, clear, page leaves for /agent
   const r = await app.flow.switchTo('dave');
   assert.deepEqual(r, { ok: true, mode: 'login' });
   assert.equal(dev.rust.login.email, 'dave@example.com');
-  assert.equal(dev.rust.login.provider, 'email', 'no google marker → email flow');
+  assert.equal(dev.rust.login.password, undefined);
   assert.equal(plain(app.page.api.snapshot()).hasAuthCookie, false);
   assert.equal(dev.reloads, 1);
   assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
   assert.deepEqual(app.log.navigating, ['login:/agent']);
   assert.equal(stored(dev).pending.type, 'login');
   assert.equal(stored(dev).list.find((a) => a.id === app.flow.accounts.activeId).cookies.length > 0, true, 'Alice stays saved');
-  // startLogin on an account without credentials asks for them
+  // startLogin on an account without an email: refused with a hint
   const r2 = await app.flow.startLogin(app.flow.find('erin'));
-  assert.equal(r2.ok, false);
-  assert.deepEqual(app.log.needLogin, ['erin']);
+  assert.deepEqual(r2, { ok: false, reason: 'no-email' });
+  assert.match(app.log.status.at(-1), /没有邮箱/);
   // stop: Rust + store + page helper
   await app.flow.stopLogin();
   assert.equal(dev.rust.login, null);

@@ -50,11 +50,9 @@ const WATCHDOG_JS: &str = include_str!("../../injected/watchdog.js");
 // to the in-app link tab instead of replacing the conversation (links.rs is the
 // navigation-level safety net behind it).
 const LINKS_JS: &str = include_str!("../../injected/links.js");
-// Multi-account: RFC 6238 TOTP lib (generated from src/lib/totp.js) and the
-// session snapshot / restore / login helper that uses it. Both run on every
-// page of this webview — accounts.google.com included — so a 2-step login can
-// be filled where no IPC exists.
-const TOTP_JS: &str = include_str!("../../injected/totp.gen.js");
+// Multi-account: session snapshot / restore / one-tap re-login. Runs on every
+// page of this webview — accounts.google.com included — so the Google side of
+// a re-login (account chooser → Continue) works where no IPC exists.
 const ACCOUNT_JS: &str = include_str!("../../injected/account.js");
 // document_idle UI scripts.
 const MANAGER_JS: &str = include_str!("../../injected/manager.js");
@@ -125,8 +123,8 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     // document_start scripts.
     guarded(&mut s, "bridge", BRIDGE_JS);
     guarded(&mut s, "gm-shim", GM_SHIM_JS);
-    // arena only (see ARENA_HOST_FLAG); bridge / TOTP / account run on the
-    // sign-in hosts too — the login helper lives there.
+    // arena only (see ARENA_HOST_FLAG); bridge / account run on the sign-in
+    // hosts too — the Google half of a re-login lives there.
     s.push_str(ARENA_HOST_FLAG);
     guarded_arena(&mut s, "snoop", SNOOP_JS);
     guarded_arena(&mut s, "monitor", MONITOR_JS);
@@ -137,7 +135,6 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     guarded_arena(&mut s, "probe", PROBE_JS);
     guarded_arena(&mut s, "watchdog", WATCHDOG_JS);
     guarded_arena(&mut s, "links", LINKS_JS);
-    guarded(&mut s, "totp", TOTP_JS);
     guarded(&mut s, "account", ACCOUNT_JS);
     // defer UI scripts until the DOM is ready — and only on arena itself: the
     // same webview also shows sign-in pages (accounts.google.com …) where the
@@ -153,9 +150,10 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     s
 }
 
-// ── login helper (multi-account) ─────────────────────────────────────────
-/// Credentials of a login the dock started (email / password / TOTP secret of
-/// one saved account). Memory only, for at most LOGIN_TTL_SECS, and pushed into
+// ── re-login (multi-account) ─────────────────────────────────────────────
+/// The account a re-login is running for ({accountId, email, startedAt} — no
+/// credentials: the old password / TOTP helper is gone). Memory only, for at
+/// most LOGIN_TTL_SECS, and pushed into
 /// the arena webview on every finished page load of arena.ai or a sign-in
 /// host — that is how injected/account.js receives them on
 /// accounts.google.com, where the page has no IPC (capabilities are
@@ -179,7 +177,7 @@ impl LoginState {
             *g = None;
         }
     }
-    /// The pending credentials, dropping them once the TTL has passed.
+    /// The pending re-login target, dropping it once the TTL has passed.
     fn current(&self) -> Option<Value> {
         let mut g = self.pending.lock().ok()?;
         if let Some((_, at)) = g.as_ref() {
@@ -191,7 +189,7 @@ impl LoginState {
     }
 }
 
-/// JS that hands the credentials to injected/account.js (`__AK_LOGIN_APPLY__`).
+/// JS that hands the re-login target to injected/account.js (`__AK_LOGIN_APPLY__`).
 fn login_push_js(creds: &Value) -> String {
     format!(
         "window.__AK_LOGIN_APPLY__&&window.__AK_LOGIN_APPLY__({});",
@@ -215,8 +213,8 @@ fn login_pending_js(state: &LoginState, url: &tauri::Url) -> Option<String> {
     Some(login_push_js(&creds))
 }
 
-/// Dock (or the embedded dock inside the arena page): start a login for one
-/// saved account. `creds` = {accountId, email, password, totp, provider, startedAt}.
+/// Dock (or the embedded dock inside the arena page): start a re-login for one
+/// saved account. `creds` = {accountId, email, startedAt}.
 #[tauri::command]
 fn login_set(state: tauri::State<'_, LoginState>, creds: Value) -> Result<(), String> {
     if !creds.is_object() {
@@ -777,7 +775,7 @@ pub fn run() {
                     // Links to other sites open in a separate window, never
                     // over the conversation (links.rs).
                     .on_navigation(move |url| route_navigation(&nav_app, url))
-                    // Pending account login → hand the credentials to the page
+                    // Pending account login → hand the target to the page
                     // (arena.ai or a sign-in host) once it finished loading.
                     .on_page_load(move |wv, payload| {
                         if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
@@ -828,7 +826,7 @@ pub fn run() {
                 // Links to other sites open in the native link tab layer
                 // (MainActivity overlay), never over the conversation.
                 .on_navigation(move |url| route_navigation(&nav_app, url))
-                // Pending account login → credentials to the page after load
+                // Pending account login → target to the page after load
                 // (the embedded dock died with the previous page, Rust remembers).
                 .on_page_load(move |wv, payload| {
                     if !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
@@ -859,17 +857,17 @@ mod tests {
         assert!(s.starts_with("window.__ARENAKIT_PLATFORM__=\"desktop\";\ntry{\n"));
         assert!(build_init_script(None, "mobile").starts_with("window.__ARENAKIT_PLATFORM__=\"mobile\";\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "totp", "account", "manager", "plus", "leaderboard"] {
+        for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "account", "manager", "plus", "leaderboard"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));
         assert!(!s.contains("dock-embedded init failed"));
-        // the TOTP lib is defined before the account script that uses it, and
-        // both run at document_start (before the deferred UI block)
-        let totp = s.find("[ArenaKit] totp init failed").unwrap();
+        // the account script runs at document_start (before the deferred UI
+        // block); the TOTP lib is gone with the old login helper
+        assert!(!s.contains("totp init failed"));
         let account = s.find("[ArenaKit] account init failed").unwrap();
         let deferred = s.find("var run=function(){").unwrap();
-        assert!(totp < account && account < deferred);
+        assert!(account < deferred);
         // UI scripts / the embedded dock only mount on arena hosts
         assert!(s.contains("(arena\\.ai|lmarena\\.ai)$/.test(location.hostname||''))return;"));
         assert!(s.find("lmarena\\.ai)$/.test(location.hostname").unwrap() < deferred);
@@ -881,7 +879,7 @@ mod tests {
             assert!(flag < gate, "{}", name);
             assert!(!s[gate..at].contains("init failed"), "{} sits in its own gate", name);
         }
-        for name in ["bridge", "totp", "account"] {
+        for name in ["bridge", "account"] {
             let at = s.find(&format!("[ArenaKit] {} init failed", name)).unwrap();
             let open = s[..at].rfind("if(window.__ARENAKIT_ON_ARENA__){");
             let close_before = open.map(|o| s[o..at].contains("init failed',e);}\n}\n")).unwrap_or(true);
@@ -896,7 +894,7 @@ mod tests {
         let google: tauri::Url = "https://accounts.google.com/v3/signin/identifier?x=1".parse().unwrap();
         let other: tauri::Url = "https://example.com/login".parse().unwrap();
         assert!(login_pending_js(&st, &arena).is_none(), "nothing pending");
-        st.set(json!({"accountId": "a1", "email": "a@b.c", "totp": "JBSWY3DPEHPK3PXP"}));
+        st.set(json!({"accountId": "a1", "email": "a@b.c", "startedAt": 1}));
         let js = login_pending_js(&st, &arena).unwrap();
         assert!(js.starts_with("window.__AK_LOGIN_APPLY__&&window.__AK_LOGIN_APPLY__({"));
         assert!(js.contains("\"email\":\"a@b.c\""));

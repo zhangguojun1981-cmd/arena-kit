@@ -292,10 +292,6 @@ button, input, select, textarea { font-family: inherit; }
 .ak-acct-main { flex: 1; min-width: 0; }
 .ak-acct-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
 .ak-acct-sub { font-size: 11px; color: var(--ak-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ak-acct-totp { margin-top: 3px; display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.ak-acct-totp b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; letter-spacing: .12em; color: var(--ak-brand); font-weight: 600; }
-.ak-acct-totp .ak-acct-left { color: var(--ak-sub); font-size: 11px; min-width: 26px; }
-.ak-acct-totp .ak-acct-left[data-low="true"] { color: var(--ak-warn); }
 .ak-acct-actions { flex: none; display: flex; align-items: center; gap: 2px; }
 .ak-acct-actions .ak-btn { margin: 0; padding: 6px 12px; }
 .ak-acct-actions .ak-icon-btn { width: 30px; height: 30px; font-size: 15px; }
@@ -303,9 +299,6 @@ button, input, select, textarea { font-family: inherit; }
 .ak-badge.ak-badge-brand { background: var(--ak-brand-container); color: var(--ak-on-brand-container); }
 .ak-badge.ak-badge-warn { background: var(--ak-badge-warn-bg); color: var(--ak-badge-warn-fg); }
 .ak-acct-current { padding: 6px 0; }
-.ak-acct-code-row { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
-.ak-acct-code-row .ak-input { flex: 1; min-width: 0; }
-.ak-acct-code-row .ak-btn { margin: 0; white-space: nowrap; }
 .ak-item { border-top: 1px solid var(--ak-outline); padding: 6px 0; font-size: 12px; }
 .ak-item .ak-item-title { font-weight: 600; word-break: break-word; }
 .ak-item .ak-item-title.ak-current { color: var(--ak-brand); }

@@ -4,7 +4,7 @@ import { read, plain } from './helpers.mjs';
 /* Shared fixture for the 账号 tests: Supabase session cookies the way
  * @supabase/ssr chunks them, and a tiny DOM with a real-ish document.cookie
  * jar (Max-Age=0 + Domain honoured) that runs the real injected/account.js
- * (+ totp.gen.js) inside a vm context. Used by tests/account.test.mjs
+ * inside a vm context. Used by tests/account.test.mjs
  * (unit) and tests/account-flow.test.mjs (end-to-end switch / add / login). */
 
 export const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -154,7 +154,14 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [], sessi
       get tagName() { return this.tag.toUpperCase(); },
       getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       getClientRects() { return this.attrs.hidden ? [] : [{}]; },
-      click() { this.clicks++; if (typeof this.onclick === 'function') this.onclick(); },
+      click() {
+        this.clicks++;
+        if (this.tag === 'input' && this.attrs.type === 'checkbox') this.checked = !this.checked;
+        else if (this.attrs.role === 'checkbox') this.attrs['aria-checked'] = this.attrs['aria-checked'] === 'true' ? 'false' : 'true';
+        if (typeof this.onclick === 'function') this.onclick();
+      },
+      get disabled() { return 'disabled' in this.attrs; }, checked: !!attrs.checked, parentElement: parent || null,
+      querySelectorAll(sel) { const all = (n) => n.children.flatMap((c) => [c, ...all(c)]); return all(this).filter((e) => e.connected && matches(e, sel)); },
       focus() {}, dispatchEvent(ev) { this.dispatched.push(ev.type); return true; },
       closest() { return null; }, get isConnected() { return this.connected; },
       querySelector(sel) { const all = (n) => n.children.flatMap((c) => [c, ...all(c)]); return all(this).find((e) => e.connected && matches(e, sel)) || null; },
@@ -188,7 +195,6 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [], sessi
   };
   sandbox.window = sandbox; sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(read('injected/totp.gen.js'), sandbox, { filename: 'totp.gen.js' });
   vm.runInContext(read('injected/account.js'), sandbox, { filename: 'account.js' });
   const flushTimeouts = () => { const list = timers.timeouts.splice(0); for (const t of list) t.fn(); };
   const tickIntervals = () => { for (const t of timers.intervals) if (t.fn) t.fn(); };

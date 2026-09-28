@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, canLogin, dropSession, loginStageText, sessionAgeText, PENDING_TTL_MS, loginMethod } from '../src/lib/accounts.js';
+import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, setLabel, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, canLogin, dropSession, loginStageText, sessionAgeText, PENDING_TTL_MS } from '../src/lib/accounts.js';
 
 const snap = (over = {}) => ({
   loggedIn: true, userId: 'ua', email: 'Alice@Example.com', name: 'Alice', avatar: 'https://img/a', provider: 'google', expiresAt: 1_800_000_000_000,
@@ -14,10 +14,11 @@ test('normalizeAccounts tolerates junk and drops empty records', () => {
   assert.equal(st.list.length, 1);
   assert.equal(st.list[0].email, 'a@b.c');
   assert.deepEqual(st.list[0].cookies, [{ name: 'n', value: 'v' }]);
-  assert.equal(st.list[0].login.auto, true, 'auto-login defaults on');
+  assert.equal(st.list[0].login, undefined, 'no login block (credentials) any more');
   assert.equal(st.activeId, 'a');
   assert.deepEqual(st.pending, { type: 'switch', id: 'a' });
   assert.equal(normalizeAccount({ login: { totp: 'X' } }), null, 'no identity, no email, no label → dropped');
+  assert.equal(normalizeAccount({ id: 'o', login: { email: 'Old@b.c', password: 'pw', totp: 'X' } }).email, 'old@b.c', '≤0.4.8 manual record: the login email becomes the email');
   assert.ok(normalizeAccount({ label: '备用' }));
   // guest leftovers (anonymous sessions saved by older builds): a user id, cookies, no email → dropped
   assert.equal(normalizeAccount({ id: 'g', userId: 'anon-1', cookies: [{ name: 'arena-auth-prod-v1.0', value: 'base64-x' }] }), null);
@@ -78,38 +79,27 @@ test('applySnapshot creates a record on first sight, refreshes the same identity
   assert.equal(applySnapshot(s5.state, null).changed, false);
 });
 
-test('a manual record (email + password entered before any login) is claimed by the matching session', () => {
-  const m = upsertLogin(null, null, { email: 'Carol@example.com', password: 'pw', totp: 'JBSWY3DPEHPK3PXP', label: '工作号' });
-  assert.equal(m.created, true);
-  assert.equal(m.account.email, 'carol@example.com');
-  assert.equal(hasLogin(m.account), true);
-  assert.equal(hasSession(m.account), false);
-  assert.equal(accountLabel(m.account), '工作号');
-  const s = applySnapshot(m.state, snap({ userId: 'uc', email: 'carol@example.com', name: 'Carol' }), 10);
-  assert.equal(s.created, false, 'matched by email');
-  assert.equal(s.account.id, m.account.id);
-  assert.equal(s.account.userId, 'uc');
-  assert.equal(s.account.login.password, 'pw', 'login info kept');
-  assert.equal(accountLabel(s.account), '工作号');
-  // editing keeps unknown fields; auto can be switched off
-  const e = upsertLogin(s.state, s.account.id, { auto: false, password: 'new' });
-  assert.equal(e.account.login.auto, false);
-  assert.equal(e.account.login.password, 'new');
-  assert.equal(e.account.login.totp, 'JBSWY3DPEHPK3PXP');
-  assert.deepEqual(credsFor(e.account, { startedAt: 5 }), { accountId: e.account.id, email: 'Carol@example.com', password: 'new', totp: 'JBSWY3DPEHPK3PXP', provider: 'google', startedAt: 5 });
+test('setLabel edits only the 备注名; credsFor carries who, never credentials', () => {
+  const a = applySnapshot(null, snap({ userId: 'uc', email: 'carol@example.com', name: 'Carol' }), 1);
+  const e = setLabel(a.state, a.account.id, '  工作号  ');
+  assert.equal(e.account.label, '工作号');
+  assert.equal(accountLabel(e.account), '工作号');
   assert.equal(initialOf(e.account), '工');
-  // remove
+  assert.equal(e.account.userId, 'uc');
+  assert.equal(setLabel(e.state, 'nope', 'x').account, null);
+  assert.deepEqual(credsFor(e.account, { startedAt: 5 }), { accountId: e.account.id, email: 'carol@example.com', startedAt: 5 });
+  assert.equal(canLogin(e.account), true);
+  assert.equal(canLogin(normalizeAccount({ id: 'l', label: '只有备注' })), false, 'no email → no one-tap re-login');
   const r = removeAccount(setPending(e.state, { type: 'switch', id: e.account.id }), e.account.id);
   assert.equal(r.list.length, 0);
   assert.equal(r.pending, null);
 });
 
-test('planSwitch: cookies first, login helper as fallback, refuses the active account', () => {
+test('planSwitch: cookies first, re-login as fallback, refuses the active account', () => {
   const a = applySnapshot(null, snap(), 1).state;
-  const withB = upsertLogin(a, null, { email: 'bob@example.com', password: 'x' });
-  const b = withB.account;
-  const c = upsertLogin(withB.state, null, { label: '空账号' });
-  const st = c.state;
+  const st = normalizeAccounts({ ...a, list: a.list.concat([{ id: 'b', email: 'bob@example.com' }, { id: 'c', label: '空账号' }]) });
+  const b = st.list.find((x) => x.id === 'b');
+  const c = { account: st.list.find((x) => x.id === 'c') };
   assert.equal(planSwitch(st, a.activeId).ok, false);
   assert.match(planSwitch(st, a.activeId).reason, /当前账号/);
   assert.equal(planSwitch(st, b.id).mode, 'login');
@@ -119,12 +109,11 @@ test('planSwitch: cookies first, login helper as fallback, refuses the active ac
   assert.equal(planSwitch(st2, st.activeId).mode, 'cookies', 'alice has cookies');
 });
 
-test('dropSession forgets a rejected session (record + credentials kept); an identity email alone is enough for the login helper', () => {
+test('dropSession forgets a rejected session (record kept); the identity email is enough for the one-tap re-login', () => {
   const st = applySnapshot(null, snap(), 1).state; // alice, auto-recorded, no typed credentials
   const alice = st.list[0];
   assert.equal(hasSession(alice), true);
-  assert.equal(hasLogin(alice), false);
-  assert.equal(canLogin(alice), true, 'identity email → the helper can open the dialog and fill it');
+  assert.equal(canLogin(alice), true, 'identity email → the chooser row to pick');
   const st2 = applySnapshot(st, snap({ userId: 'ub', email: 'bob@example.com' }), 2).state;
   const dropped = dropSession(st2, alice.id);
   const a2 = dropped.list.find((a) => a.id === alice.id);
@@ -134,9 +123,9 @@ test('dropSession forgets a rejected session (record + credentials kept); an ide
   assert.equal(a2.email, 'alice@example.com', 'record kept');
   assert.equal(dropped.activeId, st2.activeId, 'another account stays active');
   assert.equal(dropSession(st, alice.id).activeId, '', 'dropping the active account clears activeId');
-  assert.equal(planSwitch(dropped, alice.id).mode, 'login', 'no session → helper with the identity email');
+  assert.equal(planSwitch(dropped, alice.id).mode, 'login', 'no session → re-login with the identity email');
   assert.equal(credsFor(a2).email, 'alice@example.com');
-  assert.equal(credsFor(a2).password, '');
+  assert.equal(credsFor(a2).password, undefined);
   // resolvePending lost → the target's session is dropped right there
   const pend = setPending(st2, { type: 'switch', id: alice.id }, 3);
   const r = resolvePending(pend, { loggedIn: false, anonymous: true, hasAuthCookie: true, userId: 'anon-1', email: '' }, 4);
@@ -182,28 +171,16 @@ test('resolvePending interprets the post-reload snapshot for switch / add / logi
 });
 
 test('status texts', () => {
-  assert.equal(loginStageText('google-totp'), 'Google：已填入两步验证码…');
+  assert.equal(loginStageText('google-pick', { email: 'a@b.c' }), 'Google：已选择账号 a@b.c…');
+  assert.equal(loginStageText('google-continue'), 'Google：已点「继续」…');
+  for (const st of ['arena-open', 'arena-agree', 'arena-google', 'arena-google-direct', 'arena-waiting', 'google-waiting', 'google-not-listed', 'google-need-user', 'google-blocked', 'wrong-account', 'user-active', 'done', 'stopped', 'timeout']) assert.doesNotMatch(loginStageText(st), new RegExp('^重新登录：' + st + '$'), st);
   assert.match(loginStageText('error', { error: 'x' }), /x/);
-  assert.equal(loginStageText('weird'), '登录助手：weird');
+  assert.equal(loginStageText('weird'), '重新登录：weird');
   const acc = { cookies: [{ name: 'a', value: 'b' }], capturedAt: 0 };
   assert.equal(sessionAgeText(acc), '已保存登录状态');
   assert.equal(sessionAgeText({ ...acc, capturedAt: 1000 }, 1000 + 5 * 60000), '5 分钟前保存');
   assert.equal(sessionAgeText({ ...acc, capturedAt: 1000 }, 1000 + 3 * 3600000), '3 小时前保存');
   assert.equal(sessionAgeText({ cookies: [] }), '未保存登录状态');
-});
-
-test('loginMethod: picked method → session provider → Gmail = Google → password = arena email → Google', () => {
-  const acc = (o) => normalizeAccount({ id: 'x', email: 'a@corp.io', ...o });
-  assert.equal(loginMethod(acc({ login: { method: 'email', password: 'p' }, provider: 'google' })), 'email', 'explicit choice wins');
-  assert.equal(loginMethod(acc({ provider: 'google', login: { password: 'p' } })), 'google', 'session came from Google');
-  assert.equal(loginMethod(acc({ email: 'bob@gmail.com', login: { password: 'p' } })), 'google', 'Gmail with a password = Google password');
-  assert.equal(loginMethod(acc({ login: { password: 'p' } })), 'email');
-  assert.equal(loginMethod(acc({})), 'google');
-  assert.equal(credsFor(acc({ login: { method: 'google', password: 'p' } })).provider, 'google');
-  // upsertLogin stores the method, rejects junk
-  const r = upsertLogin({ list: [] }, null, { email: 'c@x.io', method: 'email' });
-  assert.equal(r.account.login.method, 'email');
-  assert.equal(upsertLogin(r.state, r.account.id, { method: 'bogus' }).account.login.method, '');
 });
 
 test('saved accounts never keep the PKCE verifier cookie (pre-0.4.7 records are cleaned on load)', () => {

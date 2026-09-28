@@ -10,23 +10,10 @@ import { buildTitle } from '../src/lib/rename.js';
 
 /* ── bundler ─────────────────────────────────────────────────────────── */
 test('generated files are committed and up to date', () => {
-  const { assets, bundle, totp } = generate();
+  const { assets, bundle } = generate();
   assert.equal(read('src/embed/assets.gen.js'), assets, 'assets.gen.js stale — run node scripts/bundle-dock.mjs');
   assert.equal(read('src/embed/dock-embedded.gen.js'), bundle, 'dock-embedded.gen.js stale — run node scripts/bundle-dock.mjs');
-  assert.equal(read('injected/totp.gen.js'), totp, 'injected/totp.gen.js stale — run node scripts/bundle-dock.mjs');
   assert.ok(!bundle.includes('\nimport '), 'no raw import statements survive');
-});
-
-test('injected/totp.gen.js publishes the TOTP lib as window.__AK_TOTP__ (page-side login helper)', () => {
-  const sandbox = { console, URL, JSON, Math, Date, Number, String, Uint8Array, Uint32Array, DataView, Error, Object };
-  sandbox.globalThis = sandbox; sandbox.window = sandbox;
-  vm.createContext(sandbox);
-  vm.runInContext(read('injected/totp.gen.js'), sandbox, { filename: 'totp.gen.js' });
-  const lib = sandbox.__AK_TOTP__;
-  assert.equal(typeof lib.totpNow, 'function');
-  // RFC 6238 vector through the generated copy
-  assert.equal(lib.totp('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', { time: 59_000 }), '287082');
-  assert.equal(JSON.parse(JSON.stringify(lib.totpNow('GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', 59_000))).code, '287082');
 });
 
 test('transformModule rewrites the supported import/export forms only', () => {

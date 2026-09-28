@@ -2,8 +2,13 @@
  * `accounts`). One record per arena.ai identity:
  *
  *   { id, userId, email, name, avatar, provider,        identity (from the session cookie)
- *     cookies:[{name,value}], sig, expiresAt, capturedAt, lastUsedAt,
- *     login:{ email, password, totp, auto } }            login helper (optional, user-entered)
+ *     cookies:[{name,value}], sig, expiresAt, capturedAt, lastUsedAt, label }
+ *
+ * Accounts are logged in BY HAND first (the watcher then records them); a
+ * dead session is re-logged in with one tap (injected/account.js re-login:
+ * the manual Google round trip, automated). No credentials are stored — the
+ * `login` block of builds ≤ 0.4.8 (email / password / TOTP secret) is dropped
+ * on load.
  *
  * `state.activeId` is the account whose session is in the page right now,
  * `state.pending` a switch / add / login in flight (survives the reload that
@@ -23,8 +28,6 @@
  * builds) are dropped on load. */
 
 export const PENDING_TTL_MS = 5 * 60 * 1000;
-/* How the login helper signs in: '' = automatic (see loginMethod). */
-export const LOGIN_METHODS = ['', 'google', 'email'];
 const isVerifierCookie = (n) => /code-verifier/i.test(n);
 
 const str = (v) => (v == null ? '' : String(v));
@@ -47,11 +50,11 @@ export function normalizeAccounts(raw) {
 
 export function normalizeAccount(a) {
   if (!a || typeof a !== 'object') return null;
-  const login = a.login && typeof a.login === 'object' ? a.login : {};
   const acc = {
     id: str(a.id) || newId(),
     userId: str(a.userId),
-    email: emailKey(a.email),
+    // a manual record of ≤ 0.4.8 may only carry its login email
+    email: emailKey(a.email || (a.login && typeof a.login === 'object' ? a.login.email : '')),
     name: str(a.name),
     avatar: str(a.avatar),
     provider: str(a.provider).toLowerCase(),
@@ -63,17 +66,10 @@ export function normalizeAccount(a) {
     expiresAt: Number(a.expiresAt) || 0,
     capturedAt: Number(a.capturedAt) || 0,
     lastUsedAt: Number(a.lastUsedAt) || 0,
-    login: {
-      email: str(login.email).trim(),
-      password: str(login.password),
-      totp: str(login.totp).trim(),
-      method: LOGIN_METHODS.includes(str(login.method)) ? str(login.method) : '',
-      auto: login.auto !== false,
-    },
   };
-  // No email, no login email, no label → nothing a person could recognise or
-  // use; this is what an anonymous (guest) session left behind. Drop it.
-  if (!acc.email && !acc.login.email && !acc.label) return null;
+  // No email, no label → nothing a person could recognise or use; this is
+  // what an anonymous (guest) session left behind. Drop it.
+  if (!acc.email && !acc.label) return null;
   return acc;
 }
 
@@ -82,13 +78,13 @@ export function isRealLogin(snap) {
   return !!(snap && snap.loggedIn && !snap.anonymous && emailKey(snap.email) && Array.isArray(snap.cookies) && snap.cookies.length);
 }
 
-/* Display name: label → name → email → login email. */
+/* Display name: label → name → email. */
 export function accountLabel(acc) {
   if (!acc) return '';
-  return acc.label || acc.name || acc.email || (acc.login && acc.login.email) || acc.userId || '未命名账号';
+  return acc.label || acc.name || acc.email || acc.userId || '未命名账号';
 }
 export function accountEmail(acc) {
-  return (acc && (acc.email || (acc.login && acc.login.email))) || '';
+  return (acc && acc.email) || '';
 }
 export function initialOf(acc) {
   const s = accountLabel(acc).trim();
@@ -97,63 +93,32 @@ export function initialOf(acc) {
 export function hasSession(acc) {
   return !!(acc && acc.cookies && acc.cookies.length);
 }
-export function hasLogin(acc) {
-  return !!(acc && acc.login && (acc.login.email || acc.login.password || acc.login.totp));
-}
-/* The login helper can start with typed credentials OR just the identity
- * email (it opens the site's login dialog, picks the provider and fills the
- * address; the user types the rest on the page). */
+/* One-tap re-login needs the identity email (Google's account chooser row). */
 export function canLogin(acc) {
-  return hasLogin(acc) || !!(acc && acc.email);
+  return !!(acc && acc.email);
 }
-/* Forget a saved session that the site rejected (keeps the record and the
- * typed credentials): the card shows 登录 instead of 切换 and the next attempt
- * goes through the login helper instead of failing the same way again. */
+/* Forget a saved session that the site rejected (keeps the record): the card
+ * shows 登录 instead of 切换 and the next attempt re-logs in instead of
+ * failing the same way again. */
 export function dropSession(state, id) {
   const st = normalizeAccounts(state);
   st.list = st.list.map((a) => (a.id === id ? { ...a, cookies: [], sig: '', expiresAt: 0 } : a));
   if (st.activeId === id) st.activeId = '';
   return st;
 }
-/* The credentials injected/account.js needs; identity email doubles as the
- * login email when none was typed. */
-/* Sign-in route for an account (docs/arena-google-login-flow.md):
- *   the method picked in 登录信息 → the provider its session came from →
- *   a Gmail address is a Google account → a saved password without any of
- *   that is an arena email + password account → Google (arena's default). */
-export function loginMethod(acc) {
-  if (!acc) return 'google';
-  const login = acc.login || {};
-  if (login.method === 'google' || login.method === 'email') return login.method;
-  const p = str(acc.provider).toLowerCase();
-  if (p === 'google' || p === 'email') return p;
-  const email = emailKey(login.email || acc.email);
-  if (/@(gmail|googlemail)\.com$/.test(email)) return 'google';
-  return login.password ? 'email' : 'google';
-}
+/* What the page-side re-login needs: who to pick on Google's chooser. */
 export function credsFor(acc, extra = {}) {
   if (!acc) return null;
-  const login = acc.login || {};
-  return {
-    accountId: acc.id,
-    email: login.email || acc.email || '',
-    password: login.password || '',
-    totp: login.totp || '',
-    provider: loginMethod(acc),
-    startedAt: Number(extra.startedAt) || Date.now(),
-    ...extra,
-  };
+  return { accountId: acc.id, email: acc.email || '', startedAt: Number(extra.startedAt) || Date.now() };
 }
 
-/* Find the record a snapshot belongs to: same userId, else same email
- * (a manual record created before its first login has only an email). */
+/* Find the record a snapshot belongs to: same userId, else same email. */
 export function findForSnapshot(state, snap) {
   if (!snap) return null;
   const uid = str(snap.userId);
   const em = emailKey(snap.email);
   return (uid && state.list.find((a) => a.userId === uid))
     || (em && state.list.find((a) => a.email === em))
-    || (em && state.list.find((a) => !a.userId && emailKey(a.login.email) === em))
     || null;
 }
 
@@ -197,26 +162,14 @@ export function applySnapshot(state, snap, now = Date.now()) {
   return { state: st, account: next, created, changed };
 }
 
-export function upsertLogin(state, id, fields = {}) {
+/* 备注名 — the only thing the user edits on a record. */
+export function setLabel(state, id, label) {
   const st = normalizeAccounts(state);
-  let acc = st.list.find((a) => a.id === id);
-  let created = false;
-  if (!acc) {
-    acc = normalizeAccount({ id: id || newId(), label: fields.label, email: '', login: fields });
-    if (!acc) return { state: st, account: null, created: false };
-    created = true;
-    st.list = [...st.list, acc];
-  }
-  const login = { ...acc.login };
-  if ('email' in fields) login.email = str(fields.email).trim();
-  if ('password' in fields) login.password = str(fields.password);
-  if ('totp' in fields) login.totp = str(fields.totp).trim();
-  if ('auto' in fields) login.auto = fields.auto !== false;
-  if ('method' in fields) login.method = LOGIN_METHODS.includes(str(fields.method)) ? str(fields.method) : '';
-  const next = { ...acc, login, label: 'label' in fields ? str(fields.label).trim() : acc.label };
-  if (!next.email && !next.userId && login.email) next.email = emailKey(login.email);
-  st.list = st.list.map((a) => (a.id === next.id ? next : a));
-  return { state: st, account: next, created };
+  const acc = st.list.find((a) => a.id === id);
+  if (!acc) return { state: st, account: null };
+  const next = { ...acc, label: str(label).trim().slice(0, 40) };
+  st.list = st.list.map((a) => (a.id === id ? next : a));
+  return { state: st, account: next };
 }
 
 export function removeAccount(state, id) {
@@ -235,7 +188,7 @@ export function planSwitch(state, id) {
   if (st.activeId === id) return { ok: false, reason: '已经是当前账号' };
   if (hasSession(target)) return { ok: true, target, mode: 'cookies' };
   if (canLogin(target)) return { ok: true, target, mode: 'login' };
-  return { ok: false, reason: '该账号没有保存的登录状态，也没有填写登录信息', target };
+  return { ok: false, reason: '该账号没有保存的登录状态，也没有邮箱可用于重新登录', target };
 }
 
 export function setPending(state, pending, now = Date.now()) {
@@ -263,7 +216,7 @@ export function resolvePending(state, snap, now = Date.now()) {
   const loggedIn = isRealLogin(snap);
   const guest = !loggedIn && !!(snap && snap.anonymous);
   const target = p.id ? st.list.find((a) => a.id === p.id) : null;
-  const same = loggedIn && target && ((target.userId && target.userId === str(snap.userId)) || (!target.userId && target.email && target.email === emailKey(snap.email)) || (!target.userId && !target.email && emailKey(target.login.email) === emailKey(snap.email)));
+  const same = loggedIn && target && ((target.userId && target.userId === str(snap.userId)) || (!target.userId && target.email && target.email === emailKey(snap.email)));
   if (p.type === 'switch') {
     if (same) return { state: { ...st, pending: null }, outcome: { status: 'switched', account: target, message: '已切换到 ' + accountLabel(target) } };
     if (loggedIn) return { state: { ...st, pending: null }, outcome: { status: 'other', message: '页面登录的是另一个账号（' + (snap.email || snap.userId) + '）' } };
@@ -279,49 +232,34 @@ export function resolvePending(state, snap, now = Date.now()) {
   }
   if (p.type === 'login') {
     if (loggedIn) return { state: { ...st, pending: null }, outcome: { status: 'logged-in', account: target, message: (same ? '已登录 ' + accountLabel(target) : '已登录 ' + (snap.email || snap.userId)) } };
-    return { state: st, outcome: { status: 'waiting', message: '登录助手运行中…' } };
+    return { state: st, outcome: { status: 'waiting', message: '正在重新登录…' } };
   }
   return { state: { ...st, pending: null }, outcome: null };
 }
 
-/* Login-helper stage → human text for the dock status line. */
+/* Re-login stage → human text for the dock status line. */
 export function loginStageText(stage, extra = {}) {
+  const who = extra.email ? ' ' + extra.email : '';
   const map = {
-    'arena-open': '正在打开登录窗口…',
-    'arena-google': '页面未登录 → 正在跳转 Google 登录…',
-    'arena-email-post': '页面未登录 → 正在用邮箱 + 密码登录…',
-    'arena-dialog': '直接登录接口不可用，改用页面登录框…',
-    'wrong-account': '页面已登录另一个账号' + (extra.email ? '（' + extra.email + '）' : ''),
-    'google-chooser-other': 'Google：账号列表里没有目标邮箱 → 使用其他账号…',
-    'google-need-choice': 'Google：请在页面上选择账号 / 验证方式',
-    'google-sms': 'Google：已填入短信验证码…',
-    'google-blocked': 'Google 拒绝了应用内登录（浏览器不安全 / disallowed_useragent）',
-    'need-totp': 'Google 要验证器动态码：请在账号的登录信息里填写 2FA 密钥，或直接在页面输入',
-    'need-backup': 'Google 要备用验证码：请直接在页面输入',
-    'need-phone': 'Google 要在手机上确认（轻点「是」/ 安全密钥）：请在手机上完成',
-    'arena-email': '已填写邮箱，等待下一步…',
-    'arena-password': '已填写密码…',
-    'arena-code': '已填入验证码…',
-    'arena-waiting': '等待登录界面出现…',
-    'user-active': '你正在操作页面，登录助手暂停 10 秒…',
-    'google-email': 'Google：已填写邮箱…',
-    'google-pick': 'Google：已选择账号…',
-    'google-password': 'Google：已填写密码…',
-    'google-totp': 'Google：已填入两步验证码…',
-    'google-pick-authenticator': 'Google：选择身份验证器方式…',
-    'google-other-way': 'Google：选择其他验证方式…',
-    'google-continue': 'Google：继续…',
+    'arena-open': '重新登录' + who + '：已点「登录」…',
+    'arena-agree': '重新登录' + who + '：已勾选同意条款…',
+    'arena-google': '重新登录' + who + '：已点 Google 登录，正在跳转…',
+    'arena-google-direct': '重新登录' + who + '：未找到登录按钮，直接打开 Google 登录…',
+    'arena-waiting': '重新登录' + who + '：等待登录界面…',
+    'google-pick': 'Google：已选择账号' + who + '…',
+    'google-continue': 'Google：已点「继续」…',
     'google-waiting': 'Google：等待页面…',
-    'generic-email': '已填写邮箱…', 'generic-password': '已填写密码…', 'generic-totp': '已填入两步验证码…', 'generic-waiting': '等待登录页面…',
-    'need-code': '需要验证码：请查看邮箱 / 短信，在下方输入后点「填入」',
-    'need-password': '需要密码：请直接在页面输入（或在账号的登录信息里填写密码，下次自动填）',
-    'need-email': '需要邮箱：请在账号的登录信息里填写邮箱',
+    'google-not-listed': 'Google 账号列表里没有' + who + '：请手动登录一次',
+    'google-need-user': 'Google 要求输入密码 / 验证：请手动完成',
+    'google-blocked': 'Google 拒绝了应用内登录（disallowed_useragent）',
+    'wrong-account': '页面已登录另一个账号' + (extra.email ? '（' + extra.email + '）' : ''),
+    'user-active': '你正在操作页面，自动登录暂停 10 秒…',
     done: '登录完成 ✓',
-    stopped: '登录助手已停止',
-    timeout: '登录助手超时（4 分钟），请手动完成登录',
-    error: '登录助手出错：' + (extra.error || '未知错误'),
+    stopped: '已停止重新登录',
+    timeout: '重新登录超时（3 分钟），请手动完成',
+    error: '重新登录失败：' + (extra.error || '未知错误'),
   };
-  return map[stage] || ('登录助手：' + stage);
+  return map[stage] || ('重新登录：' + stage);
 }
 
 /* Time-left text for a saved session (access token expiry is informational —

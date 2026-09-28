@@ -28,9 +28,8 @@ import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
 import { pillLabel, turnHeadline } from './lib/pill-layout.js';
 import { initialState as watchdogInitialState, parseStatus as watchdogParse, decide as watchdogDecide, applied as watchdogApplied, Reason as WatchdogReason, LOG_RELOADING as WATCHDOG_LOG_RELOADING, LOG_NAG as WATCHDOG_LOG_NAG } from './lib/watchdog.js';
-import { upsertLogin, accountLabel, accountEmail, initialOf, hasSession, hasLogin, loginStageText, sessionAgeText } from './lib/accounts.js';
+import { accountLabel, accountEmail, initialOf, hasSession, canLogin, loginStageText, sessionAgeText } from './lib/accounts.js';
 import { createAccountFlow } from './lib/account-flow.js';
-import { totpNow, parseOtpSecret } from './lib/totp.js';
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -1317,7 +1316,7 @@ function wireRename() {
 // ── module: 账号 (one-click switch between saved sessions, login helper) ──
 /* The orchestration lives in src/lib/account-flow.js (DOM-free, tested end to
  * end against the real injected/account.js in tests/account-flow.test.mjs);
- * this block is the UI: list / editor / live 2FA codes / login helper panel.
+ * this block is the UI: list / 备注名 editor / re-login status.
  * Snapshots arrive as `account` page events (watcher in account.js) and as
  * answers to the `snapshot` RPC; the outcome of a switch is judged from the
  * first snapshot after the reload (pending is persisted, since the embedded
@@ -1348,7 +1347,6 @@ function createAccounts() {
     status: acctStatus,
     loginStatus: acctLoginStatus,
     toast: (t) => { setStatus(t); if (EMBED) flashPill(t); },
-    needLogin: (acc) => openAccountEditor(acc.id),
     onChange: renderAccounts,
   });
 }
@@ -1357,7 +1355,7 @@ const acct = () => state.acct;
 async function deleteAccount(id) {
   const a = acct().find(id);
   if (!a) return;
-  const ok = await confirmDialog({ title: '删除账号？', message: `删除「${accountLabel(a)}」保存的登录状态和登录信息。不会退出该账号在 Arena 的登录。`, ok: '删除', cancel: '取消' });
+  const ok = await confirmDialog({ title: '删除账号？', message: `删除「${accountLabel(a)}」保存的登录状态。不会退出该账号在 Arena 的登录。`, ok: '删除', cancel: '取消' });
   if (!ok) return;
   await acct().remove(id);
   if (state.acctEditId === id) { q('ak-acct-edit').hidden = true; state.acctEditId = null; }
@@ -1365,55 +1363,18 @@ async function deleteAccount(id) {
 
 function openAccountEditor(id) {
   const a = id ? acct().find(id) : null;
-  state.acctEditId = a ? a.id : null;
+  if (!a) return;
+  state.acctEditId = a.id;
   q('ak-acct-edit').hidden = false;
-  q('ak-acct-edit-title').textContent = a ? accountLabel(a) : '新账号';
-  q('ak-acct-label').value = a ? a.label : '';
-  q('ak-acct-email').value = a ? (a.login.email || a.email) : '';
-  q('ak-acct-password').value = a ? a.login.password : '';
-  q('ak-acct-totp').value = a ? a.login.totp : '';
-  q('ak-acct-auto').checked = a ? a.login.auto !== false : true;
-  q('ak-acct-method').value = a ? (a.login.method || '') : '';
-  renderTotpPreview();
-  try { q('ak-acct-email').focus(); } catch { /* ignore */ }
+  q('ak-acct-edit-title').textContent = accountEmail(a) || accountLabel(a);
+  q('ak-acct-label').value = a.label || '';
+  try { q('ak-acct-label').focus(); } catch { /* ignore */ }
 }
-function renderTotpPreview() {
-  const el = q('ak-acct-totp-preview');
-  const raw = String(q('ak-acct-totp').value || '').trim();
-  if (!raw) { el.textContent = ''; return; }
-  const r = totpNow(raw);
-  el.textContent = r.error ? '密钥格式不对：需要 base32（A-Z、2-7）或 otpauth:// 链接' : `当前动态码 ${r.code} · ${r.remaining}s 后刷新`;
-}
-async function saveAccountEditor({ login = false } = {}) {
-  const fields = { label: q('ak-acct-label').value, email: q('ak-acct-email').value, password: q('ak-acct-password').value, totp: String(q('ak-acct-totp').value || '').trim(), auto: q('ak-acct-auto').checked, method: q('ak-acct-method').value || '' };
-  if (fields.totp) {
-    const parsed = parseOtpSecret(fields.totp);
-    if (!parsed) { acctStatus('2FA 密钥格式不对：需要 base32（A-Z、2-7）或 otpauth:// 链接'); return; }
-    if (!/^otpauth:/i.test(fields.totp)) fields.totp = parsed.secret;
-    if (!fields.email && parsed.account && parsed.account.includes('@')) fields.email = parsed.account;
-  }
-  const r = upsertLogin(acct().accounts, state.acctEditId, fields);
-  if (!r.account) { acctStatus('请至少填写邮箱或备注名'); return; }
-  await acct().save(r.state);
+async function saveAccountEditor() {
+  if (!state.acctEditId) return;
+  await acct().setLabel(state.acctEditId, q('ak-acct-label').value);
   q('ak-acct-edit').hidden = true;
   state.acctEditId = null;
-  acctStatus('登录信息已保存');
-  if (login) {
-    const a = acct().find(r.account.id);
-    if (a) await acct().startLogin(a);
-  }
-}
-async function copyTotp(id) {
-  const a = acct().find(id);
-  if (!a || !a.login.totp) return;
-  const r = totpNow(a.login.totp);
-  if (r.error) { acctStatus(r.error); return; }
-  try { await globalThis.navigator.clipboard.writeText(r.code); acctStatus(`已复制动态码 ${r.code}（${r.remaining}s 内有效）`); } catch { acctStatus('复制失败，动态码: ' + r.code); }
-}
-async function fillLoginCode() {
-  const code = String(q('ak-acct-code').value || '').trim();
-  if (!code) { acctLoginStatus('请先输入验证码'); return; }
-  await accountCall('fill', { code }).then(() => { acctLoginStatus('已把验证码填入页面'); q('ak-acct-code').value = ''; }).catch((e) => acctLoginStatus('填入失败: ' + (e && e.message || e)));
 }
 
 function accountRowHtml(a, active) {
@@ -1421,19 +1382,16 @@ function accountRowHtml(a, active) {
   const email = accountEmail(a);
   const sub = [
     email && email !== label ? email : '',
-    hasSession(a) ? sessionAgeText(a) : (hasLogin(a) ? '未保存登录状态 · 可自动登录' : (a.email ? '未保存登录状态 · 「登录」会打开登录页并填好邮箱' : '未保存登录状态')),
+    hasSession(a) ? sessionAgeText(a) : (canLogin(a) ? '登录状态已失效 · 点「登录」自动重新登录' : '未保存登录状态'),
     a.provider === 'google' ? 'Google 登录' : (a.provider ? a.provider + ' 登录' : ''),
   ].filter(Boolean).join(' · ');
   const avatar = a.avatar ? ` style="background-image:url(&quot;${esc(a.avatar)}&quot;)"` : '';
-  const totp = a.login.totp
-    ? `<div class="ak-acct-totp" data-totp-id="${esc(a.id)}"><span>2FA</span><b data-code>------</b><span class="ak-acct-left" data-left></span><button class="ak-link" data-acct="copy" data-id="${esc(a.id)}">复制</button></div>`
-    : '';
   const badge = active ? ' <span class="ak-badge ak-badge-brand">当前</span>' : (!hasSession(a) ? ' <span class="ak-badge ak-badge-warn">需登录</span>' : '');
   const main = active ? '' : `<button class="ak-btn ak-btn-sm ${hasSession(a) ? 'ak-filled' : 'ak-tonal'}" data-acct="switch" data-id="${esc(a.id)}">${hasSession(a) ? '切换' : '登录'}</button>`;
   return `<div class="ak-acct" data-id="${esc(a.id)}" data-active="${active ? 'true' : 'false'}">`
     + `<span class="ak-acct-avatar"${avatar}>${a.avatar ? '' : esc(initialOf(a))}</span>`
-    + `<div class="ak-acct-main"><div class="ak-acct-name">${esc(label)}${badge}</div><div class="ak-acct-sub">${esc(sub)}</div>${totp}</div>`
-    + `<div class="ak-acct-actions">${main}<button class="ak-icon-btn" data-acct="edit" data-id="${esc(a.id)}" title="登录信息 / 2FA" aria-label="编辑">✎</button><button class="ak-icon-btn" data-acct="delete" data-id="${esc(a.id)}" title="删除" aria-label="删除">✕</button></div>`
+    + `<div class="ak-acct-main"><div class="ak-acct-name">${esc(label)}${badge}</div><div class="ak-acct-sub">${esc(sub)}</div></div>`
+    + `<div class="ak-acct-actions">${main}<button class="ak-icon-btn" data-acct="edit" data-id="${esc(a.id)}" title="备注名" aria-label="编辑">✎</button><button class="ak-icon-btn" data-acct="delete" data-id="${esc(a.id)}" title="删除" aria-label="删除">✕</button></div>`
     + '</div>';
 }
 function renderAccounts() {
@@ -1446,7 +1404,7 @@ function renderAccounts() {
     else if (!snap.loggedIn) cur.innerHTML = `<div class="ak-empty">${snap.anonymous ? '页面当前是游客状态（未登录）：登录后会自动记录账号，游客状态不会被保存' : (snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息（请点「保存当前登录」重试）' : '页面当前未登录')}</div>`;
     else {
       const active = acct().active();
-      const shown = active || { id: '', label: '', name: snap.name, email: snap.email, avatar: snap.avatar, provider: snap.provider, cookies: snap.cookies || [], capturedAt: 0, login: { email: '', password: '', totp: '', auto: true } };
+      const shown = active || { id: '', label: '', name: snap.name, email: snap.email, avatar: snap.avatar, provider: snap.provider, cookies: snap.cookies || [], capturedAt: 0 };
       const sub = [accountEmail(shown) !== accountLabel(shown) ? accountEmail(shown) : '', snap.provider === 'google' ? 'Google 登录' : (snap.provider || '')].filter(Boolean).join(' · ');
       cur.innerHTML = `<div class="ak-acct" data-id="${esc(shown.id)}" data-active="true"><span class="ak-acct-avatar"${shown.avatar ? ` style="background-image:url(&quot;${esc(shown.avatar)}&quot;)"` : ''}>${shown.avatar ? '' : esc(initialOf(shown))}</span>`
         + `<div class="ak-acct-main"><div class="ak-acct-name">${esc(accountLabel(shown))}${active ? '' : ' <span class="ak-badge ak-badge-warn">未保存</span>'}</div><div class="ak-acct-sub">${esc(sub)}</div></div></div>`;
@@ -1458,22 +1416,6 @@ function renderAccounts() {
   if (count) count.textContent = st.list.length ? st.list.length + ' 个账号' : '';
   const list = q('ak-acct-list');
   if (list) list.innerHTML = st.list.length ? st.list.map((a) => accountRowHtml(a, a.id === st.activeId)).join('') : ACCT_EMPTY;
-  renderTotpCodes();
-}
-function renderTotpCodes() {
-  if (!state.acct) return;
-  const now = Date.now();
-  root.querySelectorAll('[data-totp-id]').forEach((el) => {
-    const a = acct().find(el.dataset.totpId);
-    const code = el.querySelector('[data-code]');
-    const left = el.querySelector('[data-left]');
-    if (!a || !code || !left) return;
-    const r = totpNow(a.login.totp, now);
-    if (r.error) { code.textContent = '无效密钥'; left.textContent = ''; return; }
-    code.textContent = r.code.length === 6 ? r.code.slice(0, 3) + ' ' + r.code.slice(3) : r.code;
-    left.textContent = r.remaining + 's';
-    left.dataset.low = String(r.remaining <= 5);
-  });
 }
 function wireAccounts() {
   const list = q('ak-acct-list');
@@ -1487,20 +1429,12 @@ function wireAccounts() {
       if (act === 'switch') acct().switchTo(id);
       else if (act === 'edit') openAccountEditor(id);
       else if (act === 'delete') deleteAccount(id);
-      else if (act === 'copy') copyTotp(id);
     });
   }
-  const totpIn = q('ak-acct-totp');
-  if (totpIn) totpIn.addEventListener('input', renderTotpPreview);
-  const codeIn = q('ak-acct-code');
-  if (codeIn) codeIn.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') fillLoginCode(); });
+  const labelIn = q('ak-acct-label');
+  if (labelIn) labelIn.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') saveAccountEditor(); });
   renderAccounts();
 }
-// 1 s ticker for the live 2FA codes (only touches the DOM while the tab shows).
-setInterval(() => {
-  const edit = q('ak-acct-edit');
-  if (root.querySelector('[data-page="account"][data-active="true"]')) { renderTotpCodes(); if (edit && !edit.hidden) renderTotpPreview(); }
-}, 1000);
 
 onPage('account-result', (r) => { if (state.accountRpc) state.accountRpc.deliver(r); });
 onPage('account', (snap) => {
@@ -1511,12 +1445,11 @@ onPage('account', (snap) => {
 });
 onPage('login', (p) => {
   if (!p || typeof p !== 'object') return;
-  acctLoginStatus(loginStageText(p.stage, p));
-  if (p.stage === 'need-code') { showTab('account'); if (EMBED) EMBED.open(); }
-  // the user must type on the page itself → get the sheet out of the way
-  // the user must act on the page itself → get the sheet out of the way
-  if (/^(need-password|need-email|need-totp|need-backup|need-phone|google-need-choice)$/.test(p.stage)) { setStatus(loginStageText(p.stage, p)); if (EMBED) EMBED.close(); }
-  if (p.stage === 'error' || p.stage === 'wrong-account' || p.stage === 'google-blocked') { acctStatus(loginStageText(p.stage, p)); setStatus(loginStageText(p.stage, p)); }
+  const line = loginStageText(p.stage, p);
+  acctLoginStatus(line);
+  // the page does the clicking → keep the sheet out of its way
+  if (/^arena-(open|agree|google)/.test(p.stage) && EMBED) EMBED.close();
+  if (/^(done|error|wrong-account|timeout)$/.test(p.stage)) { acctStatus(line); setStatus(line); if (EMBED) flashPill(p.stage === 'done' ? '已登录' : '登录失败'); }
 });
 
 // ── module: enhancement toggles + ENI ───────────────────────────────────
@@ -1572,17 +1505,11 @@ function wireControls() {
         acct().saveCurrent();
       } else if (a === 'acct-add') {
         acct().add();
-      } else if (a === 'acct-new') {
-        openAccountEditor(null);
       } else if (a === 'acct-edit-save') {
         saveAccountEditor();
-      } else if (a === 'acct-edit-login') {
-        saveAccountEditor({ login: true });
       } else if (a === 'acct-edit-cancel') {
         q('ak-acct-edit').hidden = true;
         state.acctEditId = null;
-      } else if (a === 'acct-fill-code') {
-        fillLoginCode();
       } else if (a === 'acct-stop-login') {
         acct().stopLogin();
       }

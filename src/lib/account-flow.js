@@ -5,7 +5,7 @@
  * the real account.js on a fake document.cookie (tests/account-flow.test.mjs).
  *
  * Deps (all optional except call/reload):
- *   call(action, args, opts) → Promise<data>   page RPC (snapshot / restore / clear / login / fill / stop)
+ *   call(action, args, opts) → Promise<data>   page RPC (snapshot / restore / clear / login / stop)
  *   loadStore() → Promise<raw>, saveStore(state) → Promise   persistence (store key `accounts`)
  *   reload() → Promise                          reload the Arena page (`account` source) — only used
  *                                               when the page could not navigate by itself
@@ -13,12 +13,11 @@
  *                                               `navigate`): show the loading state, close the sheet
  *   invoke(cmd, args) → Promise                 Tauri commands login_set / login_clear
  *   status(text)                                账号 page status line
- *   loginStatus(text)                           登录助手 status line
+ *   loginStatus(text)                           重新登录 status line
  *   toast(text)                                 dock-level status (+ pill flash)
- *   needLogin(account)                          the target has no credentials → open the editor
  *   onChange()                                  re-render hook (state/snapshot changed)
  *   sleep(ms), now()                            timing (tests shrink them) */
-import { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, canLogin, isRealLogin, dropSession, lostMessage } from './accounts.js';
+import { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, canLogin, isRealLogin, dropSession, lostMessage, setLabel } from './accounts.js';
 
 const noop = () => {};
 const errText = (e) => (e && e.message) || String(e);
@@ -37,7 +36,7 @@ export const VERIFY_MS = 20_000;
 export function createAccountFlow(deps) {
   const d = {
     loadStore: async () => null, saveStore: async () => {}, invoke: null, navigating: noop,
-    status: noop, loginStatus: noop, toast: noop, needLogin: noop, onChange: noop,
+    status: noop, loginStatus: noop, toast: noop, onChange: noop,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: Date.now,
     ...deps,
   };
@@ -100,19 +99,14 @@ export function createAccountFlow(deps) {
       await invoke('login_clear', {});
       flow.verify = outcome.status === 'switched' && outcome.account ? { id: outcome.account.id, until: d.now() + VERIFY_MS } : null;
     } else if (outcome.status === 'lost') {
-      const acc = outcome.account;
+      // the user decides: 登录 on the card runs the automated re-login
       d.toast(outcome.message);
-      if (acc && acc.login && acc.login.auto !== false && canLogin(acc)) {
-        d.status(outcome.message + '，正在自动登录…');
-        await flow.startLogin(acc, { snap });
-      } else {
-        d.status(outcome.message + '。请点该账号的「登录」，或在页面登录');
-      }
+      d.status(outcome.message + '。点该账号的「登录」即可自动重新登录');
     }
   }
 
   /* 切换 → target with a saved session: swap cookies + leave for the site
-   * root; otherwise login helper. The swap is guarded by the snapshot's
+   * root; otherwise (登录) the automated re-login. The swap is guarded by the snapshot's
    * signature: if the page's cookies rotated between our snapshot and the
    * restore, the page refuses, we persist the newer tokens of the account we
    * are leaving and try once more — so no saved session is ever older than
@@ -162,19 +156,19 @@ export function createAccountFlow(deps) {
   const lower = (v) => String(v || '').trim().toLowerCase();
   function sameIdentity(acc, snap) {
     if (acc.userId && snap.userId) return acc.userId === String(snap.userId);
-    const want = lower(acc.email || (acc.login && acc.login.email));
+    const want = lower(acc.email);
     return !!want && want === lower(snap.email);
   }
 
-  /* Login helper for one account: Rust remembers the credentials for every
-   * page load (that is how they reach accounts.google.com); a page that still
-   * holds another session is cleared + reloaded first, a logged-out page starts
-   * the helper right away. */
+  /* One-tap re-login (the manual Google round trip, automated — see
+   * injected/account.js): Rust remembers WHO for every page load (that is how
+   * the target reaches accounts.google.com); a page that still holds another
+   * session is cleared + left for /agent first, a logged-out page starts at
+   * once. */
   flow.startLogin = async (acc, { snap = null, st = flow.accounts } = {}) => {
     if (!canLogin(acc)) {
-      d.status('请先填写该账号的登录信息（邮箱 / 密码 / 2FA）');
-      d.needLogin(acc);
-      return { ok: false, reason: 'no-credentials' };
+      d.status('该账号没有邮箱，无法自动重新登录：请在页面上手动登录');
+      return { ok: false, reason: 'no-email' };
     }
     const cur = snap || await d.call('snapshot', {}).catch(() => null);
     // Already logged in AS this account: nothing to do (no sign-in on top).
@@ -188,7 +182,7 @@ export function createAccountFlow(deps) {
     st = setPending(st, { type: 'login', id: acc.id }, d.now());
     await flow.save(st);
     const creds = credsFor(acc);
-    d.loginStatus('登录助手已启动：' + accountLabel(acc) + (creds.password ? '' : '（未保存密码，请在登录页面输入）'));
+    d.loginStatus('正在重新登录 ' + accountLabel(acc) + '：登录 → 同意 → Google → 选择账号 → 继续');
     await invoke('login_set', { creds });
     // A page that still holds another (real) session is cleared and left for
     // the site root; a guest / logged-out page runs the helper right here.
@@ -200,7 +194,7 @@ export function createAccountFlow(deps) {
       }
       return { ok: true, via: await leave(res, 'login') };
     }
-    await d.call('login', { creds }).catch((e) => d.loginStatus('无法启动登录助手: ' + errText(e)));
+    await d.call('login', { creds }).catch((e) => d.loginStatus('无法开始重新登录: ' + errText(e)));
     return { ok: true, via: 'page' };
   };
 
@@ -245,12 +239,13 @@ export function createAccountFlow(deps) {
   };
 
   flow.remove = async (id) => { await flow.save(removeAccount(flow.accounts, id)); d.status('已删除'); };
+  flow.setLabel = async (id, label) => { const r = setLabel(flow.accounts, id, label); if (r.account) { await flow.save(r.state); d.status('备注名已保存'); } return r.account; };
 
   flow.stopLogin = async () => {
     await invoke('login_clear', {});
     await flow.save(setPending(flow.accounts, null));
     await d.call('stop', {}).catch(() => null);
-    d.loginStatus('登录助手已停止');
+    d.loginStatus('已停止重新登录');
   };
 
   flow.find = (id) => flow.accounts.list.find((a) => a.id === id) || null;
