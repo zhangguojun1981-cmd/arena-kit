@@ -775,6 +775,30 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(label.textContent, '新对话');
   assert.ok(byId['ak-turn-list'].innerHTML.includes('暂无轮次记录'));
 
+  // Sent from /agent: token + model arrive BEFORE the URL gets its id, and the
+  // page id (p7) differs from the stream id (s7) → the model must survive the
+  // late nav (it used to reset to 模型待确认). ENI's slower send hit this often.
+  emit('arenakit://trace', { stage: 'token', sessionId: 's7', runId: 'run_7' });
+  emit('arenakit://trace', { stage: 'model', sessionId: 's7', runId: 'run_7', complete: true, models: [{ model: 'claude-sonnet-4-5', provider: 'anthropic' }], spans: [] });
+  await settle();
+  assert.equal(label.textContent, 'claude-sonnet-4-5');
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: 'p7', path: '/agent/p7', title: '', agentPath: true } });
+  assert.equal(label.textContent, 'claude-sonnet-4-5', 'late URL id keeps the model');
+  assert.equal(byId['ak-hud-model'].textContent, 'claude-sonnet-4-5');
+  // next turn: a trace read before its labels must not wipe the model; a
+  // failed identification falls back to the last known model, not 识别中…
+  emit('arenakit://trace', { stage: 'token', sessionId: 's7', runId: 'run_8' });
+  assert.equal(label.textContent, '识别中…');
+  emit('arenakit://trace', { stage: 'model', sessionId: 's7', runId: 'run_8', complete: false, models: [], spans: [] });
+  assert.equal(label.textContent, '识别中…', 'partial trace keeps the pending label');
+  emit('arenakit://trace', { stage: 'error', sessionId: 's7', runId: 'run_8', fatal: false, status: '未识别' });
+  assert.equal(label.textContent, 'claude-sonnet-4-5', 'failed turn falls back to the last model');
+  // a real switch to an unknown conversation still clears
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: 'zz', path: '/agent/zz', title: '', agentPath: true } });
+  assert.equal(byId['ak-hud-model'].textContent, '模型待确认');
+  emit('arenakit://page', { name: 'nav', payload: { sessionId: null, path: '/agent', title: '', agentPath: true } });
+  assert.equal(label.textContent, '新对话');
+
   // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
   assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, autoRefresh: true }));
   assert.equal(byId['ak-pill-refresh'].checked, true, 'pill ⟳ switch defaults on');

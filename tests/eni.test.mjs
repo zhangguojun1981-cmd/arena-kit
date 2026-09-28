@@ -177,8 +177,11 @@ test('eni badge only exists while the injection is ON (nothing next to the compo
   const { sandbox } = makeSandbox();
   const created = [];
   const composer = sandbox.document.createElement('textarea');
-  composer.parentElement = { appendChild: (el) => created.push(el) };
-  composer.insertAdjacentElement = (_where, el) => { created.push(el); return el; };
+  const inReactTree = [];
+  composer.parentElement = { appendChild: (el) => inReactTree.push(el) };
+  composer.insertAdjacentElement = (_where, el) => { inReactTree.push(el); return el; };
+  composer.getBoundingClientRect = () => ({ left: 10, top: 500, right: 310, bottom: 540, width: 300, height: 40 });
+  sandbox.document.documentElement = { appendChild: (el) => created.push(el) };
   sandbox.__composer = composer;
   let live = null;
   sandbox.document.getElementById = (id) => (id === 'ak-eni-badge' ? live : null);
@@ -193,9 +196,14 @@ test('eni badge only exists while the injection is ON (nothing next to the compo
   assert.equal(created.length, 1);
   assert.equal(created[0].id, 'ak-eni-badge');
   assert.equal(created[0].dataset.on, 'true');
+  assert.equal(inReactTree.length, 0, 'never inserted into the page (React) tree');
+  assert.equal(created[0].style.position, 'fixed');
   live = created[0];
+  sandbox.__AK_ENI_SET__.call(null, true, 'system prompt'); // refresh re-mounts, still outside
+  assert.equal(inReactTree.length, 0);
+  live = created.at(-1);
   // off again → the existing badge is removed and not re-created
   sandbox.__AK_ENI_SET__(false, 'system prompt');
   assert.equal(live, null);
-  assert.equal(created.length, 1);
+  assert.equal(created.length, 2);
 });

@@ -25,7 +25,8 @@
  * buttons with data-state=open) is skipped on every endpoint, matching the
  * upstream behaviour.
  *
- * A small status badge ("ENI") is appended next to the composer while the
+ * A small status badge ("ENI") floats at the composer's top-right corner
+ * (fixed, mounted on <html> — never inside the page's React tree) while the
  * injection is ON — nothing is shown when it is off, the default (heuristic
  * anchor — contenteditable / textarea / role=textbox). Clicking it opens
  * the dock 更多 tab via the dock's `openDock` page event so the user can
@@ -206,7 +207,7 @@
       display: 'inline-flex', alignItems: 'center', gap: '5px',
       padding: '2px 8px', marginLeft: '6px', borderRadius: '99px',
       fontSize: '11px', fontWeight: '700', letterSpacing: '0.04em',
-      background: 'var(--ak-surface-high, rgba(255,255,255,0.08))',
+      background: 'rgba(30,33,40,0.92)', // floats over the page: opaque
       color: on ? 'var(--ak-brand, #2F6BFF)' : 'var(--ak-muted, #888)',
       border: '1px solid currentColor',
       cursor: 'pointer', flexShrink: '0', lineHeight: '1.6',
@@ -226,18 +227,32 @@
       // Tell the dock to open the 更多 tab so the user can edit.
       try { window.__ARENAKIT__ && window.__ARENAKIT__.dispatch('openDock', { tab: 'more' }); } catch (_) { /* ignore */ }
     });
-    // Insert next to the composer. For a textarea we put the badge after it;
-    // for contenteditable we put it inside the parent (matches the agent
-    // composer layout).
-    try {
-      if (composer.tagName === 'TEXTAREA' || composer.tagName === 'INPUT') {
-        composer.insertAdjacentElement('afterend', badge);
-      } else {
-        composer.parentElement.appendChild(badge);
-      }
-    } catch (_) {
-      try { composer.parentElement.appendChild(badge); } catch (__) { /* ignore */ }
-    }
+    // Mount OUTSIDE the page's React tree: a fixed chip on <html>, placed at
+    // the composer's top-right corner. Inserting a foreign node inside the
+    // composer's React-owned container broke reconciliation (insertBefore /
+    // removeChild on a moved child) — the composer then re-mounted, the URL
+    // update of a new chat lagged, and the pill lost its model label.
+    Object.assign(badge.style, { position: 'fixed', zIndex: '2147483000', marginLeft: '0', left: '-9999px', top: '-9999px' });
+    try { (document.documentElement || document.body).appendChild(badge); } catch (_) { return; }
+    placeBadge();
+  }
+
+  // Keep the chip on the composer's top-right edge (hidden when there is no
+  // visible composer, e.g. while a dialog replaced the page).
+  function placeBadge() {
+    const badge = document.getElementById('ak-eni-badge');
+    if (!badge) return;
+    const composer = findComposer();
+    const r = composer && typeof composer.getBoundingClientRect === 'function' ? composer.getBoundingClientRect() : null;
+    if (!r || (!r.width && !r.height)) { badge.style.display = 'none'; return; }
+    badge.style.display = 'inline-flex';
+    const w = badge.offsetWidth || 44;
+    const h = badge.offsetHeight || 20;
+    const vw = window.innerWidth || 0;
+    let left = r.right - w;
+    if (vw) left = Math.min(left, vw - w - 4);
+    badge.style.left = Math.max(4, Math.round(left)) + 'px';
+    badge.style.top = Math.max(4, Math.round(r.top - h - 4)) + 'px';
   }
 
   function refreshBadge() {
@@ -263,9 +278,14 @@
     const raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
     raf(() => {
       badgePending = false;
-      if (!document.getElementById('ak-eni-badge')) injectBadge();
+      if (!document.getElementById('ak-eni-badge')) injectBadge(); else placeBadge();
     });
   }) : null;
+  if (typeof window.addEventListener === 'function') {
+    const reposition = () => { try { placeBadge(); } catch (_) { /* ignore */ } };
+    window.addEventListener('resize', reposition, { passive: true });
+    window.addEventListener('scroll', reposition, { passive: true, capture: true });
+  }
 
   function onBodyReady() {
     injectBadge();

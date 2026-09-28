@@ -92,6 +92,7 @@ const state = {
   store: null,
   nav: { sessionId: null, path: '/', title: '' },
   aliases: new Map(),       // page conversation id → stream session id (conversationFor)
+  freshChat: null,          // {streamId, at}: first token arrived before the page had a conversation id
   prefs: {},
   // sessionId → { runs: [...mergeUsage shape], models: [{model,provider}], title }
   sessions: new Map(),
@@ -341,6 +342,13 @@ function setModelDisplay(text, { routed = false, known = true, pending = false, 
   state.hud.pending = !!pending && !(known && t);
   renderPill();
 }
+/* The newest model this conversation is known to have answered with (the
+ * tracker's last identified turn), or nothing. */
+function showLastKnownModel() {
+  const t = state.tracker;
+  if (t && t.lastModel) { setModelDisplay(t.lastModel, { routed: !!t.routed, known: true }); return; }
+  setModelDisplay('', { known: false });
+}
 function setHudStatus(text) {
   state.hud.status = String(text || '');
   q('ak-hud-status').textContent = state.hud.status;
@@ -447,6 +455,10 @@ function onTrace(p) {
     // turn may claim the page — a replayed run is more likely a late stream of
     // the chat the user just left.
     if (!repeat && state.nav.sessionId) aliasSession(state.nav.sessionId, p.sessionId);
+    // Sent from a page without a conversation id (/agent, /): the URL catches
+    // up a moment later (/agent/{id}) and that id may differ from the stream's
+    // — the nav handler maps it onto this stream instead of wiping the model.
+    if (!repeat && !state.nav.sessionId) state.freshChat = { streamId: p.sessionId, at: Date.now() };
     if (!repeat) setModelDisplay('识别中…', { known: false, pending: true });
     sub.textContent = `第 ${turn} 轮 · run ` + String(p.runId || '').slice(0, 14);
     setHudStatus(`第 ${turn} 轮 · 已截获令牌，正在识别模型…`);
@@ -458,10 +470,12 @@ function onTrace(p) {
   } else if (p.stage === 'error') {
     const turn = tracker.turnOf(runKey);
     if (turn) { tracker.setStatus(turn, p.fatal ? '失败' : '未识别'); if (p.fatal) tracker.mark(turn, 'trace-error', '读取失败'); }
+    if (state.hud.pending) showLastKnownModel(); // don't leave 识别中… hanging
     renderTurns();
   } else if (p.stage === 'done') {
     const turn = tracker.turnOf(runKey);
     if (turn) { const e = tracker.turns.find((x) => x.turn === turn); if (e && e.model) tracker.setStatus(turn, '完成'); }
+    if (state.hud.pending) showLastKnownModel();
     renderTurns();
   } else if (p.stage === 'model') {
     const rec = sessionRecord(p.sessionId);
@@ -485,7 +499,10 @@ function onTrace(p) {
       if (!p.complete) tracker.setStatus(turn, completion(run?.spans || []));
       else tracker.setStatus(turn, run?.spans?.length ? completion(run.spans) : '已识别');
     }
-    setModelDisplay(models.map((m) => m.model).join(' / '), { routed: !!tracker.routed, known: models.length > 0, strength: p.strength || '' });
+    // A trace read before its model labels arrived must not wipe what is
+    // already known for this conversation.
+    if (models.length) setModelDisplay(models.map((m) => m.model).join(' / '), { routed: !!tracker.routed, known: true, strength: p.strength || '' });
+    else if (p.complete || !state.hud.pending) showLastKnownModel();
     sub.textContent = ['run ' + String(p.runId || '').slice(0, 14), providers.join(', '), completion(run?.spans || [])].filter(Boolean).join(' · ');
     if (head) state.turnHead = head.split('\n')[0];
     setHudStatus(head ? head.split('\n')[0] : (turn ? `第 ${turn} 轮 · trace 未包含模型标签；不猜测模型` : 'trace 未包含模型标签；不猜测模型'));
@@ -790,6 +807,13 @@ onPage('nav', (n) => {
   if (!n || typeof n !== 'object') return;
   if (n.reason === 'init') applyPageFlags(); // fresh page load: injected scripts start with flags unset
   const switched = n.sessionId !== state.nav.sessionId;
+  // The page got its conversation id after the first token of a chat sent
+  // from /agent (see onTrace token stage): same conversation, keep it.
+  const fresh = state.freshChat;
+  if (switched && n.sessionId && fresh && !state.aliases.has(n.sessionId) && Date.now() - fresh.at < 5 * 60_000 && state.tracker.sessionId === fresh.streamId) {
+    aliasSession(n.sessionId, fresh.streamId);
+  }
+  if (switched) state.freshChat = null;
   state.nav = { sessionId: n.sessionId || null, path: n.path || '/', title: n.title || '' };
   // Lookups go through the stream session the page id aliases to (/c/{evalId}).
   const sid = conversationFor(state.nav.sessionId);
