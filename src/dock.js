@@ -1298,7 +1298,7 @@ function accountRowHtml(a, active) {
   const email = accountEmail(a);
   const sub = [
     email && email !== label ? email : '',
-    hasSession(a) ? sessionAgeText(a) : (hasLogin(a) ? '未保存登录状态 · 可自动登录' : '未保存登录状态'),
+    hasSession(a) ? sessionAgeText(a) : (hasLogin(a) ? '未保存登录状态 · 可自动登录' : (a.email ? '未保存登录状态 · 「登录」会打开登录页并填好邮箱' : '未保存登录状态')),
     a.provider === 'google' ? 'Google 登录' : (a.provider ? a.provider + ' 登录' : ''),
   ].filter(Boolean).join(' · ');
   const avatar = a.avatar ? ` style="background-image:url(&quot;${esc(a.avatar)}&quot;)"` : '';
@@ -1380,11 +1380,18 @@ setInterval(() => {
 }, 1000);
 
 onPage('account-result', (r) => { if (state.accountRpc) state.accountRpc.deliver(r); });
-onPage('account', (snap) => { if (state.acct) acct().onSnapshot(snap); });
+onPage('account', (snap) => {
+  // account.js checked the session the previous page handed over (restore
+  // with navigate); anything but intact / rotated is worth a log line
+  if (snap && snap.bootCheck && !/^(intact|rotated)$/.test(String(snap.bootCheck))) setStatus('账号会话核对: ' + snap.bootCheck);
+  if (state.acct) acct().onSnapshot(snap);
+});
 onPage('login', (p) => {
   if (!p || typeof p !== 'object') return;
   acctLoginStatus(loginStageText(p.stage, p));
   if (p.stage === 'need-code') { showTab('account'); if (EMBED) EMBED.open(); }
+  // the user must type on the page itself → get the sheet out of the way
+  if (p.stage === 'need-password' || p.stage === 'need-email') { setStatus(loginStageText(p.stage, p)); if (EMBED) EMBED.close(); }
 });
 
 // ── module: enhancement toggles + ENI ───────────────────────────────────

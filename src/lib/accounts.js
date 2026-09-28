@@ -94,6 +94,21 @@ export function hasSession(acc) {
 export function hasLogin(acc) {
   return !!(acc && acc.login && (acc.login.email || acc.login.password || acc.login.totp));
 }
+/* The login helper can start with typed credentials OR just the identity
+ * email (it opens the site's login dialog, picks the provider and fills the
+ * address; the user types the rest on the page). */
+export function canLogin(acc) {
+  return hasLogin(acc) || !!(acc && acc.email);
+}
+/* Forget a saved session that the site rejected (keeps the record and the
+ * typed credentials): the card shows 登录 instead of 切换 and the next attempt
+ * goes through the login helper instead of failing the same way again. */
+export function dropSession(state, id) {
+  const st = normalizeAccounts(state);
+  st.list = st.list.map((a) => (a.id === id ? { ...a, cookies: [], sig: '', expiresAt: 0 } : a));
+  if (st.activeId === id) st.activeId = '';
+  return st;
+}
 /* The credentials injected/account.js needs; identity email doubles as the
  * login email when none was typed. */
 export function credsFor(acc, extra = {}) {
@@ -198,7 +213,7 @@ export function planSwitch(state, id) {
   if (!target) return { ok: false, reason: '账号不存在' };
   if (st.activeId === id) return { ok: false, reason: '已经是当前账号' };
   if (hasSession(target)) return { ok: true, target, mode: 'cookies' };
-  if (hasLogin(target)) return { ok: true, target, mode: 'login' };
+  if (canLogin(target)) return { ok: true, target, mode: 'login' };
   return { ok: false, reason: '该账号没有保存的登录状态，也没有填写登录信息', target };
 }
 
@@ -206,6 +221,10 @@ export function setPending(state, pending, now = Date.now()) {
   const st = normalizeAccounts(state);
   st.pending = pending ? { ...pending, at: Number(pending.at) || now } : null;
   return st;
+}
+
+export function lostMessage(target, guest) {
+  return (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效' + (guest ? '（页面回到了游客状态）' : '') + '，已清除失效的会话，需要重新登录';
 }
 
 /* After a reload, decide what the new snapshot means for the pending
@@ -227,7 +246,11 @@ export function resolvePending(state, snap, now = Date.now()) {
   if (p.type === 'switch') {
     if (same) return { state: { ...st, pending: null }, outcome: { status: 'switched', account: target, message: '已切换到 ' + accountLabel(target) } };
     if (loggedIn) return { state: { ...st, pending: null }, outcome: { status: 'other', message: '页面登录的是另一个账号（' + (snap.email || snap.userId) + '）' } };
-    return { state: { ...st, pending: null }, outcome: { status: 'lost', account: target, message: (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效' + (guest ? '（页面回到了游客状态）' : '') + '，需要重新登录' } };
+    // The site rejected the restored session: its tokens are dead for good
+    // (a revoked refresh-token family never comes back) — forget them so the
+    // card offers 登录 instead of another doomed 切换.
+    const dropped = target ? dropSession({ ...st, pending: null }, target.id) : { ...st, pending: null };
+    return { state: dropped, outcome: { status: 'lost', account: target ? dropped.list.find((a) => a.id === target.id) || target : null, message: lostMessage(target, guest) } };
   }
   if (p.type === 'add') {
     if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' + (guest ? '（游客状态不会被记录）' : '') } };
@@ -259,7 +282,7 @@ export function loginStageText(stage, extra = {}) {
     'google-waiting': 'Google：等待页面…',
     'generic-email': '已填写邮箱…', 'generic-password': '已填写密码…', 'generic-totp': '已填入两步验证码…', 'generic-waiting': '等待登录页面…',
     'need-code': '需要验证码：请查看邮箱 / 短信，在下方输入后点「填入」',
-    'need-password': '需要密码：请在账号的登录信息里填写密码，或直接在页面输入',
+    'need-password': '需要密码：请直接在页面输入（或在账号的登录信息里填写密码，下次自动填）',
     'need-email': '需要邮箱：请在账号的登录信息里填写邮箱',
     done: '登录完成 ✓',
     stopped: '登录助手已停止',

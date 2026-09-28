@@ -18,7 +18,7 @@
  *   needLogin(account)                          the target has no credentials → open the editor
  *   onChange()                                  re-render hook (state/snapshot changed)
  *   sleep(ms), now()                            timing (tests shrink them) */
-import { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, hasLogin, isRealLogin } from './accounts.js';
+import { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, canLogin, isRealLogin, dropSession, lostMessage } from './accounts.js';
 
 const noop = () => {};
 const errText = (e) => (e && e.message) || String(e);
@@ -27,6 +27,12 @@ const isTimeout = (e) => /超时|timeout/i.test(errText(e));
  * account we are leaving (its conversation) — the new account cannot open it,
  * and a failed load there is what used to end in a logged-out page. */
 export const HOME_PATH = '/';
+/* After a switch was confirmed by the first snapshot, the site may still
+ * reject the restored refresh token a few seconds later (its middleware /
+ * auth client refreshes on load; a dead token family ends in a sign-out and
+ * an anonymous re-login). A guest snapshot inside this window is treated as
+ * "lost", not as the user logging out. */
+export const VERIFY_MS = 20_000;
 
 export function createAccountFlow(deps) {
   const d = {
@@ -36,7 +42,7 @@ export function createAccountFlow(deps) {
     ...deps,
   };
   if (typeof d.call !== 'function' || typeof d.reload !== 'function') throw new Error('createAccountFlow: call() and reload() are required');
-  const flow = { accounts: normalizeAccounts(null), snap: null, busy: false };
+  const flow = { accounts: normalizeAccounts(null), snap: null, busy: false, verify: null /* { id, until } */ };
   const invoke = (cmd, args) => (d.invoke ? Promise.resolve(d.invoke(cmd, args)).catch((e) => d.toast(cmd + ' 失败: ' + errText(e))) : Promise.resolve());
   const changed = () => { try { d.onChange(); } catch { /* render errors must not break the flow */ } };
   /* After a page-side `restore` / `clear` answered with navigateTo the page is
@@ -63,7 +69,18 @@ export function createAccountFlow(deps) {
     flow.snap = snap;
     const now = d.now();
     const before = JSON.stringify(flow.accounts);
-    const { state: st1, outcome } = resolvePending(flow.accounts, snap, now);
+    let { state: st1, outcome } = resolvePending(flow.accounts, snap, now);
+    // post-switch verification: the site threw the restored session away
+    if (!outcome && flow.verify) {
+      const v = flow.verify;
+      const target = st1.list.find((a) => a.id === v.id) || null;
+      if (now > v.until || !target) flow.verify = null;
+      else if (!isRealLogin(snap)) {
+        flow.verify = null;
+        st1 = dropSession(st1, v.id);
+        outcome = { status: 'lost', account: st1.list.find((a) => a.id === v.id) || target, message: lostMessage(target, !!snap.anonymous) };
+      } else if (target.userId && snap.userId && String(snap.userId) !== target.userId) flow.verify = null; // someone else logged in on purpose
+    }
     const merged = applySnapshot(st1, snap, now);
     if (JSON.stringify(merged.state) !== before) await flow.save(merged.state);
     if (outcome) await handleOutcome(outcome, snap);
@@ -81,13 +98,15 @@ export function createAccountFlow(deps) {
       d.toast(outcome.message);
       d.loginStatus('');
       await invoke('login_clear', {});
+      flow.verify = outcome.status === 'switched' && outcome.account ? { id: outcome.account.id, until: d.now() + VERIFY_MS } : null;
     } else if (outcome.status === 'lost') {
       const acc = outcome.account;
-      if (acc && acc.login && acc.login.auto !== false && hasLogin(acc)) {
+      d.toast(outcome.message);
+      if (acc && acc.login && acc.login.auto !== false && canLogin(acc)) {
         d.status(outcome.message + '，正在自动登录…');
         await flow.startLogin(acc, { snap });
       } else {
-        d.status(outcome.message + '。请在页面登录，或点 ✎ 填写登录信息后一键登录');
+        d.status(outcome.message + '。请点该账号的「登录」，或在页面登录');
       }
     }
   }
@@ -145,7 +164,7 @@ export function createAccountFlow(deps) {
    * holds another session is cleared + reloaded first, a logged-out page starts
    * the helper right away. */
   flow.startLogin = async (acc, { snap = null, st = flow.accounts } = {}) => {
-    if (!hasLogin(acc)) {
+    if (!canLogin(acc)) {
       d.status('请先填写该账号的登录信息（邮箱 / 密码 / 2FA）');
       d.needLogin(acc);
       return { ok: false, reason: 'no-credentials' };
@@ -155,7 +174,7 @@ export function createAccountFlow(deps) {
     st = setPending(st, { type: 'login', id: acc.id }, d.now());
     await flow.save(st);
     const creds = credsFor(acc);
-    d.loginStatus('登录助手已启动：' + accountLabel(acc));
+    d.loginStatus('登录助手已启动：' + accountLabel(acc) + (creds.password ? '' : '（未保存密码，请在登录页面输入）'));
     await invoke('login_set', { creds });
     // A page that still holds another (real) session is cleared and left for
     // the site root; a guest / logged-out page runs the helper right here.

@@ -140,6 +140,81 @@ test('restore with expectSig refuses a stale swap (returns previous, touches not
   assert.deepEqual(d2.navigations, [{ how: 'replace', url: 'https://arena.ai/' }]);
 });
 
+/* The window between the swap and the next document: the old page's auth
+ * client must not write its session back (frozen document.cookie), stale
+ * web-storage copies go, and the next document checks the stamp. */
+test('after a navigating restore the leaving page cannot write auth cookies back; web-storage session copies are purged', async () => {
+  const a = chunked('arena-auth-prod-v1', supabaseSession({ email: 'alice@example.com', id: 'ua', refresh: 'rt-a' }));
+  const b = chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub' }), 200);
+  const local = new Map([['sb-abcdefgh-auth-token', '{"old":1}'], ['arena-auth-prod-v1', 'cache'], ['ak_theme', 'dark']]);
+  const d = fakeDom({ jar: a, local });
+  const res = plain(await d.api.call('restore', JSON.stringify({ cookies: b, navigate: '/' }), 'r1'));
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.data.storageCleared, 2, 'stale session copies removed from web storage');
+  assert.deepEqual([...local.keys()].filter((k) => k !== 'ak_account_cookie_scope'), ['ak_theme']);
+  assert.equal(plain(d.api.snapshot()).email, 'bob@example.com');
+  // the site's client answers a late token refresh for Alice → dropped
+  for (const c of a) d.doc.cookie = `${c.name}=${c.value}; Path=/`;
+  assert.equal(plain(d.api.snapshot()).email, 'bob@example.com', 'auth-cookie writes are frozen once the page is leaving');
+  d.doc.cookie = 'cf_clearance=still-fine; Path=/';
+  assert.ok(d.cookies.has('|cf_clearance'), 'unrelated cookie writes still work');
+  // the next document gets the expected session in sessionStorage
+  const exp = JSON.parse(d.sessionStorage.getItem('arenakit.account.expect'));
+  assert.equal(exp.userId, 'ub');
+  assert.equal(exp.cookies.length, b.length);
+  assert.equal(exp.sig, plain(d.api.snapshot()).sig);
+  // clear{navigate}: no stamp (nothing to expect on a logged-out page)
+  const d2 = fakeDom({ jar: a });
+  await d2.api.call('clear', JSON.stringify({ navigate: true }), 'c1');
+  assert.equal(d2.sessionStorage.getItem('arenakit.account.expect'), null);
+  for (const c of a) d2.doc.cookie = `${c.name}=${c.value}; Path=/`;
+  assert.equal(plain(d2.api.snapshot()).hasAuthCookie, false, 'frozen after clear too');
+});
+
+test('document start after a switch: the expected session is re-applied once when the cookies lost it (old account / guest / nothing), left alone when intact or rotated', () => {
+  const bob = chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' }), 200);
+  const bobRotated = chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b2' }), 200);
+  const alice = chunked('arena-auth-prod-v1', supabaseSession({ email: 'alice@example.com', id: 'ua' }));
+  const sigOf = (cookies) => fakeDom({ jar: cookies }).api.sigOf(cookies.map((c) => ({ name: c.name, value: c.value })).sort((x, y) => (x.name < y.name ? -1 : 1)));
+  const stamp = (over = {}) => new Map([['arenakit.account.expect', JSON.stringify({ cookies: bob, scope: 'domain', sig: sigOf(bob), userId: 'ub', at: Date.now(), ...over })]]);
+  const dom = (jar, session) => fakeDom({ pathname: '/', jar: jar.map((c) => ({ ...c, domain: '.arena.ai' })), session });
+
+  // intact → nothing to do, stamp consumed
+  let d = dom(bob, stamp());
+  assert.equal(d.api.bootCheck, 'intact');
+  assert.deepEqual(d.navigations, []);
+  assert.equal(d.sessionStorage.getItem('arenakit.account.expect'), null, 'stamp consumed');
+  // the server refreshed Bob's token while serving the page → same user, keep it
+  d = dom(bobRotated, stamp());
+  assert.equal(d.api.bootCheck, 'rotated');
+  assert.deepEqual(d.navigations, []);
+  assert.equal(plain(d.api.snapshot()).sig, sigOf(bobRotated));
+  // the old page wrote Alice back (late refresh answer / Set-Cookie) → re-apply Bob, load again
+  d = dom(alice, stamp());
+  assert.equal(d.api.bootCheck, 'reapplied:other:ua');
+  assert.equal(plain(d.api.snapshot()).email, 'bob@example.com');
+  assert.ok([...d.cookies.values()].filter((c) => c.name.startsWith('arena-auth')).every((c) => c.domain === '.arena.ai'), 'restored with the stamped scope');
+  assert.deepEqual(d.navigations, [{ how: 'replace', url: 'https://arena.ai/' }]);
+  for (const c of alice) d.doc.cookie = `${c.name}=${c.value}; Path=/`;
+  assert.equal(plain(d.api.snapshot()).email, 'bob@example.com', 'writes frozen while the reload is on its way');
+  // guest / no cookies at all → re-applied as well (a dead session is rejected again → the dock reports lost)
+  d = dom(chunked('arena-auth-prod-v1', anonymousSession({ id: 'anon-1' })), stamp());
+  assert.equal(d.api.bootCheck, 'reapplied:guest');
+  d = dom([], stamp());
+  assert.equal(d.api.bootCheck, 'reapplied:none');
+  // the init snapshot carries the check for the dock's activity log
+  d.flushTimeouts();
+  assert.equal(d.lastEvent('account').payload.bootCheck, 'reapplied:none');
+  // stale stamp (older than 30 s) is ignored
+  d = dom(alice, stamp({ at: Date.now() - 31_000 }));
+  assert.equal(d.api.bootCheck, 'expired');
+  assert.equal(plain(d.api.snapshot()).email, 'alice@example.com');
+  assert.deepEqual(d.navigations, []);
+  // no stamp → nothing
+  d = dom(alice, new Map());
+  assert.equal(d.api.bootCheck, '');
+});
+
 test('restore on a host-only site keeps host-only scope; clear() removes every auth cookie', async () => {
   const a = chunked('arena-auth-prod-v1', supabaseSession({ email: 'alice@example.com', id: 'ua' }));
   const d = fakeDom({ jar: a });

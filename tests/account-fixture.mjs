@@ -71,7 +71,22 @@ function matches(el, sel) {
   });
 }
 
-export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}) {
+/* Map-backed Web Storage (length / key(i) included: account.js scans for
+ * stale `sb-*-auth-token` copies). Pass a Map to share it across page loads
+ * the way sessionStorage survives same-tab navigations. */
+export function webStorage(m = new Map()) {
+  return {
+    get length() { return m.size; },
+    key: (i) => [...m.keys()][i] ?? null,
+    getItem: (k) => m.get(k) ?? null,
+    setItem: (k, v) => m.set(k, String(v)),
+    removeItem: (k) => m.delete(k),
+    clear: () => m.clear(),
+    map: m,
+  };
+}
+
+export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [], session = new Map(), local = new Map() } = {}) {
   const cookies = new Map(); // key domain|name → { name, value, domain }
   const key = (domain, name) => (domain || '') + '|' + name;
   for (const c of jar) cookies.set(key(c.domain || '', c.name), { name: c.name, value: c.value, domain: c.domain || '' });
@@ -86,7 +101,8 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
     assign(url) { navigations.push({ how: 'assign', url }); },
     reload() { navigations.push({ how: 'reload', url: this.href }); },
   };
-  const sessionStorage = (() => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })();
+  const sessionStorage = webStorage(session);
+  const localStorage = webStorage(local);
 
   const doc = {
     readyState: 'complete',
@@ -96,6 +112,7 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
     addEventListener() {},
   };
   Object.defineProperty(doc, 'cookie', {
+    configurable: true, // like Document.prototype.cookie: account.js may shadow it when the page is leaving
     get() { return [...cookies.values()].map((c) => c.name + '=' + c.value).join('; '); },
     set(str) {
       const [pair, ...attrParts] = String(str).split(';');
@@ -138,7 +155,7 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
     document: doc, location, console: quiet,
     atob: (s) => Buffer.from(s, 'base64').toString('binary'), TextDecoder,
     Uint8Array, Uint32Array, DataView, JSON, Math, Date, Object, Array, String, Number, Error, Map, Set, Promise, RegExp, URL,
-    localStorage: (() => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
+    localStorage,
     sessionStorage,
     setTimeout: (fn, ms) => { timers.timeouts.push({ fn, ms }); return timers.timeouts.length; },
     clearTimeout() {},
@@ -160,7 +177,7 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
   const flushTimeouts = () => { const list = timers.timeouts.splice(0); for (const t of list) t.fn(); };
   const tickIntervals = () => { for (const t of timers.intervals) if (t.fn) t.fn(); };
   const lastEvent = (name) => [...events].reverse().find((e) => e.name === name) || null;
-  return { sandbox, doc, cookies, events, invokes, mk, clearElements, flushTimeouts, tickIntervals, lastEvent, location, navigations, sessionStorage, api: sandbox.ArenaAccount };
+  return { sandbox, doc, cookies, events, invokes, mk, clearElements, flushTimeouts, tickIntervals, lastEvent, location, navigations, sessionStorage, localStorage, api: sandbox.ArenaAccount };
 }
 
 export const settle = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };

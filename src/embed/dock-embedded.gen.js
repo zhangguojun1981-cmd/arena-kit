@@ -2604,6 +2604,21 @@ function hasSession(acc) {
 function hasLogin(acc) {
   return !!(acc && acc.login && (acc.login.email || acc.login.password || acc.login.totp));
 }
+/* The login helper can start with typed credentials OR just the identity
+ * email (it opens the site's login dialog, picks the provider and fills the
+ * address; the user types the rest on the page). */
+function canLogin(acc) {
+  return hasLogin(acc) || !!(acc && acc.email);
+}
+/* Forget a saved session that the site rejected (keeps the record and the
+ * typed credentials): the card shows 登录 instead of 切换 and the next attempt
+ * goes through the login helper instead of failing the same way again. */
+function dropSession(state, id) {
+  const st = normalizeAccounts(state);
+  st.list = st.list.map((a) => (a.id === id ? { ...a, cookies: [], sig: '', expiresAt: 0 } : a));
+  if (st.activeId === id) st.activeId = '';
+  return st;
+}
 /* The credentials injected/account.js needs; identity email doubles as the
  * login email when none was typed. */
 function credsFor(acc, extra = {}) {
@@ -2708,7 +2723,7 @@ function planSwitch(state, id) {
   if (!target) return { ok: false, reason: '账号不存在' };
   if (st.activeId === id) return { ok: false, reason: '已经是当前账号' };
   if (hasSession(target)) return { ok: true, target, mode: 'cookies' };
-  if (hasLogin(target)) return { ok: true, target, mode: 'login' };
+  if (canLogin(target)) return { ok: true, target, mode: 'login' };
   return { ok: false, reason: '该账号没有保存的登录状态，也没有填写登录信息', target };
 }
 
@@ -2716,6 +2731,10 @@ function setPending(state, pending, now = Date.now()) {
   const st = normalizeAccounts(state);
   st.pending = pending ? { ...pending, at: Number(pending.at) || now } : null;
   return st;
+}
+
+function lostMessage(target, guest) {
+  return (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效' + (guest ? '（页面回到了游客状态）' : '') + '，已清除失效的会话，需要重新登录';
 }
 
 /* After a reload, decide what the new snapshot means for the pending
@@ -2737,7 +2756,11 @@ function resolvePending(state, snap, now = Date.now()) {
   if (p.type === 'switch') {
     if (same) return { state: { ...st, pending: null }, outcome: { status: 'switched', account: target, message: '已切换到 ' + accountLabel(target) } };
     if (loggedIn) return { state: { ...st, pending: null }, outcome: { status: 'other', message: '页面登录的是另一个账号（' + (snap.email || snap.userId) + '）' } };
-    return { state: { ...st, pending: null }, outcome: { status: 'lost', account: target, message: (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效' + (guest ? '（页面回到了游客状态）' : '') + '，需要重新登录' } };
+    // The site rejected the restored session: its tokens are dead for good
+    // (a revoked refresh-token family never comes back) — forget them so the
+    // card offers 登录 instead of another doomed 切换.
+    const dropped = target ? dropSession({ ...st, pending: null }, target.id) : { ...st, pending: null };
+    return { state: dropped, outcome: { status: 'lost', account: target ? dropped.list.find((a) => a.id === target.id) || target : null, message: lostMessage(target, guest) } };
   }
   if (p.type === 'add') {
     if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' + (guest ? '（游客状态不会被记录）' : '') } };
@@ -2769,7 +2792,7 @@ function loginStageText(stage, extra = {}) {
     'google-waiting': 'Google：等待页面…',
     'generic-email': '已填写邮箱…', 'generic-password': '已填写密码…', 'generic-totp': '已填入两步验证码…', 'generic-waiting': '等待登录页面…',
     'need-code': '需要验证码：请查看邮箱 / 短信，在下方输入后点「填入」',
-    'need-password': '需要密码：请在账号的登录信息里填写密码，或直接在页面输入',
+    'need-password': '需要密码：请直接在页面输入（或在账号的登录信息里填写密码，下次自动填）',
     'need-email': '需要邮箱：请在账号的登录信息里填写邮箱',
     done: '登录完成 ✓',
     stopped: '登录助手已停止',
@@ -2792,7 +2815,7 @@ function sessionAgeText(acc, now = Date.now()) {
   return Math.round(h / 24) + ' 天前保存';
 }
 
-__exports.PENDING_TTL_MS = PENDING_TTL_MS; __exports.newId = newId; __exports.normalizeAccounts = normalizeAccounts; __exports.normalizeAccount = normalizeAccount; __exports.isRealLogin = isRealLogin; __exports.accountLabel = accountLabel; __exports.accountEmail = accountEmail; __exports.initialOf = initialOf; __exports.hasSession = hasSession; __exports.hasLogin = hasLogin; __exports.credsFor = credsFor; __exports.findForSnapshot = findForSnapshot; __exports.applySnapshot = applySnapshot; __exports.upsertLogin = upsertLogin; __exports.removeAccount = removeAccount; __exports.planSwitch = planSwitch; __exports.setPending = setPending; __exports.resolvePending = resolvePending; __exports.loginStageText = loginStageText; __exports.sessionAgeText = sessionAgeText;
+__exports.PENDING_TTL_MS = PENDING_TTL_MS; __exports.newId = newId; __exports.normalizeAccounts = normalizeAccounts; __exports.normalizeAccount = normalizeAccount; __exports.isRealLogin = isRealLogin; __exports.accountLabel = accountLabel; __exports.accountEmail = accountEmail; __exports.initialOf = initialOf; __exports.hasSession = hasSession; __exports.hasLogin = hasLogin; __exports.canLogin = canLogin; __exports.dropSession = dropSession; __exports.credsFor = credsFor; __exports.findForSnapshot = findForSnapshot; __exports.applySnapshot = applySnapshot; __exports.upsertLogin = upsertLogin; __exports.removeAccount = removeAccount; __exports.planSwitch = planSwitch; __exports.setPending = setPending; __exports.lostMessage = lostMessage; __exports.resolvePending = resolvePending; __exports.loginStageText = loginStageText; __exports.sessionAgeText = sessionAgeText;
 });
 __define("lib/account-flow.js", function (__exports, __require) {
 'use strict';
@@ -2816,7 +2839,7 @@ __define("lib/account-flow.js", function (__exports, __require) {
  *   needLogin(account)                          the target has no credentials → open the editor
  *   onChange()                                  re-render hook (state/snapshot changed)
  *   sleep(ms), now()                            timing (tests shrink them) */
-const { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, hasLogin, isRealLogin } = __require("lib/accounts.js");
+const { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, canLogin, isRealLogin, dropSession, lostMessage } = __require("lib/accounts.js");
 
 const noop = () => {};
 const errText = (e) => (e && e.message) || String(e);
@@ -2825,6 +2848,12 @@ const isTimeout = (e) => /超时|timeout/i.test(errText(e));
  * account we are leaving (its conversation) — the new account cannot open it,
  * and a failed load there is what used to end in a logged-out page. */
 const HOME_PATH = '/';
+/* After a switch was confirmed by the first snapshot, the site may still
+ * reject the restored refresh token a few seconds later (its middleware /
+ * auth client refreshes on load; a dead token family ends in a sign-out and
+ * an anonymous re-login). A guest snapshot inside this window is treated as
+ * "lost", not as the user logging out. */
+const VERIFY_MS = 20_000;
 
 function createAccountFlow(deps) {
   const d = {
@@ -2834,7 +2863,7 @@ function createAccountFlow(deps) {
     ...deps,
   };
   if (typeof d.call !== 'function' || typeof d.reload !== 'function') throw new Error('createAccountFlow: call() and reload() are required');
-  const flow = { accounts: normalizeAccounts(null), snap: null, busy: false };
+  const flow = { accounts: normalizeAccounts(null), snap: null, busy: false, verify: null /* { id, until } */ };
   const invoke = (cmd, args) => (d.invoke ? Promise.resolve(d.invoke(cmd, args)).catch((e) => d.toast(cmd + ' 失败: ' + errText(e))) : Promise.resolve());
   const changed = () => { try { d.onChange(); } catch { /* render errors must not break the flow */ } };
   /* After a page-side `restore` / `clear` answered with navigateTo the page is
@@ -2861,7 +2890,18 @@ function createAccountFlow(deps) {
     flow.snap = snap;
     const now = d.now();
     const before = JSON.stringify(flow.accounts);
-    const { state: st1, outcome } = resolvePending(flow.accounts, snap, now);
+    let { state: st1, outcome } = resolvePending(flow.accounts, snap, now);
+    // post-switch verification: the site threw the restored session away
+    if (!outcome && flow.verify) {
+      const v = flow.verify;
+      const target = st1.list.find((a) => a.id === v.id) || null;
+      if (now > v.until || !target) flow.verify = null;
+      else if (!isRealLogin(snap)) {
+        flow.verify = null;
+        st1 = dropSession(st1, v.id);
+        outcome = { status: 'lost', account: st1.list.find((a) => a.id === v.id) || target, message: lostMessage(target, !!snap.anonymous) };
+      } else if (target.userId && snap.userId && String(snap.userId) !== target.userId) flow.verify = null; // someone else logged in on purpose
+    }
     const merged = applySnapshot(st1, snap, now);
     if (JSON.stringify(merged.state) !== before) await flow.save(merged.state);
     if (outcome) await handleOutcome(outcome, snap);
@@ -2879,13 +2919,15 @@ function createAccountFlow(deps) {
       d.toast(outcome.message);
       d.loginStatus('');
       await invoke('login_clear', {});
+      flow.verify = outcome.status === 'switched' && outcome.account ? { id: outcome.account.id, until: d.now() + VERIFY_MS } : null;
     } else if (outcome.status === 'lost') {
       const acc = outcome.account;
-      if (acc && acc.login && acc.login.auto !== false && hasLogin(acc)) {
+      d.toast(outcome.message);
+      if (acc && acc.login && acc.login.auto !== false && canLogin(acc)) {
         d.status(outcome.message + '，正在自动登录…');
         await flow.startLogin(acc, { snap });
       } else {
-        d.status(outcome.message + '。请在页面登录，或点 ✎ 填写登录信息后一键登录');
+        d.status(outcome.message + '。请点该账号的「登录」，或在页面登录');
       }
     }
   }
@@ -2943,7 +2985,7 @@ function createAccountFlow(deps) {
    * holds another session is cleared + reloaded first, a logged-out page starts
    * the helper right away. */
   flow.startLogin = async (acc, { snap = null, st = flow.accounts } = {}) => {
-    if (!hasLogin(acc)) {
+    if (!canLogin(acc)) {
       d.status('请先填写该账号的登录信息（邮箱 / 密码 / 2FA）');
       d.needLogin(acc);
       return { ok: false, reason: 'no-credentials' };
@@ -2953,7 +2995,7 @@ function createAccountFlow(deps) {
     st = setPending(st, { type: 'login', id: acc.id }, d.now());
     await flow.save(st);
     const creds = credsFor(acc);
-    d.loginStatus('登录助手已启动：' + accountLabel(acc));
+    d.loginStatus('登录助手已启动：' + accountLabel(acc) + (creds.password ? '' : '（未保存密码，请在登录页面输入）'));
     await invoke('login_set', { creds });
     // A page that still holds another (real) session is cleared and left for
     // the site root; a guest / logged-out page runs the helper right here.
@@ -3023,7 +3065,7 @@ function createAccountFlow(deps) {
   return flow;
 }
 
-__exports.HOME_PATH = HOME_PATH; __exports.createAccountFlow = createAccountFlow;
+__exports.HOME_PATH = HOME_PATH; __exports.VERIFY_MS = VERIFY_MS; __exports.createAccountFlow = createAccountFlow;
 });
 __define("lib/totp.js", function (__exports, __require) {
 'use strict';
@@ -4580,7 +4622,7 @@ function accountRowHtml(a, active) {
   const email = accountEmail(a);
   const sub = [
     email && email !== label ? email : '',
-    hasSession(a) ? sessionAgeText(a) : (hasLogin(a) ? '未保存登录状态 · 可自动登录' : '未保存登录状态'),
+    hasSession(a) ? sessionAgeText(a) : (hasLogin(a) ? '未保存登录状态 · 可自动登录' : (a.email ? '未保存登录状态 · 「登录」会打开登录页并填好邮箱' : '未保存登录状态')),
     a.provider === 'google' ? 'Google 登录' : (a.provider ? a.provider + ' 登录' : ''),
   ].filter(Boolean).join(' · ');
   const avatar = a.avatar ? ` style="background-image:url(&quot;${esc(a.avatar)}&quot;)"` : '';
@@ -4662,11 +4704,18 @@ setInterval(() => {
 }, 1000);
 
 onPage('account-result', (r) => { if (state.accountRpc) state.accountRpc.deliver(r); });
-onPage('account', (snap) => { if (state.acct) acct().onSnapshot(snap); });
+onPage('account', (snap) => {
+  // account.js checked the session the previous page handed over (restore
+  // with navigate); anything but intact / rotated is worth a log line
+  if (snap && snap.bootCheck && !/^(intact|rotated)$/.test(String(snap.bootCheck))) setStatus('账号会话核对: ' + snap.bootCheck);
+  if (state.acct) acct().onSnapshot(snap);
+});
 onPage('login', (p) => {
   if (!p || typeof p !== 'object') return;
   acctLoginStatus(loginStageText(p.stage, p));
   if (p.stage === 'need-code') { showTab('account'); if (EMBED) EMBED.open(); }
+  // the user must type on the page itself → get the sheet out of the way
+  if (p.stage === 'need-password' || p.stage === 'need-email') { setStatus(loginStageText(p.stage, p)); if (EMBED) EMBED.close(); }
 });
 
 // ── module: enhancement toggles + ENI ───────────────────────────────────

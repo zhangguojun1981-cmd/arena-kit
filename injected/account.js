@@ -45,6 +45,8 @@
   const L = W.location || {};
   const MAX_AGE = 400 * 24 * 3600; // @supabase/ssr default cookie lifetime
   const SCOPE_KEY = 'ak_account_cookie_scope';
+  const EXPECT_KEY = 'arenakit.account.expect'; // sessionStorage: the session the NEXT document must start with
+  const EXPECT_TTL_MS = 30_000;
   const WATCH_MS = 4000;
   const LOGIN_TTL_MS = 4 * 60 * 1000;
 
@@ -109,6 +111,57 @@
     const present = authCookies().length;
     for (const n of names) expireCookie(n);
     return present;
+  }
+
+  /* Web-storage copies of a session (classic supabase-js keeps
+   * `sb-<ref>-auth-token` in localStorage; the site may cache under the
+   * cookie name too). Swapping the cookies while such a copy survives lets
+   * the site's client resurrect the old account — and burn the new one's
+   * refresh token doing so. Harmless when nothing matches. */
+  const isAuthStorageKey = (k) => /^sb-[\w-]+-auth-token/i.test(k) || /^arena-auth/i.test(k) || /supabase\.auth\.token/i.test(k);
+  function clearWebStorageSessions() {
+    let n = 0;
+    for (const store of [W.localStorage, W.sessionStorage]) {
+      try {
+        const keys = [];
+        for (let i = 0; i < store.length; i++) { const k = store.key(i); if (k && isAuthStorageKey(k)) keys.push(k); }
+        for (const k of keys) { store.removeItem(k); n++; }
+      } catch (_) { /* storage blocked */ }
+    }
+    return n;
+  }
+  /* This document is leaving (restore / clear with `navigate`): from now on
+   * the site's own auth client must not write auth cookies any more — a
+   * token refresh answered in the few hundred ms before the next document
+   * commits used to overwrite the freshly restored session. */
+  let frozen = false;
+  function freezeAuthWrites() {
+    if (frozen) return true;
+    frozen = true;
+    try {
+      const own = Object.getOwnPropertyDescriptor(D, 'cookie');
+      const proto = W.Document && W.Document.prototype ? Object.getOwnPropertyDescriptor(W.Document.prototype, 'cookie') : null;
+      const desc = (own && own.set && own.get) ? own : (proto && proto.set && proto.get ? proto : null);
+      if (!desc) return false;
+      Object.defineProperty(D, 'cookie', {
+        configurable: true,
+        get() { return desc.get.call(D); },
+        set(v) {
+          const name = String(v).split(';')[0].split('=')[0].trim();
+          if (isAuthName(name)) return; // dropped: the page is on its way out
+          desc.set.call(D, v);
+        },
+      });
+    } catch (_) { return false; }
+    try {
+      const cs = W.cookieStore;
+      if (cs) {
+        const guard = (orig) => function (a, b) { const name = typeof a === 'string' ? a : (a && a.name); if (isAuthName(String(name || ''))) return Promise.resolve(); return orig.apply(this, [a, b]); };
+        if (typeof cs.set === 'function') cs.set = guard(cs.set);
+        if (typeof cs.delete === 'function') cs.delete = guard(cs.delete);
+      }
+    } catch (_) { /* no Cookie Store API */ }
+    return true;
   }
 
   // ── session decoding ─────────────────────────────────────────────────
@@ -273,8 +326,14 @@
     const strangers = after.filter((a) => !list.some((c) => c.name === a.name));
     if (strangers.length) throw new Error('无法清除旧的登录 Cookie: ' + strangers.map((c) => c.name).join(', '));
     lastSig = sigOf(after); // our own change — the dock already knows
-    const res = { ok: true, cleared, written: list.length, scope, previous };
-    if (args && args.navigate) res.navigateTo = navTarget(args.navigate === true ? '/' : args.navigate);
+    const res = { ok: true, cleared, written: list.length, scope, previous, storageCleared: clearWebStorageSessions() };
+    if (args && args.navigate) {
+      res.navigateTo = navTarget(args.navigate === true ? '/' : args.navigate);
+      // the next document verifies it really starts with this session
+      const dec = decodeSession(list);
+      const id = dec ? identity(dec.session) : null;
+      try { W.sessionStorage.setItem(EXPECT_KEY, JSON.stringify({ cookies: list, scope, sig: lastSig, userId: (id && id.userId) || '', at: now() })); } catch (_) { /* storage blocked */ }
+    }
     return res;
   }
   function actClear(args) {
@@ -283,9 +342,38 @@
     const remaining = authCookies();
     lastSig = sigOf(remaining);
     if (remaining.length) throw new Error('部分 Cookie 无法删除: ' + remaining.map((c) => c.name).join(', '));
-    const res = { ok: true, cleared, previous };
+    const res = { ok: true, cleared, previous, storageCleared: clearWebStorageSessions() };
+    try { W.sessionStorage.removeItem(EXPECT_KEY); } catch (_) { /* ignore */ }
     if (args && args.navigate) res.navigateTo = navTarget(args.navigate === true ? '/' : args.navigate);
     return res;
+  }
+
+  /* Document start of the page a `restore{navigate}` led to: the swap can
+   * still have been undone in flight (a refresh answer of the old page, a
+   * Set-Cookie on one of its late requests, mixed chunks). If the cookies no
+   * longer carry the expected identity — a rotation of the SAME user by the
+   * server is fine — write them again before the site's scripts run and
+   * load once more; the stamp is consumed first, so this happens at most
+   * once. The result is reported with the watcher's `init` snapshot. */
+  let bootCheck = '';
+  function reassertExpected() {
+    let exp = null;
+    try { exp = JSON.parse(W.sessionStorage.getItem(EXPECT_KEY) || 'null'); W.sessionStorage.removeItem(EXPECT_KEY); } catch (_) { return ''; }
+    if (!exp || !Array.isArray(exp.cookies) || !exp.cookies.length) return '';
+    if (now() - (Number(exp.at) || 0) > EXPECT_TTL_MS) return 'expired';
+    const cur = authCookies();
+    if (sigOf(cur) === exp.sig) return 'intact';
+    const dec = decodeSession(cur);
+    const id = dec ? identity(dec.session) : null;
+    if (id && !id.anonymous && id.userId && id.userId === exp.userId) return 'rotated';
+    const found = id ? (id.anonymous ? 'guest' : 'other:' + id.userId) : (cur.length ? 'undecodable' : 'none');
+    const list = exp.cookies.filter((c) => c && typeof c.name === 'string' && isAuthName(c.name) && validValue(c.value));
+    clearAuth(list);
+    for (const c of list) writeCookie(c.name, c.value, exp.scope || scopeCache() || 'host');
+    const after = authCookies();
+    const good = list.length > 0 && list.every((c) => after.some((a) => a.name === c.name && a.value === c.value));
+    if (good) { freezeAuthWrites(); navigateTo(String(L.pathname || '/') + String(L.search || '')); }
+    return (good ? 'reapplied:' : 'reapply-failed:') + found;
   }
 
   // ── watcher: report every auth-cookie change to the dock ─────────────
@@ -294,6 +382,7 @@
     const s = snapshot();
     if (s.sig === lastSig && reason !== 'force') return false;
     lastSig = s.sig;
+    if (reason === 'init' && bootCheck) s.bootCheck = bootCheck;
     send('account', Object.assign({ reason }, s));
     return true;
   }
@@ -574,18 +663,20 @@
     send('account-result', Object.assign({ reqId }, res));
     // restore / clear with `navigate`: leave right away (after the answer has
     // been handed to the bridge), before the site's auth client can react.
-    if (res.ok && res.data && res.data.navigateTo) navigateTo(res.data.navigateTo);
+    if (res.ok && res.data && res.data.navigateTo) { freezeAuthWrites(); navigateTo(res.data.navigateTo); }
     return res;
   }
 
   W.ArenaAccount = {
     call, snapshot, startLogin, stopLogin,
     // exposed for tests
-    parseCookieHeader, groupChunks, decodeSession, identity, sigOf, isAuthName, detectScope, navTarget,
+    parseCookieHeader, groupChunks, decodeSession, identity, sigOf, isAuthName, detectScope, navTarget, freezeAuthWrites, reassertExpected,
+    get bootCheck() { return bootCheck; },
   };
 
   // ── boot the watcher on arena pages ──────────────────────────────────
   if (isArenaHost(hostOf())) {
+    try { bootCheck = reassertExpected(); } catch (_) { bootCheck = 'error'; }
     later(() => announce('init'), 800);
     setInterval(() => announce('poll'), WATCH_MS);
     const onWake = () => announce('wake');

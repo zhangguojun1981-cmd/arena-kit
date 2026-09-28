@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, loginStageText, sessionAgeText, PENDING_TTL_MS } from '../src/lib/accounts.js';
+import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, canLogin, dropSession, loginStageText, sessionAgeText, PENDING_TTL_MS } from '../src/lib/accounts.js';
 
 const snap = (over = {}) => ({
   loggedIn: true, userId: 'ua', email: 'Alice@Example.com', name: 'Alice', avatar: 'https://img/a', provider: 'google', expiresAt: 1_800_000_000_000,
@@ -117,6 +117,34 @@ test('planSwitch: cookies first, login helper as fallback, refuses the active ac
   assert.equal(planSwitch(st, 'nope').ok, false);
   const st2 = applySnapshot(st, snap({ userId: 'ub', email: 'bob@example.com' }), 2).state; // bob logged in now
   assert.equal(planSwitch(st2, st.activeId).mode, 'cookies', 'alice has cookies');
+});
+
+test('dropSession forgets a rejected session (record + credentials kept); an identity email alone is enough for the login helper', () => {
+  const st = applySnapshot(null, snap(), 1).state; // alice, auto-recorded, no typed credentials
+  const alice = st.list[0];
+  assert.equal(hasSession(alice), true);
+  assert.equal(hasLogin(alice), false);
+  assert.equal(canLogin(alice), true, 'identity email → the helper can open the dialog and fill it');
+  const st2 = applySnapshot(st, snap({ userId: 'ub', email: 'bob@example.com' }), 2).state;
+  const dropped = dropSession(st2, alice.id);
+  const a2 = dropped.list.find((a) => a.id === alice.id);
+  assert.deepEqual(a2.cookies, []);
+  assert.equal(a2.sig, '');
+  assert.equal(a2.expiresAt, 0);
+  assert.equal(a2.email, 'alice@example.com', 'record kept');
+  assert.equal(dropped.activeId, st2.activeId, 'another account stays active');
+  assert.equal(dropSession(st, alice.id).activeId, '', 'dropping the active account clears activeId');
+  assert.equal(planSwitch(dropped, alice.id).mode, 'login', 'no session → helper with the identity email');
+  assert.equal(credsFor(a2).email, 'alice@example.com');
+  assert.equal(credsFor(a2).password, '');
+  // resolvePending lost → the target's session is dropped right there
+  const pend = setPending(st2, { type: 'switch', id: alice.id }, 3);
+  const r = resolvePending(pend, { loggedIn: false, anonymous: true, hasAuthCookie: true, userId: 'anon-1', email: '' }, 4);
+  assert.equal(r.outcome.status, 'lost');
+  assert.deepEqual(r.state.list.find((a) => a.id === alice.id).cookies, []);
+  assert.deepEqual(r.outcome.account.cookies, []);
+  assert.match(r.outcome.message, /已清除失效的会话，需要重新登录/);
+  assert.equal(r.state.pending, null);
 });
 
 test('resolvePending interprets the post-reload snapshot for switch / add / login', () => {
