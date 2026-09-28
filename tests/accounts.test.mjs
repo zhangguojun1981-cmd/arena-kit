@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, canLogin, dropSession, loginStageText, sessionAgeText, PENDING_TTL_MS } from '../src/lib/accounts.js';
+import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, canLogin, dropSession, loginStageText, sessionAgeText, PENDING_TTL_MS, loginMethod } from '../src/lib/accounts.js';
 
 const snap = (over = {}) => ({
   loggedIn: true, userId: 'ua', email: 'Alice@Example.com', name: 'Alice', avatar: 'https://img/a', provider: 'google', expiresAt: 1_800_000_000_000,
@@ -190,4 +190,23 @@ test('status texts', () => {
   assert.equal(sessionAgeText({ ...acc, capturedAt: 1000 }, 1000 + 5 * 60000), '5 分钟前保存');
   assert.equal(sessionAgeText({ ...acc, capturedAt: 1000 }, 1000 + 3 * 3600000), '3 小时前保存');
   assert.equal(sessionAgeText({ cookies: [] }), '未保存登录状态');
+});
+
+test('loginMethod: picked method → session provider → Gmail = Google → password = arena email → Google', () => {
+  const acc = (o) => normalizeAccount({ id: 'x', email: 'a@corp.io', ...o });
+  assert.equal(loginMethod(acc({ login: { method: 'email', password: 'p' }, provider: 'google' })), 'email', 'explicit choice wins');
+  assert.equal(loginMethod(acc({ provider: 'google', login: { password: 'p' } })), 'google', 'session came from Google');
+  assert.equal(loginMethod(acc({ email: 'bob@gmail.com', login: { password: 'p' } })), 'google', 'Gmail with a password = Google password');
+  assert.equal(loginMethod(acc({ login: { password: 'p' } })), 'email');
+  assert.equal(loginMethod(acc({})), 'google');
+  assert.equal(credsFor(acc({ login: { method: 'google', password: 'p' } })).provider, 'google');
+  // upsertLogin stores the method, rejects junk
+  const r = upsertLogin({ list: [] }, null, { email: 'c@x.io', method: 'email' });
+  assert.equal(r.account.login.method, 'email');
+  assert.equal(upsertLogin(r.state, r.account.id, { method: 'bogus' }).account.login.method, '');
+});
+
+test('saved accounts never keep the PKCE verifier cookie (pre-0.4.7 records are cleaned on load)', () => {
+  const a = normalizeAccount({ id: 'x', email: 'a@x.io', cookies: [{ name: 'arena-auth-prod-v1', value: 'base64-s' }, { name: 'arena-auth-prod-v1-code-verifier', value: 'base64-v' }] });
+  assert.deepEqual(a.cookies.map((c) => c.name), ['arena-auth-prod-v1']);
 });

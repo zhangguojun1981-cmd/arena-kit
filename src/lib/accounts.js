@@ -23,6 +23,9 @@
  * builds) are dropped on load. */
 
 export const PENDING_TTL_MS = 5 * 60 * 1000;
+/* How the login helper signs in: '' = automatic (see loginMethod). */
+export const LOGIN_METHODS = ['', 'google', 'email'];
+const isVerifierCookie = (n) => /code-verifier/i.test(n);
 
 const str = (v) => (v == null ? '' : String(v));
 const emailKey = (e) => str(e).trim().toLowerCase();
@@ -53,7 +56,9 @@ export function normalizeAccount(a) {
     avatar: str(a.avatar),
     provider: str(a.provider).toLowerCase(),
     label: str(a.label),
-    cookies: Array.isArray(a.cookies) ? a.cookies.filter((c) => c && typeof c.name === 'string' && typeof c.value === 'string').map((c) => ({ name: c.name, value: c.value })) : [],
+    // session cookies only: builds before 0.4.7 also saved the PKCE verifier
+    // (arena-auth-prod-v1-code-verifier) and wrote an old one back on switch
+    cookies: Array.isArray(a.cookies) ? a.cookies.filter((c) => c && typeof c.name === 'string' && typeof c.value === 'string' && !isVerifierCookie(c.name)).map((c) => ({ name: c.name, value: c.value })) : [],
     sig: str(a.sig),
     expiresAt: Number(a.expiresAt) || 0,
     capturedAt: Number(a.capturedAt) || 0,
@@ -62,6 +67,7 @@ export function normalizeAccount(a) {
       email: str(login.email).trim(),
       password: str(login.password),
       totp: str(login.totp).trim(),
+      method: LOGIN_METHODS.includes(str(login.method)) ? str(login.method) : '',
       auto: login.auto !== false,
     },
   };
@@ -111,6 +117,20 @@ export function dropSession(state, id) {
 }
 /* The credentials injected/account.js needs; identity email doubles as the
  * login email when none was typed. */
+/* Sign-in route for an account (docs/arena-google-login-flow.md):
+ *   the method picked in 登录信息 → the provider its session came from →
+ *   a Gmail address is a Google account → a saved password without any of
+ *   that is an arena email + password account → Google (arena's default). */
+export function loginMethod(acc) {
+  if (!acc) return 'google';
+  const login = acc.login || {};
+  if (login.method === 'google' || login.method === 'email') return login.method;
+  const p = str(acc.provider).toLowerCase();
+  if (p === 'google' || p === 'email') return p;
+  const email = emailKey(login.email || acc.email);
+  if (/@(gmail|googlemail)\.com$/.test(email)) return 'google';
+  return login.password ? 'email' : 'google';
+}
 export function credsFor(acc, extra = {}) {
   if (!acc) return null;
   const login = acc.login || {};
@@ -119,7 +139,7 @@ export function credsFor(acc, extra = {}) {
     email: login.email || acc.email || '',
     password: login.password || '',
     totp: login.totp || '',
-    provider: acc.provider || (login.password ? 'email' : ''),
+    provider: loginMethod(acc),
     startedAt: Number(extra.startedAt) || Date.now(),
     ...extra,
   };
@@ -192,6 +212,7 @@ export function upsertLogin(state, id, fields = {}) {
   if ('password' in fields) login.password = str(fields.password);
   if ('totp' in fields) login.totp = str(fields.totp).trim();
   if ('auto' in fields) login.auto = fields.auto !== false;
+  if ('method' in fields) login.method = LOGIN_METHODS.includes(str(fields.method)) ? str(fields.method) : '';
   const next = { ...acc, login, label: 'label' in fields ? str(fields.label).trim() : acc.label };
   if (!next.email && !next.userId && login.email) next.email = emailKey(login.email);
   st.list = st.list.map((a) => (a.id === next.id ? next : a));
@@ -267,7 +288,17 @@ export function resolvePending(state, snap, now = Date.now()) {
 export function loginStageText(stage, extra = {}) {
   const map = {
     'arena-open': '正在打开登录窗口…',
-    'arena-google': '已选择「Continue with Google」…',
+    'arena-google': '页面未登录 → 正在跳转 Google 登录…',
+    'arena-email-post': '页面未登录 → 正在用邮箱 + 密码登录…',
+    'arena-dialog': '直接登录接口不可用，改用页面登录框…',
+    'wrong-account': '页面已登录另一个账号' + (extra.email ? '（' + extra.email + '）' : ''),
+    'google-chooser-other': 'Google：账号列表里没有目标邮箱 → 使用其他账号…',
+    'google-need-choice': 'Google：请在页面上选择账号 / 验证方式',
+    'google-sms': 'Google：已填入短信验证码…',
+    'google-blocked': 'Google 拒绝了应用内登录（浏览器不安全 / disallowed_useragent）',
+    'need-totp': 'Google 要验证器动态码：请在账号的登录信息里填写 2FA 密钥，或直接在页面输入',
+    'need-backup': 'Google 要备用验证码：请直接在页面输入',
+    'need-phone': 'Google 要在手机上确认（轻点「是」/ 安全密钥）：请在手机上完成',
     'arena-email': '已填写邮箱，等待下一步…',
     'arena-password': '已填写密码…',
     'arena-code': '已填入验证码…',

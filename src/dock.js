@@ -1295,6 +1295,7 @@ function openAccountEditor(id) {
   q('ak-acct-password').value = a ? a.login.password : '';
   q('ak-acct-totp').value = a ? a.login.totp : '';
   q('ak-acct-auto').checked = a ? a.login.auto !== false : true;
+  q('ak-acct-method').value = a ? (a.login.method || '') : '';
   renderTotpPreview();
   try { q('ak-acct-email').focus(); } catch { /* ignore */ }
 }
@@ -1306,7 +1307,7 @@ function renderTotpPreview() {
   el.textContent = r.error ? '密钥格式不对：需要 base32（A-Z、2-7）或 otpauth:// 链接' : `当前动态码 ${r.code} · ${r.remaining}s 后刷新`;
 }
 async function saveAccountEditor({ login = false } = {}) {
-  const fields = { label: q('ak-acct-label').value, email: q('ak-acct-email').value, password: q('ak-acct-password').value, totp: String(q('ak-acct-totp').value || '').trim(), auto: q('ak-acct-auto').checked };
+  const fields = { label: q('ak-acct-label').value, email: q('ak-acct-email').value, password: q('ak-acct-password').value, totp: String(q('ak-acct-totp').value || '').trim(), auto: q('ak-acct-auto').checked, method: q('ak-acct-method').value || '' };
   if (fields.totp) {
     const parsed = parseOtpSecret(fields.totp);
     if (!parsed) { acctStatus('2FA 密钥格式不对：需要 base32（A-Z、2-7）或 otpauth:// 链接'); return; }
@@ -1435,7 +1436,9 @@ onPage('login', (p) => {
   acctLoginStatus(loginStageText(p.stage, p));
   if (p.stage === 'need-code') { showTab('account'); if (EMBED) EMBED.open(); }
   // the user must type on the page itself → get the sheet out of the way
-  if (p.stage === 'need-password' || p.stage === 'need-email') { setStatus(loginStageText(p.stage, p)); if (EMBED) EMBED.close(); }
+  // the user must act on the page itself → get the sheet out of the way
+  if (/^(need-password|need-email|need-totp|need-backup|need-phone|google-need-choice)$/.test(p.stage)) { setStatus(loginStageText(p.stage, p)); if (EMBED) EMBED.close(); }
+  if (p.stage === 'error' || p.stage === 'wrong-account' || p.stage === 'google-blocked') { acctStatus(loginStageText(p.stage, p)); setStatus(loginStageText(p.stage, p)); }
 });
 
 // ── module: enhancement toggles + ENI ───────────────────────────────────

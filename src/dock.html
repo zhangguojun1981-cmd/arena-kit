@@ -209,6 +209,7 @@
         <div class="ak-group-head"><span>登录信息</span><span id="ak-acct-edit-title" class="ak-group-note"></span></div>
         <label class="ak-field"><span>备注名（可选）</span><input id="ak-acct-label" class="ak-input" type="text" maxlength="40" autocomplete="off" placeholder="例如 工作号" /></label>
         <label class="ak-field"><span>登录邮箱</span><input id="ak-acct-email" class="ak-input" type="email" autocomplete="off" placeholder="name@gmail.com" /></label>
+        <label class="ak-field"><span>登录方式</span><select id="ak-acct-method" class="ak-input"><option value="">自动（按账号来源判断，Gmail 默认 Google）</option><option value="google">Google 账号</option><option value="email">Arena 邮箱 + 密码</option></select></label>
         <label class="ak-field"><span>密码（Google / 邮箱登录用，可留空）</span><input id="ak-acct-password" class="ak-input" type="password" autocomplete="new-password" /></label>
         <label class="ak-field"><span>2FA 密钥（验证器的 base32 密钥或 otpauth:// 链接，可留空）</span><input id="ak-acct-totp" class="ak-input" type="text" autocomplete="off" spellcheck="false" placeholder="JBSW Y3DP EHPK 3PXP" /></label>
         <div id="ak-acct-totp-preview" class="ak-sub ak-mono"></div>
@@ -228,6 +229,7 @@
           <button class="ak-btn ak-btn-sm" data-action="acct-fill-code">填入页面</button>
           <button class="ak-btn ak-btn-sm" data-action="acct-stop-login">停止</button>
         </div>
+        <div class="ak-note">登录助手先看页面状态：已登录 = 不动页面（是目标账号就直接完成，是别的账号会先保存它再退出页面登录）；未登录（游客）= Google 账号直接跳转 Google 登录，Arena 邮箱账号直接提交邮箱 + 密码。在 Google 页面上：已登录过 Google 就在账号列表里点目标邮箱，没有就填邮箱 → 密码 → 2FA。</div>
         <div class="ak-note">切换账号 = 用保存的登录 Cookie 替换页面里的 Cookie 后刷新；不会点「退出登录」，所以其他账号的登录状态不受影响。Arena 本身没有两步验证，2FA 动态码用于 Google 等登录页的自动填写；填写了 2FA 密钥的账号会在列表里实时显示当前动态码，可直接复制。</div>
       </div>
     </section>

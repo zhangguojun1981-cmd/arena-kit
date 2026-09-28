@@ -334,9 +334,9 @@ test('switching to an account whose saved session is dead falls back to the logi
 
   // The server rejected the stale refresh token: after the reload the site
   // removed the auth cookies → first snapshot = logged out → 'lost' → helper.
-  rejectRestoredSession(dev);
+  rejectRestoredSession(dev, { guest: 'anon-9' }); // the site put its guest session back
   app = await start(dev);
-  assert.ok(app.log.status.some((t) => /Carol 的登录状态已失效，已清除失效的会话，需要重新登录，正在自动登录/.test(t)), app.log.status.join(' | '));
+  assert.ok(app.log.status.some((t) => /Carol 的登录状态已失效（页面回到了游客状态），已清除失效的会话，需要重新登录，正在自动登录/.test(t)), app.log.status.join(' | '));
   assert.equal(app.flow.accounts.pending.type, 'login');
   assert.equal(app.flow.accounts.pending.id, 'carol');
   // the rejected session is forgotten (revoked token families never come back)
@@ -349,12 +349,12 @@ test('switching to an account whose saved session is dead falls back to the logi
   // the page-side helper started on arena.ai (logged-out page → `login` RPC, no reload needed)
   const status = await app.rpc.call('status', {});
   assert.equal(status.running, true);
-  const loginBtn = app.page.mk('button', {}, 'Login');
+  // logged OUT (guest) + Google account → straight to the sign-in endpoint,
+  // the site's dialog is never touched
+  const loginBtn = app.page.mk('button', {}, 'Log In');
   app.page.flushTimeouts();
-  assert.equal(loginBtn.clicks, 1, 'opened the login modal');
-  const google = app.page.mk('button', {}, 'Continue with Google');
-  app.page.tickIntervals();
-  assert.equal(google.clicks, 1, 'google account → Continue with Google');
+  assert.equal(loginBtn.clicks, 0, 'no dialog');
+  assert.match(app.page.navigations.at(-1).url, /^https:\/\/arena\.ai\/nextjs-api\/sign-in\/google\?shouldLinkHistory=true&/);
 
   // accounts.google.com: no IPC there — Rust's on_page_load evals
   // __AK_LOGIN_APPLY__(creds) with what login_set stored. Identifier → password → TOTP.
@@ -437,4 +437,16 @@ test('a pending operation older than 5 minutes is dropped instead of misjudged; 
   assert.equal(await app.flow.saveCurrent(), null);
   assert.match(app.log.status.at(-1), /页面当前未登录/);
   assert.throws(() => createAccountFlow({}), /call\(\) and reload\(\)/);
+});
+
+test('login for the account that is already logged in: nothing happens on the page (no clear, no sign-in)', async () => {
+  const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
+  const app = await start(dev);
+  const alice = app.flow.accounts.list[0];
+  const r = await app.flow.startLogin(alice);
+  assert.equal(r.via, 'already');
+  assert.equal(app.page.navigations.length, 0, 'page left alone');
+  assert.equal(dev.rust.login, null, 'no credentials handed to Rust');
+  assert.equal(app.flow.accounts.pending, null);
+  assert.match(app.log.loginStatus.at(-1), /已经登录/);
 });

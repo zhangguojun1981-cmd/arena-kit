@@ -159,6 +159,13 @@ export function createAccountFlow(deps) {
     }
   };
 
+  const lower = (v) => String(v || '').trim().toLowerCase();
+  function sameIdentity(acc, snap) {
+    if (acc.userId && snap.userId) return acc.userId === String(snap.userId);
+    const want = lower(acc.email || (acc.login && acc.login.email));
+    return !!want && want === lower(snap.email);
+  }
+
   /* Login helper for one account: Rust remembers the credentials for every
    * page load (that is how they reach accounts.google.com); a page that still
    * holds another session is cleared + reloaded first, a logged-out page starts
@@ -170,6 +177,13 @@ export function createAccountFlow(deps) {
       return { ok: false, reason: 'no-credentials' };
     }
     const cur = snap || await d.call('snapshot', {}).catch(() => null);
+    // Already logged in AS this account: nothing to do (no sign-in on top).
+    if (isRealLogin(cur) && sameIdentity(acc, cur)) {
+      await flow.save(setPending(applySnapshot(st, cur, d.now()).state, null));
+      await invoke('login_clear', {});
+      d.loginStatus('页面已经登录 ' + accountLabel(acc) + '，无需再登录');
+      return { ok: true, via: 'already' };
+    }
     if (isRealLogin(cur)) st = applySnapshot(st, cur, d.now()).state;
     st = setPending(st, { type: 'login', id: acc.id }, d.now());
     await flow.save(st);
