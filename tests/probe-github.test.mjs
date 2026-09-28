@@ -22,12 +22,19 @@ const REPOS = [
   { id: 2, name: 'arena-kit', fullName: 'zhangguojun1981-cmd/arena-kit', ownerLogin: 'zhangguojun1981-cmd', defaultBranch: 'main' },
   { id: 3, name: 'notes', fullName: 'zhangguojun1981-cmd/notes', ownerLogin: 'zhangguojun1981-cmd', defaultBranch: 'main' },
 ];
-function load(nodes, pathname = '/agent', { connection = 'connected', repos = REPOS, fetches = [] } = {}) {
+function load(nodes, pathname = '/agent', { connection = 'connected', repos = REPOS, fetches = [], fastClock = false } = {}) {
   const p = fakePage({ pathname });
+  if (fastClock) {
+    // waitFor timeouts: async timers + a clock that jumps with every timer
+    let t = Date.now();
+    const RealDate = Date;
+    p.sandbox.Date = class extends RealDate { static now() { return t; } };
+    p.sandbox.setTimeout = (fn, ms) => { t += ms || 0; setImmediate(fn); return 0; };
+  }
   p.sandbox.__ARENAKIT__ = { send: () => {} };
   p.sandbox.fetch = async (url) => {
     fetches.push(url);
-    const json = (body, status = 200) => ({ ok: status < 300, status, json: async () => body });
+    const json = (body, status = 200) => ({ ok: status < 300, status, json: async () => body, text: async () => JSON.stringify(body) });
     if (url.startsWith('/api/coding/github/connection')) return connection === null ? json({}, 404) : json({ status: connection });
     if (url.startsWith('/api/coding/github/repos')) return repos === null ? json({}, 401) : json({ repos, nextCursor: null, hasNextPage: false });
     return json({}, 404);
@@ -145,4 +152,42 @@ test('ensureProject: unknown project name lists what exists; GitHub disconnected
   call = load(() => [MODE()], '/agent', { connection: 'disconnected' });
   r = await call('ensureProject', { repo: 'arena-kit' });
   assert.match(r.error, /GitHub 尚未连接（状态 disconnected）/);
+});
+
+test('repo list diagnostics: HTTP error / 0 repos / other shapes are explained, not hidden', async () => {
+  const page = (handler) => {
+    const p = fakePage({ pathname: '/agent' });
+    p.sandbox.__ARENAKIT__ = { send: () => {} };
+    p.sandbox.fetch = async (url) => { const [status, body] = handler(url); return { ok: status < 300, status, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) }; };
+    runInjected('injected/probe.js', p.sandbox);
+    return p.sandbox.ArenaProbe;
+  };
+  let r = plain(await page(() => [401, { error: 'Unauthorized' }]).listRepos());
+  assert.deepEqual(r.repos, []);
+  assert.match(r.note, /仓库接口 HTTP 401：\{"error":"Unauthorized"\}/);
+  r = plain(await page(() => [200, { repos: [], nextCursor: null, hasNextPage: false }]).listRepos());
+  assert.match(r.note, /返回 0 个仓库/);
+  r = plain(await page(() => [200, '<html>login</html>']).listRepos());
+  assert.match(r.note, /格式无法识别/);
+  // other shapes: bare array, {data:{repos}}, snake_case full_name
+  r = plain(await page(() => [200, [{ id: 1, name: 'arena-kit', full_name: 'me/arena-kit' }]]).listRepos());
+  assert.equal(r.repos[0].fullName, 'me/arena-kit');
+  r = plain(await page(() => [200, { data: { repos: [{ id: 2, name: 'x', fullName: 'me/x' }] } }]).listRepos());
+  assert.equal(r.repos.length, 1);
+  // limit=100 rejected (400) → retried with the server's default page size
+  const seen = [];
+  r = plain(await page((u) => { seen.push(u); return u.includes('limit=') ? [400, { error: 'bad limit' }] : [200, { repos: [{ id: 3, name: 'arena-kit', fullName: 'me/arena-kit' }] }]; }).listRepos());
+  assert.deepEqual(seen, ['/api/coding/github/repos?limit=100', '/api/coding/github/repos']);
+  assert.equal(r.repos.length, 1);
+});
+
+test('dropdown fallback failure names the repo API problem and what the list showed', async () => {
+  let open = false;
+  const picker = node({ sel: ['button[aria-haspopup]'], text: 'Select a repository', attrs: { 'aria-haspopup': 'listbox' }, onClick: () => { open = true; } });
+  const other = node({ sel: ['[role="option"]'], text: 'someone/unrelated' });
+  const mode = MODE();
+  const call = load(() => [mode, picker, ...(open ? [other] : [])], '/agent', { repos: null, fastClock: true });
+  const r = await call('ensureProject', { repo: 'arena-kit' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /仓库列表里没有匹配「arena-kit」的项 · 列表里看到：someone\/unrelated · 仓库接口 HTTP 401/);
 });

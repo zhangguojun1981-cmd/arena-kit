@@ -165,7 +165,7 @@
     const tick = () => {
       let v; try { v = check(); } catch (e) { return reject(e); }
       if (v) return resolve(v);
-      if (Date.now() >= end) return reject(Error(message));
+      if (Date.now() >= end) { let m = message; try { if (typeof m === 'function') m = m(); } catch { m = String(message); } return reject(Error(m)); }
       setTimeout(tick, 200);
     };
     tick();
@@ -335,23 +335,38 @@
     }
     return best ? { repo: best, score } : null;
   }
+  /* All repositories the account's GitHub connection can see (doc §3.1:
+   * GET /api/coding/github/repos?limit=100[&cursor=], {repos, nextCursor,
+   * hasNextPage}). Returns {repos, http, note}: note explains an empty list
+   * (HTTP error / unexpected shape / really no repos) for the probe log. */
+  const reposOf = (j) => (Array.isArray(j) ? j : Array.isArray(j?.repos) ? j.repos : Array.isArray(j?.data?.repos) ? j.data.repos : Array.isArray(j?.items) ? j.items : Array.isArray(j?.repositories) ? j.repositories : null);
+  async function fetchRepos(url) {
+    try {
+      const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' }, cache: 'no-store' });
+      const body = await r.text();
+      let j = null;
+      try { j = JSON.parse(body); } catch { }
+      return { http: r.status, ok: r.ok, j, body: body.slice(0, 160) };
+    } catch (e) { return { http: 0, ok: false, j: null, body: String(e?.message || e).slice(0, 160) }; }
+  }
   async function listRepos() {
     const out = [];
-    let cursor = null;
+    let cursor = null, http = 0, note = '';
     for (let page = 0; page < 10; page++) {
-      const url = '/api/coding/github/repos?limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
-      let j;
-      try {
-        const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' }, cache: 'no-store' });
-        if (!r.ok) break;
-        j = await r.json();
-      } catch { break; }
-      if (!Array.isArray(j?.repos)) break;
-      out.push(...j.repos.filter(x => x && (x.name || x.fullName)));
-      if (!j.hasNextPage || !j.nextCursor) break;
-      cursor = j.nextCursor;
+      let res = await fetchRepos('/api/coding/github/repos?limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+      // a server that rejects limit=100 → its default page size
+      if (!res.ok && res.http >= 400 && res.http < 500 && res.http !== 401 && res.http !== 403 && !page) res = await fetchRepos('/api/coding/github/repos');
+      http = res.http;
+      if (!res.ok) { note = `仓库接口 HTTP ${res.http || '失败'}${res.body ? '：' + res.body : ''}`; break; }
+      const list = reposOf(res.j);
+      if (!list) { note = '仓库接口返回格式无法识别：' + res.body; break; }
+      out.push(...list.filter(x => x && (x.name || x.fullName || x.full_name)).map(x => (x.fullName || !x.full_name ? x : { ...x, fullName: x.full_name })));
+      const next = res.j?.nextCursor ?? res.j?.next_cursor ?? null;
+      if (!(res.j?.hasNextPage ?? res.j?.has_next_page ?? !!next) || !next) break;
+      cursor = next;
     }
-    return out;
+    if (!out.length && !note) note = '仓库接口返回 0 个仓库（GitHub 授权里没有可用仓库：到 GitHub → Settings → Applications 给 Arena 的 GitHub App 授权该仓库）';
+    return { repos: out, http, note };
   }
   const OPTION_SEL = '[role="option"],[role="menuitem"],[role="menuitemradio"],[cmdk-item],[role="listbox"] li,[role="treeitem"]';
   const pickers = () => [...document.querySelectorAll('button[role="combobox"],button[aria-haspopup],[role="combobox"],[placeholder="Select a repository"]')]
@@ -395,7 +410,7 @@
       let best = null, score = 0;
       for (const o of opts) { const sc = scoreFn(ownText(o)); if (sc > score) { best = o; score = sc; } }
       return best;
-    }, `${what}列表里没有匹配「${filter}」的项`, 8000).catch((e) => {
+    }, () => `${what}列表里没有匹配「${filter}」的项 · 列表里看到：` + ([...document.querySelectorAll(OPTION_SEL)].filter(visible).slice(0, 8).map(o => clean(ownText(o)).slice(0, 40)).join('、') || '（空）'), 8000).catch((e) => {
       try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch { }
       throw e;
     });
@@ -412,7 +427,7 @@
     if (!query) throw Error('未指定项目（仓库）');
     const gh = await ensureGithub();
     // resolve the fuzzy name against the account's repositories
-    const repos = await listRepos();
+    const { repos, note } = await listRepos();
     let target = null;
     if (repos.length) {
       const hit = pickRepo(query, repos);
@@ -430,7 +445,9 @@
           return s.split(/[\s·•|]+/).some(w => w === name || w.endsWith('/' + name)) ? 2 : 0;
         })
         : (t => fuzzyScore(query, { name: norm(t).split(/[\s·•|]+/)[0].split('/').pop(), fullName: norm(t).split(/[\s·•|]+/)[0] }));
-      const label = await choose(picker, target ? target.name : query, scoreFn, '仓库');
+      const label = await choose(picker, target ? target.name : query, scoreFn, '仓库').catch((e) => {
+        throw Error((e?.message || e) + (note ? ' · ' + note : ''));
+      });
       if (!target) { const w = norm(label).split(/[\s·•|]+/)[0]; target = { name: w.split('/').pop(), fullName: w }; }
       picker = await waitFor(() => { const p = repoPicker(target); return p && showsRepo(p, target) ? p : null; }, `未能确认已选中仓库「${target.fullName}」 · 看到：` + composerDiag(), 6000);
       changed = true;
@@ -663,5 +680,5 @@
     return res;
   }
 
-  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle: isOwnPrompt, fuzzyScore, pickRepo };
+  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle: isOwnPrompt, fuzzyScore, pickRepo, listRepos };
 })();
