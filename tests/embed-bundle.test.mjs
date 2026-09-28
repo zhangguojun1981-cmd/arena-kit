@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { read } from './helpers.mjs';
 import { generate, transformModule, collectModules, extractMarkup } from '../scripts/bundle-dock.mjs';
-import { shadowCss, clampPos, mount, ringPalette, fitFont, BALL_SIZE, PILL_HEIGHT, RING_C, TAP_SLOP, TAP_MAX_MS } from '../src/embed/shell.js';
-import { pillPlacement, releasePosition, snapSide, fractionForY, pillLabel, turnHeadline, ringBand, PILL_MARGIN } from '../src/lib/pill-layout.js';
+import { shadowCss, clampPos, mount, ringPalette, fitFont, EMBED_CSS, BALL_SIZE, PILL_HEIGHT, RING_C, TAP_SLOP, TAP_MAX_MS } from '../src/embed/shell.js';
+import { pillPlacement, releasePosition, snapSide, fractionForY, pillLabel, turnHeadline, ringBand, PILL_MARGIN, SNAP_MS } from '../src/lib/pill-layout.js';
 import { summarizeUsage, formatMoney } from '../src/lib/usage.js';
 import { buildTitle } from '../src/lib/rename.js';
 
@@ -240,9 +240,13 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   api.close(); assert.equal(api.isOpen(), false);
   assert.equal(wrap.dataset.hidden, 'false');
   assert.deepEqual(events, ['open', 'close']);
-  // default placement: right edge, 18 % down
+  // default placement: right edge, 18 % down — anchored by `right` (a `left`
+  // anchor near the right edge shrink-fits the capsule against the viewport
+  // and ellipsises a label that grows later)
   assert.equal(wrap.dataset.side, 'right');
-  assert.equal(wrap.style.left, (360 - 46 - PILL_MARGIN) + 'px');
+  assert.equal(wrap.style.left, 'auto');
+  assert.equal(wrap.style.right, PILL_MARGIN + 'px');
+  assert.equal(wrap.style.top, (PILL_MARGIN + Math.round((640 - 36 - 2 * PILL_MARGIN) * 0.18)) + 'px');
   // pill API: percent → arc length + band; label + tone; busy orbit
   const arc = shadow.querySelector('.ak-pill-arc');
   api.setPill({ percent: 15, label: 'gpt-5', tone: 'routed', busy: false });
@@ -255,6 +259,11 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '–');
   assert.equal(arc.dataset.band, 'unknown');
   assert.equal(shadow.querySelector('.ak-pill').dataset.busy, 'true');
+  // an empty label never collapses the capsule to the bare ring
+  assert.equal(shadow.querySelector('.ak-pill-label').textContent, '额度 –');
+  assert.equal(shadow.querySelector('.ak-pill-label').dataset.tone, 'muted');
+  api.setPill({ percent: 64, label: '', tone: 'muted', busy: false });
+  assert.equal(shadow.querySelector('.ak-pill-label').textContent, '64%');
   // legacy setBall still maps onto the pill
   api.setBall({ percent: 72, top: '72%', bottom: 'claude-opus', isModel: true, routed: false });
   assert.equal(shadow.querySelector('.ak-pill-label').textContent, 'claude-opus');
@@ -465,7 +474,7 @@ test('touch-born contextmenu does not toggle the quick menu; mouse right-click d
  *   percent-model (default) | percent | model
  * The picked mode is stored on the pill's data-mode attribute; CSS hides the
  * ring or the label accordingly. */
-test('ball-centre mode (设置 → 悬浮球显示) drives pill data-mode and CSS visibility', () => {
+test('display mode (设置 → 悬浮球显示): the capsule keeps its shape, only the ring / label content changes', () => {
   const { doc, shadow } = fakeDom();
   const win = {
     document: doc, innerWidth: 360, innerHeight: 640,
@@ -476,34 +485,90 @@ test('ball-centre mode (设置 → 悬浮球显示) drives pill data-mode and CS
   assert.equal(mount(win), true);
   const api = win.__ARENAKIT_EMBED__;
   const pill = shadow.querySelector('.ak-pill');
-  const ring = shadow.querySelector('.ak-pill-ring');
   const label = shadow.querySelector('.ak-pill-label');
+  const pct = shadow.querySelector('.ak-pill-pct');
 
-  // default = percent-model
+  // default = percent-model: % inside the ring, model on the label
   api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent-model' });
   assert.equal(pill.dataset.mode, 'percent-model');
-  // ring + label both visible (the fake-DOM doesn't model CSS hiding; we
-  // verify the data-mode attribute and a representative effect below)
-  assert.ok(ring.children.length > 0 || shadow.querySelector('.ak-pill-arc'), 'arc present');
+  assert.equal(pct.textContent, '72');
+  assert.equal(label.textContent, 'gpt-5');
 
-  // percent → no label
+  // percent: the label carries the quota (CSS hides the tiny number inside
+  // the ring); a task / flash message still takes the label
   api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent' });
   assert.equal(pill.dataset.mode, 'percent');
+  assert.equal(label.textContent, '72%');
+  assert.equal(label.dataset.tone, 'normal');
+  api.setPill({ percent: 72, label: '探针 2/5 · 命中 1', tone: 'active', mode: 'percent' });
+  assert.equal(label.textContent, '探针 2/5 · 命中 1');
+  assert.equal(label.dataset.tone, 'active');
+  api.setPill({ percent: null, label: '', tone: 'muted', mode: 'percent' });
+  assert.equal(label.textContent, '额度 –');
+  assert.equal(label.dataset.tone, 'muted');
 
-  // model → no ring (arc dataset still present but the CSS hides the ring)
+  // model: label only (CSS hides the ring); never an empty capsule
   api.setPill({ percent: null, label: 'gpt-5', tone: 'normal', mode: 'model' });
   assert.equal(pill.dataset.mode, 'model');
   assert.equal(label.textContent, 'gpt-5');
+  api.setPill({ percent: 40, label: '', tone: 'muted', mode: 'model' });
+  assert.equal(label.textContent, '模型待确认');
+  assert.equal(label.dataset.tone, 'muted');
 
-  // unknown mode falls back to default
-  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'wat' });
+  // unknown mode falls back to default; empty label there shows the quota
+  api.setPill({ percent: 72, label: '', tone: 'muted', mode: 'wat' });
   assert.equal(pill.dataset.mode, 'percent-model');
+  assert.equal(label.textContent, '72%');
+
+  // the mode CSS never fixes the capsule width or hides the label / ⟳ zone
+  assert.ok(!/data-mode="percent"\]\s*\{[^}]*width:/.test(EMBED_CSS), 'no fixed width in percent mode');
+  assert.ok(!/data-mode="percent"\]\s*\.ak-pill-label[^{]*\{[^}]*display:\s*none/.test(EMBED_CSS), 'label stays visible in percent mode');
+  assert.ok(!/data-mode="[a-z-]+"\]\s*\.ak-pill-(div|refresh)[^{]*\{[^}]*display:\s*none/.test(EMBED_CSS), '⟳ zone is independent of the mode');
 
   // alert on the pill is independent of mode (the blink CSS path is unchanged)
   api.alert(true);
   assert.equal(pill.dataset.alert, 'true');
   api.alert(false);
   assert.equal(pill.dataset.alert, 'false');
+});
+
+/* Right-side resting position is anchored by `right`; a drag release animates
+ * `left` to the snap target and re-anchors after the snap. */
+test('pill placement: right side anchored by right, snap animation re-anchors, left side by left', async () => {
+  const { doc, shadow } = fakeDom();
+  const win = {
+    document: doc, innerWidth: 360, innerHeight: 640,
+    localStorage: { getItem: () => null, setItem: () => {} },
+    addEventListener: () => {},
+    history: { back() {}, forward() {} },
+  };
+  assert.equal(mount(win), true);
+  const wrap = shadow.querySelector('.ak-pill-wrap');
+  assert.equal(wrap.style.left, 'auto');
+  assert.equal(wrap.style.right, PILL_MARGIN + 'px');
+  // drag (the fake rect starts at x = 10) and release in the right half →
+  // snaps right: `left` animates (px), then the wrap is re-anchored by `right`
+  wrap.listeners.pointerdown[0]({ pointerId: 5, clientX: 100, clientY: 130, button: 0, pointerType: 'touch' });
+  wrap.listeners.pointermove[0]({ pointerId: 5, clientX: 350, clientY: 200 });
+  assert.equal(wrap.style.right, 'auto');
+  assert.ok(/px$/.test(wrap.style.left), 'dragging positions by left');
+  wrap.listeners.pointerup[0]({ pointerId: 5, clientX: 350, clientY: 200 });
+  assert.equal(wrap.dataset.side, 'right');
+  assert.equal(wrap.dataset.snap, 'true');
+  assert.ok(/px$/.test(wrap.style.left), 'snap animates left');
+  await new Promise((r) => setTimeout(r, SNAP_MS + 80));
+  assert.equal(wrap.style.left, 'auto', 're-anchored by right after the snap');
+  assert.equal(wrap.style.right, PILL_MARGIN + 'px');
+  assert.equal(wrap.dataset.snap, 'false');
+  // left side: anchored by left = margin
+  wrap.listeners.pointerdown[0]({ pointerId: 6, clientX: 300, clientY: 130, button: 0, pointerType: 'touch' });
+  wrap.listeners.pointermove[0]({ pointerId: 6, clientX: 320, clientY: 130 });
+  wrap.listeners.pointerup[0]({ pointerId: 6, clientX: 320, clientY: 130 });
+  assert.equal(wrap.dataset.side, 'left');
+  assert.equal(wrap.style.left, PILL_MARGIN + 'px');
+  assert.equal(wrap.style.right, 'auto');
+  await new Promise((r) => setTimeout(r, SNAP_MS + 80));
+  assert.equal(wrap.style.left, PILL_MARGIN + 'px');
 });
 
 test('desktop input: Esc closes the open layer, ⌘R / F5 fire refresh, ⌘[ ⌘] page history, right-click on the pill opens the quick menu', () => {

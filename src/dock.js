@@ -352,7 +352,7 @@ function renderPill() {
     strength: state.hud.strength,
     routed: state.hud.routed,
     pending: state.hud.pending,
-    newChat: !state.nav.sessionId && /^\/agent\/?$/.test(state.nav.path || ''),
+    newChat: !state.nav.sessionId && /^\/(agent\/?)?$/.test(state.nav.path || ''), // home / agent page without a conversation
   });
   EMBED.setPill({
     percent: v.percent,

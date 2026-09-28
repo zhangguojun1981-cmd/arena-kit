@@ -127,7 +127,7 @@ export const EMBED_CSS = `
 .ak-pill[data-busy="true"] .ak-pill-orbit { display: block; animation: ak-orbit 1.1s linear infinite; }
 .ak-pill[data-busy="true"] .ak-pill-arc { opacity: .35; }
 .ak-pill-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; letter-spacing: -.2px; color: var(--ak-fg); }
-.ak-pill-label { margin-left: 8px; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ak-fg); padding-right: 9px; }
+.ak-pill-label { margin-left: 8px; max-width: 180px; max-width: min(220px, calc(100vw - 120px)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ak-fg); padding-right: 9px; }
 .ak-pill-label:empty { display: none; }
 .ak-pill-label[data-tone="routed"] { color: var(--ak-warn); }
 .ak-pill-label[data-tone="muted"] { color: var(--ak-sub); }
@@ -140,14 +140,17 @@ export const EMBED_CSS = `
 .ak-pill[data-refresh="false"] .ak-pill-div, .ak-pill[data-refresh="false"] .ak-pill-refresh { display: none; }
 .ak-pill[data-refresh="false"] .ak-pill-label { padding-right: 9px; }
 
-/* ── ball-centre display mode (设置 → 悬浮球显示) ────────────────────── */
-.ak-pill[data-mode="percent"] .ak-pill-label,
-.ak-pill[data-mode="percent"] .ak-pill-div { display: none; }
-.ak-pill[data-mode="percent"] { padding: 0; width: ${RING_SIZE + 6}px; justify-content: center; }
-.ak-pill[data-mode="model"] .ak-pill-ring,
-.ak-pill[data-mode="model"] .ak-pill-div { display: none; }
-.ak-pill[data-mode="model"] { padding: 0 12px; }
-.ak-pill[data-mode="model"] .ak-pill-label { margin-left: 0; padding-right: 0; max-width: 240px; font-size: 14px; font-weight: 600; }
+/* ── display mode (设置 → 悬浮球显示) — the capsule keeps its shape in every
+ * mode: only WHAT the ring / label carry changes (setPill picks the text).
+ *   percent-model  ring (% inside) + label (model / task / flash)
+ *   percent        ring (arc only) + label "72%" (task / flash still win)
+ *   model          label only (model name), no ring
+ * The optional ⟳ zone (data-refresh) is independent of the mode. */
+.ak-pill[data-mode="percent"] .ak-pill-pct { display: none; }
+.ak-pill[data-mode="percent"] .ak-pill-label { font-weight: 700; font-variant-numeric: tabular-nums; }
+.ak-pill[data-mode="model"] .ak-pill-ring { display: none; }
+.ak-pill[data-mode="model"] { padding-left: 12px; }
+.ak-pill[data-mode="model"] .ak-pill-label { margin-left: 0; font-size: 14px; font-weight: 600; }
 .ak-pill[data-alert="true"] {
   border-color: var(--ak-danger);
   box-shadow: 0 0 0 2px var(--ak-danger-soft), 0 0 14px var(--ak-danger);
@@ -364,20 +367,25 @@ export function mount(win) {
       arc.setAttribute('stroke-dasharray', `${((pct === null ? 0 : pct / 100) * RING_C).toFixed(3)} ${RING_C.toFixed(3)}`);
     }
     pctEl.textContent = pct === null ? '–' : String(pct);
-    const text = String(pillState.label || '');
-    labelEl.textContent = text;
-    labelEl.dataset.tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
-    pill.dataset.busy = pillState.busy ? 'true' : 'false';
-    // Display mode drives what shows in the centre of the pill:
-    //   'percent-model' (default): ring + label, both visible
-    //   'percent'                 : ring only, label hidden
-    //   'model'                   : label centred (no ring)
-    // CSS hides whichever element does not belong. The flash / alert states
-    // override the visual but never the data-mode attr.
+    // Display mode (设置 → 悬浮球显示) picks the label; the capsule never
+    // collapses to the bare ring (an empty label used to leave a 36 px "ball"):
+    //   'percent-model' (default): ring (% inside) + model / task / flash label
+    //   'percent'                 : ring (arc only) + "72%" — task / flash still win
+    //   'model'                   : label only, no ring
+    // The flash / alert states override the visual but never the data-mode attr.
     const mode = ['percent-model', 'percent', 'model'].includes(pillState.mode) ? pillState.mode : 'percent-model';
+    let tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
+    let text = String(pillState.label || '');
+    const transient = tone === 'active' && !!text; // flash message / running task
+    const pctText = pct === null ? '额度 –' : pct + '%';
+    if (mode === 'percent' && !transient) { text = pctText; tone = pct === null ? 'muted' : 'normal'; }
+    else if (!text) { text = mode === 'model' ? '模型待确认' : pctText; tone = 'muted'; }
+    labelEl.textContent = text;
+    labelEl.dataset.tone = tone;
+    pill.dataset.busy = pillState.busy ? 'true' : 'false';
     pill.dataset.mode = mode;
     pill.setAttribute('aria-label', 'ArenaKit ' + (pct === null ? '' : pct + '% ') + text);
-    place(); // the label width changed → keep the right-hand edge on the margin
+    place(); // the label width changed → keep the capsule inside the viewport
   }
   const setRefreshButton = (on) => { pill.dataset.refresh = on ? 'true' : 'false'; place(); };
 
@@ -450,11 +458,26 @@ export function mount(win) {
     if (saved && typeof saved === 'object') pos = { side: saved.side === 'left' ? 'left' : 'right', y: normalizeFraction(saved.y) };
   } catch (_) { /* storage blocked: default position */ }
   const pillWidth = () => wrap.offsetWidth || (wrap.getBoundingClientRect && wrap.getBoundingClientRect().width) || 120;
+  /* Resting on the right side the wrap is anchored by `right`, not `left`: a
+   * fixed box positioned by `left` near the right edge is shrink-to-fit
+   * against the viewport, so a label that grows later (model name arriving,
+   * mode change) was squeezed into the old width and ellipsised to a "ball".
+   * Anchored by `right` it grows leftwards freely. `left` is only used while
+   * dragging and for the snap animation (then re-anchored after SNAP_MS). */
+  let anchorTimer = 0;
+  let dragging = false; // a label update mid-drag must not yank the pill back to its resting spot
   function place(animate = false) {
     const p = pillPlacement(pos, vw(), vh(), pillWidth(), PILL_HEIGHT);
+    if (dragging && !animate) return p;
     wrap.dataset.snap = animate ? 'true' : 'false';
     wrap.dataset.side = p.side;
-    wrap.style.left = p.x + 'px'; wrap.style.top = p.y + 'px'; wrap.style.right = 'auto';
+    wrap.style.top = p.y + 'px';
+    clearTimeout(anchorTimer); anchorTimer = 0;
+    if (p.side === 'right' && !animate) { wrap.style.left = 'auto'; wrap.style.right = PILL_MARGIN + 'px'; }
+    else {
+      wrap.style.left = p.x + 'px'; wrap.style.right = 'auto';
+      if (animate) anchorTimer = later(() => { anchorTimer = 0; place(false); }, SNAP_MS + 20);
+    }
     return p;
   }
   const savePos = () => { try { win.localStorage.setItem(PILL_POS_KEY, JSON.stringify(pos)); } catch (_) { /* ignore */ } };
@@ -504,14 +527,14 @@ export function mount(win) {
     if (!drag || e.pointerId !== drag.id || drag.long) return;
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (!drag.moved && Math.hypot(dx, dy) < TAP_SLOP) return;
-    if (!drag.moved) { drag.moved = true; clearTimeout(longTimer); wrap.dataset.snap = 'false'; }
+    if (!drag.moved) { drag.moved = true; dragging = true; clearTimeout(longTimer); wrap.dataset.snap = 'false'; }
     const w = pillWidth();
     drag.last = clampPos({ x: drag.ox + dx, y: drag.oy + dy }, vw(), vh(), PILL_HEIGHT, w);
     wrap.style.left = drag.last.x + 'px'; wrap.style.top = drag.last.y + 'px'; wrap.style.right = 'auto';
   });
   const end = (e) => {
     if (!drag || e.pointerId !== drag.id) return;
-    const d = drag; drag = null;
+    const d = drag; drag = null; dragging = false;
     clearTimeout(longTimer);
     if (d.long) return;
     if (d.moved) {
@@ -521,7 +544,7 @@ export function mount(win) {
     tap(inRefreshZone(e.clientX));
   };
   wrap.addEventListener('pointerup', end);
-  wrap.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; clearTimeout(longTimer); place(true); } });
+  wrap.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; dragging = false; clearTimeout(longTimer); place(true); } });
   // Fallback for WebViews that never delivered the pointer pair (see above).
   wrap.addEventListener('click', (e) => {
     if (Date.now() - lastTapAt < TAP_MAX_MS) return; // already handled through pointerup
