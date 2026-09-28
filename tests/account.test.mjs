@@ -420,3 +420,86 @@ test('login helper on arena.ai: email flow fills the address, presses "Continue 
   assert.equal(d.lastEvent('login').payload.stage, 'stopped');
   assert.throws(() => d.api.startLogin({}), /登录信息为空/);
 });
+
+/* Frozen clock for the helper's timers (Date is shared with the sandbox). */
+function withClock(start, fn) {
+  const real = Date.now;
+  let t = start;
+  Date.now = () => t;
+  try { return fn((ms) => { t += ms; }); } finally { Date.now = real; }
+}
+
+test('login helper on arena.ai: opens the login dialog once (+1 retry after 12 s), never every 5 s', () => withClock(1_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
+  const loginBtn = d.mk('button', {}, 'Login');
+  d.api.startLogin({ accountId: 'a', email: 'alice@example.com', provider: 'google', startedAt: Date.now() });
+  d.flushTimeouts();
+  assert.equal(loginBtn.clicks, 1);
+  for (let i = 0; i < 10; i++) { advance(1000); d.tickIntervals(); }
+  assert.equal(loginBtn.clicks, 1, 'no re-click inside 12 s (used to toggle the dialog shut every 5 s)');
+  advance(3000); d.tickIntervals();
+  assert.equal(loginBtn.clicks, 2, 'one retry when no dialog showed up');
+  for (let i = 0; i < 30; i++) { advance(1000); d.tickIntervals(); }
+  assert.equal(loginBtn.clicks, 2, 'and never again');
+  assert.equal(d.lastEvent('login').payload.stage, 'arena-waiting');
+}));
+
+test('login helper yields to the user: a real tap pauses all automatic clicks for 10 s (no double OAuth start)', () => withClock(2_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
+  const google = d.mk('button', {}, 'Continue with Google');
+  d.api.startLogin({ accountId: 'a', email: 'alice@example.com', provider: 'google', startedAt: Date.now() });
+  // the user taps (e.g. the Google button themselves) before the helper's first step
+  d.userEvent('pointerdown', { target: { closest: () => google } });
+  d.flushTimeouts(); d.tickIntervals();
+  assert.equal(google.clicks, 0, 'helper did not click on top of the user');
+  assert.equal(d.lastEvent('login').payload.stage, 'user-active');
+  assert.equal(d.api.userActive(), true);
+  advance(10_500);
+  d.tickIntervals();
+  assert.equal(google.clicks, 1, 'resumes after the pause');
+  assert.equal(d.lastEvent('login').payload.stage, 'arena-google');
+}));
+
+test('Google sign-in rescue: same URL 25 s after a tap on an account row → 重试 / 返回 Arena bar; typing clears it', () => withClock(3_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
+  assert.equal(d.api.checkStall(), '', 'nothing before any tap');
+  const row = d.mk('div', { 'data-identifier': 'alice@gmail.com' }, 'Alice');
+  d.userEvent('pointerdown', { target: { closest: () => row } });
+  advance(20_000);
+  assert.equal(d.api.checkStall(), '', 'still within the grace period');
+  advance(6_000);
+  assert.equal(d.api.checkStall(), 'stall');
+  const bar = d.doc.getElementById('ak-login-rescue');
+  assert.ok(bar, 'rescue bar shown');
+  const labels = bar.children.map((c) => c.textContent);
+  assert.deepEqual(labels.slice(1), ['重试', '返回 Arena']);
+  assert.match(labels[0], /卡住/);
+  // 返回 Arena → leaves for arena.ai
+  bar.children[2].listeners.click[0]({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(d.location.href, 'https://arena.ai/');
+  // typing on the page = the user is busy → the timer and the bar go away
+  d.location.href = 'https://accounts.google.com/v3/signin/accountchooser';
+  d.userEvent('keydown', { key: 'a' });
+  assert.equal(d.api.checkStall(), '');
+  assert.equal(d.doc.getElementById('ak-login-rescue'), null);
+  // a tap into a field does not start the timer either
+  d.userEvent('pointerdown', { target: { closest: () => null } });
+  advance(60_000);
+  assert.equal(d.api.checkStall(), '');
+}));
+
+test('Google sign-in rescue: a pop-up-mode page without an opener is flagged at once (it can never report back in the app)', () => {
+  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/o/oauth2/v2/auth' });
+  d.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x&ux_mode=popup&redirect_uri=storagerelay%3A%2F%2Fhttps%2Farena.ai';
+  assert.equal(d.api.checkStall(), 'popup');
+  const bar = d.doc.getElementById('ak-login-rescue');
+  assert.ok(bar);
+  assert.deepEqual(bar.children.slice(1).map((c) => c.textContent), ['返回 Arena']);
+  // a real pop-up (has an opener) is left alone
+  const d2 = fakeDom({ hostname: 'accounts.google.com', pathname: '/o/oauth2/v2/auth' });
+  d2.location.href = d.location.href;
+  d2.sandbox.opener = {};
+  assert.equal(d2.api.checkStall(), '');
+  // never on arena itself
+  assert.equal(fakeDom({ hostname: 'arena.ai', pathname: '/' }).api.checkStall(), '');
+});

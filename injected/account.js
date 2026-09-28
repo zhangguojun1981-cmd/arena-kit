@@ -426,7 +426,7 @@
     let b = null;
     try { b = idSel ? innerButton(D.querySelector(idSel)) : null; } catch (_) { b = null; }
     if (!b || !visible(b)) b = findButton(btnRe, (el.closest && el.closest('form')) || D) || findButton(btnRe);
-    if (b) { b.click(); return 'button'; }
+    if (b) { b.click(); noteAction(); return 'button'; }
     const f = el.form || (el.closest && el.closest('form'));
     if (f) {
       try { if (typeof f.requestSubmit === 'function') f.requestSubmit(); else f.submit(); return 'form'; } catch (_) { /* fall through */ }
@@ -476,6 +476,90 @@
     login = null;
   }
 
+  // ── the user comes first ─────────────────────────────────────────────
+  // A real tap / key press pauses every automatic fill and click for
+  // USER_YIELD_MS: the helper clicking "Continue with Google" or the account
+  // row right after the user did started the OAuth round trip twice (a
+  // second PKCE verifier on arena, a double submit on Google's chooser —
+  // grey page, endless progress bar). The helper's own clicks are untrusted.
+  const USER_YIELD_MS = 10_000;
+  let userAt = 0;
+  // Only a tap on something that submits (button / link / account row) or
+  // Enter starts the stall timer; typing or tapping a field means the user
+  // is busy on this page and clears it.
+  const SUBMITTY = 'button, a[href], [role="button"], [role="link"], [data-identifier], [data-email], input[type="submit"]';
+  const onUserInput = (ev) => {
+    if (!ev || ev.isTrusted === false) return;
+    userAt = now();
+    let submits = false;
+    if (ev.type === 'keydown') submits = ev.key === 'Enter';
+    else { try { submits = !!(ev.target && typeof ev.target.closest === 'function' && ev.target.closest(SUBMITTY)); } catch (_) { submits = false; } }
+    if (submits) noteAction(); else actAt = 0;
+  };
+  try {
+    D.addEventListener('pointerdown', onUserInput, true);
+    D.addEventListener('keydown', onUserInput, true);
+  } catch (_) { /* ignore */ }
+  const userActive = () => now() - userAt < USER_YIELD_MS;
+
+  // ── stuck sign-in rescue (Google hosts) ──────────────────────────────
+  // The webview has no address bar or browser back: when a Google sign-in
+  // page sits on the same URL long after a tap (processing overlay that never
+  // ends) or is a pop-up-mode page with no opener (it can never report back
+  // inside the app), offer 重试 / 返回 Arena.
+  const STALL_MS = 25_000;
+  let actAt = 0;
+  let actHref = '';
+  function noteAction() { actAt = now(); actHref = String(L.href || ''); }
+  function popupWithoutOpener() {
+    let opener = null;
+    try { opener = W.opener; } catch (_) { opener = 'x'; }
+    if (opener) return false;
+    const href = String(L.href || '');
+    return /[?&](ux_mode=popup|display=popup)\b|redirect_uri=storagerelay/i.test(href) || /^\/gsi\//.test(String(L.pathname || ''));
+  }
+  function stallReason() {
+    if (!isGoogleHost(hostOf())) return '';
+    if (popupWithoutOpener()) return 'popup';
+    if (actAt && now() - actAt > STALL_MS && String(L.href || '') === actHref) return 'stall';
+    return '';
+  }
+  function showRescue(reason) {
+    if (!D || typeof D.createElement !== 'function' || !D.documentElement) return null;
+    if (D.getElementById && D.getElementById('ak-login-rescue')) return null;
+    const bar = D.createElement('div');
+    bar.id = 'ak-login-rescue';
+    bar.setAttribute('style', 'position:fixed;left:8px;right:8px;bottom:12px;z-index:2147483647;display:flex;gap:8px;align-items:center;padding:10px 12px;border-radius:12px;background:#1F2228;color:#E6E8ED;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4)');
+    const msg = D.createElement('span');
+    msg.setAttribute('style', 'flex:1;min-width:0');
+    msg.textContent = reason === 'popup'
+      ? 'ArenaKit：这个 Google 登录页是弹窗模式，在应用里无法回到 Arena。'
+      : 'ArenaKit：登录页好像卡住了。';
+    const btn = (label, fn) => {
+      const b = D.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.setAttribute('style', 'flex:none;border:0;border-radius:16px;padding:6px 12px;font:600 13px system-ui,sans-serif;background:#9DB8FF;color:#0B1A45');
+      b.addEventListener('click', (e) => { try { e.preventDefault(); e.stopPropagation(); } catch (_) { /* ignore */ } fn(); });
+      return b;
+    };
+    bar.appendChild(msg);
+    if (reason !== 'popup') bar.appendChild(btn('重试', () => { actAt = 0; try { L.reload(); } catch (_) { /* ignore */ } }));
+    bar.appendChild(btn('返回 Arena', () => { try { L.href = 'https://arena.ai/'; } catch (_) { /* ignore */ } }));
+    D.documentElement.appendChild(bar);
+    try { console.warn('[ArenaKit] sign-in rescue:', reason, String(L.href || '').split('?')[0]); } catch (_) { /* ignore */ }
+    return bar;
+  }
+  function checkStall() {
+    const r = stallReason();
+    if (r) showRescue(r);
+    else {
+      // moved on (SPA route change, typing): take the bar away again
+      try { const bar = D.getElementById && D.getElementById('ak-login-rescue'); if (bar) bar.remove(); } catch (_) { /* ignore */ }
+    }
+    return r;
+  }
+
   function stepGoogle(c) {
     const path = String(L.pathname || '');
     const emailIn = q('input[type="email"], #identifierId, input[name="identifier"]')[0];
@@ -489,7 +573,7 @@
     if (c.email) {
       const want = c.email.toLowerCase();
       const pick = q('[data-identifier], [data-email]').find((e) => String(e.getAttribute('data-identifier') || e.getAttribute('data-email') || '').toLowerCase() === want);
-      if (pick) { if (once('g-pick:' + path)) { pick.click(); report('google-pick'); } return; }
+      if (pick) { if (once('g-pick:' + path)) { pick.click(); noteAction(); report('google-pick'); } return; }
     }
     const pwdIn = q('input[type="password"], input[name="Passwd"]')[0];
     if (pwdIn) {
@@ -560,8 +644,10 @@
     }
     const loginBtn = findButton(/^(log ?in|sign ?in|sign ?up|登录|登入|注册\s*\/\s*登录)$/i);
     if (loginBtn) {
-      const key = 'a-open:' + Math.floor((now() - login.startedAt) / 5000);
-      if (once(key)) { loginBtn.click(); report('arena-open'); }
+      // Once, plus one retry after 12 s when still no dialog showed up —
+      // re-clicking every 5 s toggled the dialog shut under the user's tap.
+      const key = now() - login.startedAt < 12_000 ? 'a-open:0' : 'a-open:1';
+      if (once(key)) { loginBtn.click(); report('arena-open'); } else report('arena-waiting');
       return;
     }
     report('arena-waiting');
@@ -584,6 +670,7 @@
   function step() {
     if (!login) return;
     if (now() - login.startedAt > LOGIN_TTL_MS) { finish('timeout'); return; }
+    if (userActive()) { report('user-active'); return; }
     try {
       const h = hostOf();
       if (isArenaHost(h)) stepArena(login.creds);
@@ -671,8 +758,15 @@
     call, snapshot, startLogin, stopLogin,
     // exposed for tests
     parseCookieHeader, groupChunks, decodeSession, identity, sigOf, isAuthName, detectScope, navTarget, freezeAuthWrites, reassertExpected,
+    checkStall, userActive,
     get bootCheck() { return bootCheck; },
   };
+
+  // ── stuck sign-in rescue on Google's pages ──────────────────────────
+  if (isGoogleHost(hostOf())) {
+    later(checkStall, 1500);
+    setInterval(checkStall, 3000);
+  }
 
   // ── boot the watcher on arena pages ──────────────────────────────────
   if (isArenaHost(hostOf())) {

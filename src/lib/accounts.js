@@ -272,6 +272,7 @@ export function loginStageText(stage, extra = {}) {
     'arena-password': '已填写密码…',
     'arena-code': '已填入验证码…',
     'arena-waiting': '等待登录界面出现…',
+    'user-active': '你正在操作页面，登录助手暂停 10 秒…',
     'google-email': 'Google：已填写邮箱…',
     'google-pick': 'Google：已选择账号…',
     'google-password': 'Google：已填写密码…',

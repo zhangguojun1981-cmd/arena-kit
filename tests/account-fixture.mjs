@@ -104,13 +104,29 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [], sessi
   const sessionStorage = webStorage(session);
   const localStorage = webStorage(local);
 
+  const docListeners = {}; // type → [fn] (capture listeners account.js installs)
+  const overlay = []; // nodes appended to <html> (the sign-in rescue bar)
+  const node = (tag) => {
+    const n = {
+      tag, attrs: {}, children: [], textContent: '', listeners: {}, removed: false,
+      setAttribute(k, v) { this.attrs[k] = String(v); }, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener(t, fn) { (this.listeners[t] ||= []).push(fn); },
+      remove() { this.removed = true; const i = overlay.indexOf(this); if (i >= 0) overlay.splice(i, 1); },
+    };
+    return n;
+  };
   const doc = {
     readyState: 'complete',
-    documentElement: { tag: 'html', attrs: {} },
+    documentElement: { tag: 'html', attrs: {}, appendChild(c) { overlay.push(c); return c; } },
     querySelectorAll: (sel) => elements.filter((e) => e.connected && matches(e, sel)),
     querySelector: (sel) => elements.find((e) => e.connected && matches(e, sel)) || null,
-    addEventListener() {},
+    getElementById: (id) => overlay.find((n) => n.id === id) || null,
+    createElement: (tag) => node(tag),
+    addEventListener(type, fn) { (docListeners[type] ||= []).push(fn); },
   };
+  /* A real (trusted) user event reaching the document capture listeners. */
+  const userEvent = (type, init = {}) => { for (const fn of docListeners[type] || []) fn({ type, isTrusted: true, ...init }); };
   Object.defineProperty(doc, 'cookie', {
     configurable: true, // like Document.prototype.cookie: account.js may shadow it when the page is leaving
     get() { return [...cookies.values()].map((c) => c.name + '=' + c.value).join('; '); },
@@ -177,7 +193,7 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [], sessi
   const flushTimeouts = () => { const list = timers.timeouts.splice(0); for (const t of list) t.fn(); };
   const tickIntervals = () => { for (const t of timers.intervals) if (t.fn) t.fn(); };
   const lastEvent = (name) => [...events].reverse().find((e) => e.name === name) || null;
-  return { sandbox, doc, cookies, events, invokes, mk, clearElements, flushTimeouts, tickIntervals, lastEvent, location, navigations, sessionStorage, localStorage, api: sandbox.ArenaAccount };
+  return { sandbox, doc, cookies, events, invokes, mk, clearElements, flushTimeouts, tickIntervals, lastEvent, location, navigations, sessionStorage, localStorage, userEvent, overlay, api: sandbox.ArenaAccount };
 }
 
 export const settle = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
