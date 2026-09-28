@@ -12,8 +12,9 @@
  *                 nearer side. Position is stored as (side, yFraction).
  *   gestures      tap → panel · tap on ⟳ → reload · long press → quick menu
  *                 (probe / session probe / cleanup / reload / panel)
- *   panel         bottom sheet flush with the bottom edge (header with ✕,
- *                 tabs); scrim tap, swipe-down or the back key closes it. It
+ *   panel         bottom sheet flush with the bottom edge (grabber bar,
+ *                 header with ✕, tabs); scrim tap, swipe-down on the grabber /
+ *                 header or the back key closes it. It
  *                 hosts the very same dock markup (dock.html body) and
  *                 stylesheet (dock.css) in a shadow root, so arena's CSS and
  *                 ours never touch. The pill fades out while the sheet is open.
@@ -170,7 +171,9 @@ export const EMBED_CSS = `
 }
 .ak-sheet[data-open="true"] { transform: translate(-50%, 0); pointer-events: auto; }
 .ak-sheet[data-dragging="true"] { transition: none; }
-.ak-sheet-top { flex: none; touch-action: none; padding-top: 6px; }
+.ak-sheet-handle { flex: none; display: flex; justify-content: center; padding: 8px 0 2px; touch-action: none; cursor: grab; }
+.ak-sheet-handle i { display: block; width: 32px; height: 4px; border-radius: 2px; background: var(--ak-surface-high); }
+.ak-sheet-top { flex: none; touch-action: none; }
 .ak-sheet-top #ak-log { touch-action: pan-y; }
 .ak-shell { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; height: auto; overscroll-behavior: contain; }
 .ak-close { margin-left: 2px; }
@@ -246,6 +249,7 @@ export function mount(win) {
     + '</div></div>'
     + '<div class="ak-menu" data-show="false" role="menu" aria-label="快捷操作"></div>'
     + '<div class="ak-sheet" data-open="false" data-dragging="false" role="dialog" aria-label="ArenaKit">'
+    + '<div class="ak-sheet-handle" aria-hidden="true"><i></i></div>'
     + '<div class="ak-sheet-top"></div>'
     + `<div class="ak-shell">${MARKUP}</div></div>`
     + '<div class="ak-dialog" data-show="false" role="alertdialog"><div class="ak-dialog-card"><div class="ak-dialog-title"></div><div class="ak-dialog-msg"></div>'
@@ -273,7 +277,7 @@ export function mount(win) {
     }
   }
   // ✕ (收起) sits in the header's right-side slot (dock.html .ak-head-tools);
-  // the old "一" grabber bar is gone — swipe-down on the header still closes.
+  // the grabber bar above the header stays (swipe it down to close).
   const tools = root.querySelector('.ak-head-tools') || root.querySelector('.ak-head-row') || root.querySelector('.ak-head');
   const close = doc.createElement('button');
   close.className = 'ak-icon-btn ak-close';
@@ -523,7 +527,7 @@ export function mount(win) {
   }, true);
 
   // ── sheet: swipe down on the handle / header closes it ───────────────
-  const grabs = [sheetTop || root.querySelector('.ak-head')].filter(Boolean);
+  const grabs = [root.querySelector('.ak-sheet-handle'), sheetTop || root.querySelector('.ak-head')].filter(Boolean);
   let sdrag = null;
   for (const g of grabs) {
     g.addEventListener('pointerdown', (e) => {
