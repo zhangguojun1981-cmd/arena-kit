@@ -1,6 +1,6 @@
 [package]
 name = "arena-kit"
-version = "0.4.5"
+version = "0.4.6"
 description = "ArenaKit — cross-platform arena.ai enhancement client"
 edition = "2021"
 rust-version = "1.77"
