@@ -1,24 +1,30 @@
 /* ArenaKit injected/unlock.js
  * Source: theraker526/Arena-AI-Model-Unlocker-Extension (opus-restorer, research use)
  * MAIN world, document_start. Rewrites Next.js __next_f data to reveal hidden models.
- * PORT NOTE: boot.js set window._ac from ArenaKit front-end config before this runs.
+ * PORT NOTE: the extension's boot.js (extension storage → window._ac) is replaced
+ * by the ArenaKit boot below; the dock's switches reach it via __AK_UNLOCK_SET__.
  */
-// ---- boot.js (settings loader) ----
+// ---- ArenaKit boot (replaces the extension's boot.js) ----
+// The extension kept its settings in extension storage and handed them to
+// the MAIN-world interceptor through window._ac. Here both halves run in the
+// MAIN world at document_start, so the settings live in localStorage "_at"
+// ({e: enabled, o: Opus, h: hidden/blind-test models}) and the dock writes
+// them through window.__AK_UNLOCK_SET__(kind, on) (更多 → 解锁 Opus 全系 /
+// 解锁隐藏 / 盲测模型). The rewrite below runs while the page data streams
+// in, so a change applies on the next page load — the dock reloads.
 (function(){
 var d={e:true,o:true,h:false};
-try{var s=localStorage.getItem("_at");if(s)d=Object.assign(d,JSON.parse(s));}catch(x){}
-var t=document.createElement("script");
-t.textContent="window._ac="+JSON.stringify(d)+";";
-(document.documentElement||document).prepend(t);
-t.remove();
-if(chrome.storage&&chrome.storage.sync){
-chrome.storage.sync.get(d,function(r){localStorage.setItem("_at",JSON.stringify(r));});
-chrome.storage.onChanged.addListener(function(c,a){if(a==="sync"){try{var cur=JSON.parse(localStorage.getItem("_at")||"{}");for(var k in c)cur[k]=c[k].newValue;localStorage.setItem("_at",JSON.stringify(cur));}catch(x){}}});
-}
-chrome.runtime&&chrome.runtime.onMessage&&chrome.runtime.onMessage.addListener(function(m,s,r){
-if(m.t==="g"){try{var s=localStorage.getItem("_at");r(s?JSON.parse(s):d);}catch(x){r(d);}return true;}
-if(m.t==="s"){try{var cur=JSON.parse(localStorage.getItem("_at")||"{}");Object.assign(cur,m.d);localStorage.setItem("_at",JSON.stringify(cur));if(chrome.storage&&chrome.storage.sync)chrome.storage.sync.set(cur);}catch(x){}r({ok:1});return true;}
-});
+try{var s=localStorage.getItem("_at");if(s)d=Object.assign(d,JSON.parse(s)||{});}catch(x){}
+window._ac=d;
+window.__AK_UNLOCK_SET__=function(kind,on){
+var cur={};try{cur=JSON.parse(localStorage.getItem("_at")||"{}")||{};}catch(x){cur={};}
+var k=kind==="opus"?"o":kind==="hidden"?"h":kind==="enabled"?"e":"";
+if(!k)return{ok:false};
+var before=cur[k];cur[k]=!!on;
+try{localStorage.setItem("_at",JSON.stringify(cur));}catch(x){return{ok:false};}
+return{ok:true,changed:before!==cur[k],settings:cur};
+};
+window.__AK_UNLOCK_GET__=function(){try{return JSON.parse(localStorage.getItem("_at")||"null")||d;}catch(x){return d;}};
 })();
 // ---- main.js (data interceptor) ----
 (function(){

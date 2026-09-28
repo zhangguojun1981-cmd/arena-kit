@@ -200,6 +200,12 @@ const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn'
 function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
   page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
+  // unlock.js / plus.js read their switches from the page's localStorage at
+  // document_start; mirror the dock prefs there so the NEXT load agrees with
+  // the switches (a fresh profile / cleared site data starts from defaults).
+  page('unlockSet', 'opus', state.prefs.unlockOpus !== false);
+  page('unlockSet', 'hidden', !!state.prefs.unlockHidden);
+  page('plusSet', state.prefs.plus !== false);
   // ENI prefs are pushed on every page load (and again on every change) so
   // the injected eni.js stays in sync with the dock even after a SPA
   // navigation that wipes page context.
@@ -304,7 +310,7 @@ async function requestReload(source = 'panel') {
     await new Promise((r) => setTimeout(r, 300));
   }
   if (source === 'watchdog') setStatus(WATCHDOG_LOG_RELOADING);
-  else setStatus(source === 'pull' ? '上拉刷新页面…' : source === 'account' ? '切换账号，刷新页面…' : '刷新页面…');
+  else setStatus(source === 'pull' ? '上拉刷新页面…' : source === 'account' ? '切换账号，刷新页面…' : source === 'setting' ? '应用设置，刷新页面…' : '刷新页面…');
   const btn = root.querySelector('[data-action="page-reload"]');
   if (btn) btn.dataset.loading = 'true';
   state.loadingAt = now;
@@ -1465,10 +1471,17 @@ function wireControls() {
     });
   });
 
-  // Unlock / plus toggles → persist + set the page-side config.
+  // Unlock / plus toggles → persist + set the page-side config. Both page
+  // modules rewrite data while the page loads (unlock.js: the Next.js model
+  // payload; plus.js: the leaderboard table), so the page is reloaded to
+  // apply the change (requestReload asks first when a probe is running).
   const bind = (id, key, fn) => {
     q(id).checked = !!state.prefs[key];
-    q(id).addEventListener('change', (e) => { savePrefs({ [key]: e.target.checked }); fn(e.target.checked); });
+    q(id).addEventListener('change', async (e) => {
+      savePrefs({ [key]: e.target.checked });
+      await fn(e.target.checked);
+      requestReload('setting');
+    });
   };
   bind('ak-unlock-opus', 'unlockOpus', (v) => page('unlockSet', 'opus', v));
   bind('ak-unlock-hidden', 'unlockHidden', (v) => page('unlockSet', 'hidden', v));

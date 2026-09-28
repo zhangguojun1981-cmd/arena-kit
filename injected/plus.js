@@ -15,6 +15,17 @@
 (function () {
   'use strict';
 
+  // ArenaKit: 更多 → 排行榜性价比列. The switch is persisted here (the module
+  // runs before the dock exists); the columns are built while the leaderboard
+  // renders, so a change applies on the next page load — the dock reloads.
+  const AK_PLUS_KEY = 'arenakit.plus.on';
+  window.__AK_PLUS_SET__ = (on) => {
+    let before = null;
+    try { before = localStorage.getItem(AK_PLUS_KEY); localStorage.setItem(AK_PLUS_KEY, on ? '1' : '0'); } catch (e) { return { ok: false }; }
+    return { ok: true, changed: (before === '0') === !!on };
+  };
+  try { if (localStorage.getItem(AK_PLUS_KEY) === '0') return; } catch (e) { /* storage blocked: run */ }
+
   // ============================================
   // Configuration
   // ============================================

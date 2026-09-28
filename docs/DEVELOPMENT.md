@@ -129,7 +129,7 @@
 | `injected/conversation-rename.js` | android `assets/conversation-rename.js` | JS→JS | 逐字节同源。只走 Arena 自带的侧栏 ⋯ 菜单与 Rename/Archive 对话框;归档≠删除 |
 | `injected/probe.js` | android `assets/probe.js` | JS→JS | 无状态 RPC 层 `window.ArenaProbe.call(action, argsJson, reqId)`,结果改由 `__ARENAKIT__.send('probe-result', …)` 回传;`precheck` 增加 `hasDraft/draftIsOwnPrompt/title`。全部安全护栏保留(不覆盖人工草稿、只发算式、发送前确认 Agent Mode) |
 | `injected/manager.js` | Arena-Manager `Arena Manager.user.js` | JS→JS | 通过 `gm-shim.js` 提供 `GM_*`;`GM_xmlhttpRequest` 走 `proxy_get` |
-| `injected/unlock.js` | Model-Unlocker `main.js` + `boot.js` | JS→JS | 设置由 dock 开关经 `__AK_UNLOCK_SET__` 注入;必须 `document_start` MAIN world |
+| `injected/unlock.js` | Model-Unlocker `main.js` + `boot.js` | JS→JS | 扩展原来的 boot.js(扩展存储 → `window._ac`)换成 ArenaKit 自带的启动段:设置存页面 localStorage `_at`(`{e,o,h}`),dock 开关经 `__AK_UNLOCK_SET__(kind,on)` 写入、每次页面加载 `applyPageFlags` 再同步一次;改写发生在页面数据流入时,所以开关改动后 dock 自动刷新页面生效;必须 `document_start` MAIN world。`plus.js` 同理:`__AK_PLUS_SET__` 写 localStorage `arenakit.plus.on`,为 `0` 时模块直接返回(见 `tests/feature-toggles.test.mjs`) |
 | `injected/plus.js` | Arena.ai-Plus `content.js` | JS→JS | 价格 fetch 走 `proxy_get` |
 | `injected/leaderboard.js` | personal-leaderboard `content.js` | JS→JS | 纯本地统计 |
 | `injected/eni.js` | Arena-Ai `arena-prompt-injector.user.js` | JS→JS | fetch 钩子注入 prompt;设置面板在 dock |

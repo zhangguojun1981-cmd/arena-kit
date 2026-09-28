@@ -237,9 +237,10 @@
       <div class="ak-group">
         <div class="ak-group-head"><span>功能模块</span></div>
         <button class="ak-btn ak-tonal" data-action="manager">模型筛选 / 管理面板</button>
-        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系</span><input type="checkbox" id="ak-unlock-opus" checked /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">解锁隐藏 / 盲测模型</span><input type="checkbox" id="ak-unlock-hidden" /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">排行榜性价比列</span><input type="checkbox" id="ak-plus" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系<small>把模型列表里被标为不可选的 Claude Opus 系列恢复为可选</small></span><input type="checkbox" id="ak-unlock-opus" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">解锁隐藏 / 盲测模型<small>所有 userSelectable=false 的模型（含盲测 / 未公开）都出现在直选列表</small></span><input type="checkbox" id="ak-unlock-hidden" /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">排行榜性价比列<small>排行榜加「性价比」、价格、模型年龄、模态图标列（价格来自 OpenRouter）</small></span><input type="checkbox" id="ak-plus" checked /><i class="ak-switch-track"></i></label>
+        <div class="ak-note">这三项改动后会自动刷新页面生效。</div>
       </div>
       <hr class="ak-divider" />
       <div class="ak-group">
