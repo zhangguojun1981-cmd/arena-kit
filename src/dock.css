@@ -132,6 +132,12 @@ button, input, select, textarea { font-family: inherit; }
 @keyframes ak-spin { to { transform: rotate(360deg); } }
 
 /* quota bar: 4 dp, colour by health (reference panel_quota) */
+.ak-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ak-bar-row .ak-bar { flex: 1; margin-top: 0; }
+.ak-bar-pct { flex: none; min-width: 3.2em; text-align: right; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ak-brand); }
+.ak-bar-pct[data-band="warning"] { color: var(--ak-warn); }
+.ak-bar-pct[data-band="danger"] { color: var(--ak-danger); }
+.ak-bar-pct[data-band="unknown"] { color: var(--ak-sub); font-weight: 500; }
 .ak-bar { height: 4px; border-radius: 2px; background: var(--ak-surface-high); overflow: hidden; margin-top: 10px; }
 #ak-bar-fill { height: 100%; width: 0; transition: width 0.4s; background: var(--ak-brand); border-radius: 2px; }
 #ak-bar-fill[data-band="warning"] { background: var(--ak-warn); }

@@ -11,7 +11,7 @@ ArenaKit = 网页套壳(A) + 原生 dock 取证面板(B) + 提示词注入。整
 | 能力 | 来源 | 类别 |
 |---|---|---|
 | 模型筛选/分类/排序、70 厂商识别、分组、云同步 | [Arena-Manager](https://github.com/JimAchievo/Arena-Manager) | A 前端注入 |
-| 解锁 Claude Opus 全系 + 150+ 隐藏/盲测模型 | [Model-Unlocker](https://github.com/theraker526/Arena-AI-Model-Unlocker-Extension) | A 前端注入 |
+| 解锁 Claude Opus 全系 + 150+ 隐藏/盲测模型(默认关,开关改动后自动刷新页面) | [Model-Unlocker](https://github.com/theraker526/Arena-AI-Model-Unlocker-Extension) | A 前端注入 |
 | 排行榜"性价比"列、价格、模型年龄、模态图标 | [Arena.ai-Plus](https://github.com/chen-dahan/Arena.ai-Plus) | A 前端注入 |
 | 个人投票胜负统计 | [personal-leaderboard](https://github.com/wrapss/lmarena-personal-leaderboard) | A 前端注入 |
 | 每新对话自动注入系统提示词(默认关;开启后输入框旁显示「ENI」徽章,经典与 Agent 模式都生效) | [Arena-Ai (ENI)](https://github.com/peyton2065/Arena-Ai) | 提示词注入 |

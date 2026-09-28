@@ -26,7 +26,7 @@
       <!-- right-side slot: the embedded shell mounts its ✕ (收起) here; empty on the desktop dock -->
       <div class="ak-head-tools" id="ak-head-tools"></div>
     </div>
-    <div class="ak-bar"><div id="ak-bar-fill"></div></div>
+    <div class="ak-bar-row"><div class="ak-bar"><div id="ak-bar-fill"></div></div><span id="ak-bar-pct" class="ak-bar-pct" data-band="unknown">–</span></div>
   </header>
 
   <!-- activity row: newest log line; tap to expand the log (reference panel_activity) -->
@@ -237,10 +237,10 @@
       <div class="ak-group">
         <div class="ak-group-head"><span>功能模块</span></div>
         <button class="ak-btn ak-tonal" data-action="manager">模型筛选 / 管理面板</button>
-        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系<small>把模型列表里被标为不可选的 Claude Opus 系列恢复为可选</small></span><input type="checkbox" id="ak-unlock-opus" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系<small>把模型列表里被标为不可选的 Claude Opus 系列恢复为可选</small></span><input type="checkbox" id="ak-unlock-opus" /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">解锁隐藏 / 盲测模型<small>所有 userSelectable=false 的模型（含盲测 / 未公开）都出现在直选列表</small></span><input type="checkbox" id="ak-unlock-hidden" /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">排行榜性价比列<small>排行榜加「性价比」、价格、模型年龄、模态图标列（价格来自 OpenRouter）</small></span><input type="checkbox" id="ak-plus" checked /><i class="ak-switch-track"></i></label>
-        <div class="ak-note">这三项改动后会自动刷新页面生效。</div>
+        <div class="ak-note">这三项改动后会自动刷新页面生效。两个「解锁」会改写页面加载时的数据，默认关闭；打开后若页面点击没反应，请关掉再用。</div>
       </div>
       <hr class="ak-divider" />
       <div class="ak-group">
@@ -265,7 +265,7 @@
             <button type="button" data-ballcenter-pick="percent" aria-pressed="false">百分比</button>
             <button type="button" data-ballcenter-pick="model" aria-pressed="false">模型</button>
           </div>
-          <div class="ak-note">切换后立即生效，胶囊形状不变：「百分比 + 模型」环内显示额度 %、旁边显示当前模型；「百分比」环 + 大号百分比文字；「模型」不显示环，只显示当前模型。环的颜色表示剩余额度（蓝 ≥ 20%、琥珀 10–19%、红 &lt; 10%），探针 / 清理进度与闪现提示在任何模式下都会显示，回复异常时环和边框会闪烁红色，与本设置无关。</div>
+          <div class="ak-note">切换后立即生效，胶囊形状不变：额度数字始终显示在环的正中间（不带 %）。「百分比 + 模型」环 + 当前模型；「百分比」环 + 「额度」字样；「模型」不显示环，只显示当前模型。环的颜色表示剩余额度（蓝 ≥ 20%、琥珀 10–19%、红 &lt; 10%），探针 / 清理进度与闪现提示在任何模式下都会显示，回复异常时环和边框会闪烁红色，与本设置无关。</div>
         </label>
         <label class="ak-switch"><span class="ak-switch-text">截获会话流<small>识别模型的前提；关闭后不再上报运行令牌</small></span><input type="checkbox" id="ak-capture-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">额度轮询<small>每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新</small></span><input type="checkbox" id="ak-pulse-on" checked /><i class="ak-switch-track"></i></label>

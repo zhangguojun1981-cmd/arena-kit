@@ -259,11 +259,16 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '–');
   assert.equal(arc.dataset.band, 'unknown');
   assert.equal(shadow.querySelector('.ak-pill').dataset.busy, 'true');
-  // an empty label never collapses the capsule to the bare ring
-  assert.equal(shadow.querySelector('.ak-pill-label').textContent, '额度 –');
+  // an empty label never collapses the capsule to the bare ring, and the
+  // label never carries the quota (that is the number in the ring)
+  assert.equal(shadow.querySelector('.ak-pill-label').textContent, '模型待确认');
   assert.equal(shadow.querySelector('.ak-pill-label').dataset.tone, 'muted');
   api.setPill({ percent: 64, label: '', tone: 'muted', busy: false });
-  assert.equal(shadow.querySelector('.ak-pill-label').textContent, '64%');
+  assert.equal(shadow.querySelector('.ak-pill-label').textContent, '模型待确认');
+  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '64');
+  api.setPill({ percent: 100 });
+  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '100');
+  assert.equal(shadow.querySelector('.ak-pill-pct').dataset.digits, '3', '100 gets the smaller size to fit the ring');
   // legacy setBall still maps onto the pill
   api.setBall({ percent: 72, top: '72%', bottom: 'claude-opus', isModel: true, routed: false });
   assert.equal(shadow.querySelector('.ak-pill-label').textContent, 'claude-opus');
@@ -494,18 +499,20 @@ test('display mode (设置 → 悬浮球显示): the capsule keeps its shape, on
   assert.equal(pct.textContent, '72');
   assert.equal(label.textContent, 'gpt-5');
 
-  // percent: the label carries the quota (CSS hides the tiny number inside
-  // the ring); a task / flash message still takes the label
+  // percent: the number stays in the ring centre (no %), the label says 额度;
+  // a task / flash message still takes the label
   api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent' });
   assert.equal(pill.dataset.mode, 'percent');
-  assert.equal(label.textContent, '72%');
-  assert.equal(label.dataset.tone, 'normal');
+  assert.equal(pct.textContent, '72');
+  assert.equal(label.textContent, '额度');
+  assert.equal(label.dataset.tone, 'muted');
   api.setPill({ percent: 72, label: '探针 2/5 · 命中 1', tone: 'active', mode: 'percent' });
   assert.equal(label.textContent, '探针 2/5 · 命中 1');
   assert.equal(label.dataset.tone, 'active');
   api.setPill({ percent: null, label: '', tone: 'muted', mode: 'percent' });
-  assert.equal(label.textContent, '额度 –');
-  assert.equal(label.dataset.tone, 'muted');
+  assert.equal(pct.textContent, '–');
+  assert.equal(label.textContent, '额度');
+  assert.ok(!/data-mode="percent"\]\s*\.ak-pill-pct[^{]*\{[^}]*display:\s*none/.test(EMBED_CSS), 'the ring number is never hidden in percent mode');
 
   // model: label only (CSS hides the ring); never an empty capsule
   api.setPill({ percent: null, label: 'gpt-5', tone: 'normal', mode: 'model' });
@@ -515,10 +522,11 @@ test('display mode (设置 → 悬浮球显示): the capsule keeps its shape, on
   assert.equal(label.textContent, '模型待确认');
   assert.equal(label.dataset.tone, 'muted');
 
-  // unknown mode falls back to default; empty label there shows the quota
+  // unknown mode falls back to default; the label never shows a percentage
   api.setPill({ percent: 72, label: '', tone: 'muted', mode: 'wat' });
   assert.equal(pill.dataset.mode, 'percent-model');
-  assert.equal(label.textContent, '72%');
+  assert.equal(label.textContent, '模型待确认');
+  assert.ok(!label.textContent.includes('%'));
 
   // the mode CSS never fixes the capsule width or hides the label / ⟳ zone
   assert.ok(!/data-mode="percent"\]\s*\{[^}]*width:/.test(EMBED_CSS), 'no fixed width in percent mode');
@@ -641,7 +649,11 @@ test('the whole bundle boots the dock inside a page without a Tauri runtime', as
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.equal(byId['ak-status'].textContent, '浏览器预览模式(无 Tauri 运行时)');
   assert.ok(byId['ak-history-list'].innerHTML.includes('暂无记录'));
-  assert.equal(byId['ak-unlock-opus'].checked, true); // DEFAULT_PREFS applied through the shadow root
+  assert.equal(byId['ak-unlock-opus'].checked, false); // DEFAULT_PREFS applied through the shadow root (unlock off since 0.4.5)
+  assert.equal(byId['ak-unlock-hidden'].checked, false);
+  // the one-time migration was persisted (so a later deliberate "on" sticks)
+  const savedPrefs = [...store.entries()].map(([k, v]) => { try { return JSON.parse(v); } catch { return null; } }).find((v) => v && typeof v === 'object' && 'unlockReset' in (v.prefs || v));
+  assert.ok(savedPrefs, 'prefs with the unlock reset marker persisted');
   // no platform stamp (Android / preview): nothing platform-specific to assert.
   // The dock is the same markup either way — only the runtime hint differs.
 });
@@ -707,7 +719,10 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   // the only place the percent is shown in the header area.
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 72, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
   assert.match(byId['ak-hud-pulse'].textContent, /后重置$/);
-  assert.equal(pct.textContent, '72');
+  assert.equal(pct.textContent, '72', 'pill: bare number in the ring centre');
+  assert.equal(byId['ak-bar-pct'].textContent, '72%', 'panel quota bar: percent WITH the sign');
+  assert.equal(byId['ak-bar-pct'].dataset.band, 'ok');
+  assert.equal(byId['ak-bar-fill'].style.width, '72%');
   assert.equal(arc.dataset.band, 'ok');
   assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.72 * RING_C).toFixed(3)));
 
@@ -745,6 +760,8 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 6, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
   assert.equal(arc.dataset.band, 'danger');
   assert.equal(pct.textContent, '6');
+  assert.equal(byId['ak-bar-pct'].textContent, '6%');
+  assert.equal(byId['ak-bar-pct'].dataset.band, 'danger');
 
   // reply anomaly → alert outline
   emit('arenakit://page', { name: 'reply-monitor', payload: { sessionId: 's1', runId: 'run_2', frames: 3, textChars: 0, errorFrames: 0, ended: 'done', durationMs: 1200, at: Date.now() } });

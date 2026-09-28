@@ -153,7 +153,7 @@ function conversationFor(id) {
 }
 
 const DEFAULT_PREFS = {
-  unlockOpus: true,
+  unlockOpus: false,        // off by default since 0.4.5 (see loadPrefs migration)
   unlockHidden: false,
   plus: true,
   eniOn: false,
@@ -203,7 +203,7 @@ function applyPageFlags() {
   // unlock.js / plus.js read their switches from the page's localStorage at
   // document_start; mirror the dock prefs there so the NEXT load agrees with
   // the switches (a fresh profile / cleared site data starts from defaults).
-  page('unlockSet', 'opus', state.prefs.unlockOpus !== false);
+  page('unlockSet', 'opus', !!state.prefs.unlockOpus);
   page('unlockSet', 'hidden', !!state.prefs.unlockHidden);
   page('plusSet', state.prefs.plus !== false);
   // ENI prefs are pushed on every page load (and again on every change) so
@@ -411,6 +411,14 @@ function openConversation(sid) {
 async function loadPrefs() {
   const saved = await state.store.get('prefs').catch(() => null);
   state.prefs = { ...DEFAULT_PREFS, ...(saved && typeof saved === 'object' ? saved : {}) };
+  // 0.4.5: unlock.js had never run before 0.4.4 (its extension boot threw);
+  // 0.4.4 switched it on for everyone and its rewrite broke hydration (taps
+  // on the page did nothing). Both unlock switches start off once; the user
+  // turns them back on deliberately.
+  if (state.prefs.unlockReset !== 1) {
+    state.prefs = { ...state.prefs, unlockOpus: false, unlockHidden: false, unlockReset: 1 };
+    await state.store.set('prefs', state.prefs).catch(() => {});
+  }
 }
 async function savePrefs(patch) {
   state.prefs = { ...state.prefs, ...patch };
@@ -971,6 +979,12 @@ function renderPulse() {
   const fill = q('ak-bar-fill');
   fill.style.width = (v.percent ?? 0) + '%';
   fill.dataset.band = v.band;
+  // the bar's own label: remaining quota WITH the % sign (the pill shows the bare number)
+  const barPct = q('ak-bar-pct');
+  if (barPct) {
+    barPct.textContent = v.percent === null ? '–' : Math.round(v.percent) + '%';
+    barPct.dataset.band = v.percent === null ? 'unknown' : v.band;
+  }
   // Header right column: only the reset hint stays (the old #ak-hud-percent
   // "–" placeholder was removed — quota is shown on the floating pill instead).
   const reset = q('ak-hud-pulse');

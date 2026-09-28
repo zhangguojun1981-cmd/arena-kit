@@ -126,7 +126,8 @@ export const EMBED_CSS = `
 .ak-pill-orbit { fill: none; stroke: var(--ak-brand); stroke-width: ${RING_STROKE}; stroke-linecap: round; transform-origin: 50% 50%; display: none; }
 .ak-pill[data-busy="true"] .ak-pill-orbit { display: block; animation: ak-orbit 1.1s linear infinite; }
 .ak-pill[data-busy="true"] .ak-pill-arc { opacity: .35; }
-.ak-pill-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; letter-spacing: -.2px; color: var(--ak-fg); }
+.ak-pill-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; letter-spacing: -.3px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--ak-fg); }
+.ak-pill-pct[data-digits="3"] { font-size: 8.5px; letter-spacing: -.4px; }
 .ak-pill-label { margin-left: 8px; max-width: 180px; max-width: min(220px, calc(100vw - 120px)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ak-fg); padding-right: 9px; }
 .ak-pill-label:empty { display: none; }
 .ak-pill-label[data-tone="routed"] { color: var(--ak-warn); }
@@ -142,12 +143,11 @@ export const EMBED_CSS = `
 
 /* ── display mode (设置 → 悬浮球显示) — the capsule keeps its shape in every
  * mode: only WHAT the ring / label carry changes (setPill picks the text).
- *   percent-model  ring (% inside) + label (model / task / flash)
- *   percent        ring (arc only) + label "72%" (task / flash still win)
+ * The quota is ALWAYS the bare number in the centre of the ring (no % sign).
+ *   percent-model  ring + number, label = model / task / flash
+ *   percent        ring + number, label = 「额度」 (task / flash still win)
  *   model          label only (model name), no ring
  * The optional ⟳ zone (data-refresh) is independent of the mode. */
-.ak-pill[data-mode="percent"] .ak-pill-pct { display: none; }
-.ak-pill[data-mode="percent"] .ak-pill-label { font-weight: 700; font-variant-numeric: tabular-nums; }
 .ak-pill[data-mode="model"] .ak-pill-ring { display: none; }
 .ak-pill[data-mode="model"] { padding-left: 12px; }
 .ak-pill[data-mode="model"] .ak-pill-label { margin-left: 0; font-size: 14px; font-weight: 600; }
@@ -366,20 +366,21 @@ export function mount(win) {
       arc.dataset.band = band;
       arc.setAttribute('stroke-dasharray', `${((pct === null ? 0 : pct / 100) * RING_C).toFixed(3)} ${RING_C.toFixed(3)}`);
     }
-    pctEl.textContent = pct === null ? '–' : String(pct);
+    pctEl.textContent = pct === null ? '–' : String(pct); // centre of the ring, no % sign
+    pctEl.dataset.digits = String(pct === null ? 1 : String(pct).length);
     // Display mode (设置 → 悬浮球显示) picks the label; the capsule never
     // collapses to the bare ring (an empty label used to leave a 36 px "ball"):
-    //   'percent-model' (default): ring (% inside) + model / task / flash label
-    //   'percent'                 : ring (arc only) + "72%" — task / flash still win
+    //   'percent-model' (default): ring + number, model / task / flash label
+    //   'percent'                 : ring + number, label 「额度」 — task / flash still win
     //   'model'                   : label only, no ring
+    // The quota number lives in the ring only, never with a % on the label.
     // The flash / alert states override the visual but never the data-mode attr.
     const mode = ['percent-model', 'percent', 'model'].includes(pillState.mode) ? pillState.mode : 'percent-model';
     let tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
     let text = String(pillState.label || '');
     const transient = tone === 'active' && !!text; // flash message / running task
-    const pctText = pct === null ? '额度 –' : pct + '%';
-    if (mode === 'percent' && !transient) { text = pctText; tone = pct === null ? 'muted' : 'normal'; }
-    else if (!text) { text = mode === 'model' ? '模型待确认' : pctText; tone = 'muted'; }
+    if (mode === 'percent' && !transient) { text = '额度'; tone = 'muted'; }
+    else if (!text) { text = '模型待确认'; tone = 'muted'; }
     labelEl.textContent = text;
     labelEl.dataset.tone = tone;
     pill.dataset.busy = pillState.busy ? 'true' : 'false';
