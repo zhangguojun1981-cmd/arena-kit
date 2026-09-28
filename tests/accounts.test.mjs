@@ -173,7 +173,7 @@ test('resolvePending interprets the post-reload snapshot for switch / add / logi
 test('status texts', () => {
   assert.equal(loginStageText('google-pick', { email: 'a@b.c' }), 'Google：已选择账号 a@b.c…');
   assert.equal(loginStageText('google-continue'), 'Google：已点「继续」…');
-  for (const st of ['arena-open', 'arena-agree', 'arena-google', 'arena-google-direct', 'arena-waiting', 'google-waiting', 'google-not-listed', 'google-need-user', 'google-blocked', 'wrong-account', 'user-active', 'done', 'stopped', 'timeout']) assert.doesNotMatch(loginStageText(st), new RegExp('^重新登录：' + st + '$'), st);
+  for (const st of ['arena-google', 'arena-add', 'arena-retry', 'arena-waiting', 'google-another', 'google-pick', 'google-continue', 'google-waiting', 'google-not-listed', 'google-need-user', 'google-blocked', 'wrong-account', 'user-active', 'done', 'stopped', 'timeout']) assert.doesNotMatch(loginStageText(st), new RegExp('^重新登录：' + st + '$'), st);
   assert.match(loginStageText('error', { error: 'x' }), /x/);
   assert.equal(loginStageText('weird'), '重新登录：weird');
   const acc = { cookies: [{ name: 'a', value: 'b' }], capturedAt: 0 };

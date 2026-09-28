@@ -37,7 +37,7 @@
   const EXPECT_KEY = 'arenakit.account.expect'; // sessionStorage: the session the NEXT document must start with
   const EXPECT_TTL_MS = 30_000;
   const WATCH_MS = 4000;
-  const LOGIN_TTL_MS = 3 * 60 * 1000; // one re-login round trip
+  const LOGIN_TTL_MS = 5 * 60 * 1000; // one round trip (= the dock's pending TTL)
 
   const hostOf = () => String(L.hostname || '').toLowerCase();
   const isArenaHost = (h) => /(^|\.)(arena\.ai|lmarena\.ai)$/.test(h || '');
@@ -408,23 +408,23 @@
     return true;
   }
 
-  // ── re-login (0.4.9) ─────────────────────────────────────────────────
-  // Replaces the old credentials helper (email / password / TOTP / SMS,
-  // removed). Every account is first logged in BY HAND; when its saved
-  // session dies the user taps 登录 and this automates exactly the manual
-  // Google round trip for an account Google already knows on this device:
-  //   arena  : 登录 → (dialog) tick the terms checkbox → Continue with Google
-  //   google : account chooser → the target row [data-identifier=email]
-  //            → confirmation page → 继续 / Continue
+  // ── re-login / add account (0.4.10) ──────────────────────────────────
+  // No credentials helper (removed in 0.4.9). Every account is first logged
+  // in BY HAND; when its saved session dies the user taps 登录 and this
+  // automates the Google round trip:
+  //   arena  : drop the dead auth cookies → the Google sign-in URL (what the
+  //            site's button opens, shouldLinkHistory=false — see Arena side)
+  //   google : confirmation page → 继续 / Continue; account chooser → the
+  //            target row [data-identifier=email]
   //   arena  : back logged in → done (the dock saves the new session)
-  // Anything else Google asks for (password, 2FA, an account that is not in
-  // the chooser) is left to the user with a short note; no credentials are
-  // stored or typed. The target reaches accounts.google.com through Rust
-  // (login_set → __AK_LOGIN_APPLY__ on every page load), since that page has
-  // no IPC; login_clear on every terminal stage.
+  // 添加账号 (mode 'add'): the same start, then the chooser's "Use another
+  // account" → Google's account input page, where the user takes over.
+  // Password / 2FA / an account not in the chooser are left to the user with
+  // a note bar; nothing is typed. The target reaches accounts.google.com via
+  // Rust (login_set → __AK_LOGIN_APPLY__ on every page load; that page has no
+  // IPC); login_clear on every terminal stage.
   const TRY_KEY = 'arenakit.relogin.try';
-  const DIRECT_AFTER_MS = 20_000; // no Google button by then → the button's own URL
-  let login = null; // { creds, startedAt, done:Set, timer, obs, stage, leaving, leftAt }
+  let login = null; // { creds, startedAt, done:Set, timer, obs, stage, leaving }
 
   const visible = (el) => {
     if (!el || el.isConnected === false || el.type === 'hidden') return false;
@@ -434,13 +434,6 @@
   };
   const enabled = (el) => !!el && !el.disabled && !(el.getAttribute && el.getAttribute('aria-disabled') === 'true');
   const textOf = (el) => String((el && (el.textContent || el.value || (el.getAttribute && el.getAttribute('aria-label')))) || '').replace(/\s+/g, ' ').trim();
-  const labelOf = (el) => {
-    let t = textOf(el) + ' ' + String((el && el.getAttribute && el.getAttribute('aria-label')) || '');
-    try { if (el.id && D.querySelector) { const l = D.querySelector('label[for="' + el.id + '"]'); if (l) t += ' ' + textOf(l); } } catch (_) { /* ignore */ }
-    let row = el && el.parentElement;
-    for (let i = 0; row && i < 3; i++, row = row.parentElement) { const rt = textOf(row); if (rt && rt.length <= 200) { t += ' ' + rt; break; } }
-    return t;
-  };
   function q(sel, root) { try { return [...(root || D).querySelectorAll(sel)].filter(visible); } catch (_) { return []; } }
   const emailKey = (e) => String(e || '').trim().toLowerCase();
   const once = (key) => { if (!login || login.done.has(key)) return false; login.done.add(key); return true; };
@@ -481,13 +474,13 @@
   function noteBar(text, withBack) {
     if (!D || typeof D.createElement !== 'function' || !D.documentElement) return null;
     let bar = D.getElementById && D.getElementById('ak-relogin-bar');
+    if (bar) { try { bar.remove(); } catch (_) { /* ignore */ } bar = null; } // fresh bar per message
     if (!bar) {
       bar = D.createElement('div');
       bar.id = 'ak-relogin-bar';
       bar.setAttribute('style', 'position:fixed;left:8px;right:8px;bottom:12px;z-index:2147483647;display:flex;gap:8px;align-items:center;padding:10px 12px;border-radius:12px;background:#1F2228;color:#E6E8ED;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4)');
       D.documentElement.appendChild(bar);
     }
-    bar.textContent = '';
     const msg = D.createElement('span');
     msg.setAttribute('style', 'flex:1;min-width:0');
     msg.textContent = 'ArenaKit：' + text;
@@ -507,6 +500,13 @@
   function findButton(re, root) {
     return q('button, [role="button"], input[type="submit"], a[href]', root).find((b) => enabled(b) && re.test(textOf(b))) || null;
   }
+  const ANOTHER = /^(use another account|add another account|使用其他(帐|账|帳)(号|號|戶|户)|使用另一个(帐|账)(号|户)|添加(帐|账)号|新增帳戶|使用其他帳戶)$/i;
+  function useAnotherAccount() {
+    const list = q('[role="link"], [role="button"], button, a, li, [jsname]');
+    // innermost element carrying the text (wrappers contain it too)
+    const hits = list.filter((e) => ANOTHER.test(textOf(e)));
+    return hits.find((e) => !hits.some((o) => o !== e && o.parentElement === e)) || hits[0] || null;
+  }
   function pageSays(re) {
     return q('h1, h2, [role="heading"], p, [jsname] > span, div[aria-live]').some((e) => re.test(textOf(e)));
   }
@@ -519,7 +519,8 @@
     // 1. anything that needs a person: identifier / password / 2FA pages
     if (q('#identifierId, input[type="email"], input[name="identifier"], input[type="password"], #totpPin, #idvPin, #backupCodePinInput, [data-challengetype]').length) {
       report('google-need-user');
-      noteBar('Google 要求输入账号 / 密码 / 验证：请手动完成（登录助手已移除，不再代填）', true);
+      if (c.mode === 'add') noteBar('请输入要添加的 Google 账号，按页面提示完成；回到 Arena 后会自动保存到账号列表', false);
+      else noteBar('Google 要求输入账号 / 密码 / 验证：请手动完成（不会代填）', true);
       finishLocal();
       return;
     }
@@ -532,6 +533,17 @@
     }
     // 3. account chooser: the accounts already signed in to Google here
     const rows = q('[data-identifier]');
+    // 添加账号: the chooser's "Use another account" → the account input page
+    if (c.mode === 'add') {
+      const another = useAnotherAccount();
+      if (another) {
+        if (once('g-another:' + path)) { another.click(); report('google-another'); noteBar('已点「使用其他账号」，请输入要添加的账号…', false); }
+        return;
+      }
+      if (rows.length) { report('google-need-user'); noteBar('请选择或添加要登录的 Google 账号', false); finishLocal(); return; }
+      report('google-waiting');
+      return;
+    }
     if (rows.length) {
       const pick = rows.find((r) => emailKey(r.getAttribute('data-identifier')) === want);
       if (pick) {
@@ -550,6 +562,14 @@
   function finishLocal() { stopLogin(false); }
 
   // ── Arena side ───────────────────────────────────────────────────────
+  // 0.4.10: no clicking through the site's login dialog any more. After a
+  // session dies the page still carries the dead session / an anonymous one
+  // the site's client believes in; its "Continue with Google" button then
+  // asks for shouldLinkHistory=true and the server answers
+  // {"error":"Auth session missing!"} (it cannot read the session it is told
+  // to link). So: drop the stale auth cookies, then open exactly the URL that
+  // button opens, with shouldLinkHistory=false. The terms checkbox in the
+  // dialog is a front-end gate only; Google's own pages follow as usual.
   function readTry(c) {
     try {
       const t = JSON.parse(W.sessionStorage.getItem(TRY_KEY) || 'null');
@@ -563,56 +583,50 @@
     return next;
   }
   function clearTry() { try { W.sessionStorage.removeItem(TRY_KEY); } catch (_) { /* ignore */ } }
-  function googleSignInUrl(linkHistory) {
-    // the same URL the site's "Continue with Google" button navigates to
-    const qs = 'shouldLinkHistory=' + (linkHistory ? 'true' : 'false') + '&marketingConsent=false&returnTo=' + encodeURIComponent('/agent');
+  function googleSignInUrl() {
+    // the URL the site's "Continue with Google" button navigates to — never
+    // linking history: that needs a readable session, which is what is broken
+    const qs = 'shouldLinkHistory=false&marketingConsent=false&returnTo=' + encodeURIComponent('/agent');
     return (L.origin || ('https://' + hostOf())) + '/nextjs-api/sign-in/google?' + qs;
   }
-  const isChecked = (el) => {
-    const a = (k) => (el.getAttribute ? el.getAttribute(k) : null);
-    if (a('aria-checked') === 'true' || a('data-state') === 'checked') return true;
-    if (a('aria-checked') === 'false' || a('data-state') === 'unchecked') return false;
-    return !!el.checked;
-  };
-  const MARKETING = /marketing|newsletter|updates|promotion|email me|营销|推广|订阅|资讯/i;
-  const TERMS = /agree|terms|privacy|policy|consent|同意|条款|條款|隐私|隱私|协议|協議/i;
-  function loginDialog() {
-    const dialogs = q('[role="dialog"], [role="alertdialog"], dialog[open]');
-    return dialogs.find((d) => /google/i.test(textOf(d))) || dialogs[0] || null;
-  }
-  // inside the login dialog any "Google" button; on the bare page only an
-  // explicit sign-in label (model names like "Google Gemini" must not match)
-  const GOOGLE_SIGNIN = /(continue|sign ?in|log ?in) with google|使用\s*google|google\s*(帐号|账号|帳號)?\s*(登录|登入|继续|繼續)|通过\s*google/i;
-  function googleButton(root) {
-    const re = root ? /google/i : GOOGLE_SIGNIN;
-    return q('button, [role="button"], a[href]', root).find((b) => re.test(textOf(b) + ' ' + String((b.getAttribute && b.getAttribute('aria-label')) || ''))) || null;
-  }
-  function termsBoxes(root) {
-    return q('input[type="checkbox"], [role="checkbox"], button[role="checkbox"]', root).filter((b) => !MARKETING.test(labelOf(b)));
-  }
-  function loginButton() {
-    return q('button, [role="button"], a[href]').find((b) => /^(log ?in|sign ?in|sign ?up|登录|登入|登錄|注册\s*\/\s*登录)$/i.test(textOf(b))) || null;
-  }
-  function leaveVia(c, how, url) {
+  function goGoogle(c, stage) {
     login.leaving = true;
-    login.leftAt = now();
-    writeTry(c, how);
-    report(how === 'button' ? 'arena-google' : 'arena-google-direct');
-    if (url) { try { if (typeof L.assign === 'function') L.assign(url); else L.href = url; } catch (_) { try { L.href = url; } catch (__) { /* ignore */ } } }
+    writeTry(c, stage);
+    // stale session out of the way; this document must not write it back
+    clearAuth();
+    clearWebStorageSessions();
+    freezeAuthWrites();
+    lastSig = sigOf(authCookies());
+    report(stage);
+    const url = googleSignInUrl();
+    try { if (typeof L.assign === 'function') L.assign(url); else L.href = url; } catch (_) { try { L.href = url; } catch (__) { /* ignore */ } }
+  }
+  /* JSON answer of an auth route (/nextjs-api/sign-in/…, /callback/…);
+   * null = not such a page, '' = empty (a redirect in progress). */
+  function authRouteError() {
+    if (!/^\/nextjs-api\//.test(String(L.pathname || ''))) return null;
+    const body = String((D.body && (D.body.innerText || D.body.textContent)) || '').trim();
+    const m = /"error"\s*:\s*"([^"]{1,200})"/.exec(body);
+    return m ? m[1] : (body ? body.slice(0, 200) : '');
   }
 
   function stepArena(c) {
+    if (login.leaving) return; // our navigation is committing
+    const routeErr = authRouteError();
+    if (routeErr !== null) {
+      if (!routeErr) { report('arena-waiting'); return; }
+      // one fresh attempt (cookies cleared again), then give up with the text
+      if (readTry(c).n < 2 && once('a-retry')) { goGoogle(c, 'arena-retry'); return; }
+      clearTry();
+      finish('error', { error: 'Arena 登录接口返回：' + routeErr });
+      try { L.replace('/agent'); } catch (_) { /* ignore */ }
+      return;
+    }
     const s = snapshot();
     if (s.state === 'logged-in') {
       clearTry();
-      if (!c.email || emailKey(s.email) === emailKey(c.email)) { finish('done', { email: s.email }); return; }
+      if (c.mode === 'add' || !c.email || emailKey(s.email) === emailKey(c.email)) { finish('done', { email: s.email }); return; }
       finish('wrong-account', { email: s.email, error: '页面已登录 ' + s.email + '，不是 ' + c.email });
-      return;
-    }
-    if (login.leaving) {
-      // Google is loading; a button click that never navigated (15 s) →
-      // the button's own URL, once
-      if (now() - login.leftAt > 15_000 && once('a-direct-late')) leaveVia(c, 'direct', googleSignInUrl(s.state === 'guest'));
       return;
     }
     // back from one round trip and still logged out → report, never loop
@@ -622,29 +636,7 @@
       finish('error', { error: err ? 'Arena 登录失败：' + err : '回到 Arena 后仍未登录（在 Google 页面取消了，或该账号需要手动登录）' });
       return;
     }
-    const dlg = loginDialog();
-    const gBtn = googleButton(dlg || undefined);
-    if (gBtn) {
-      // tick the terms checkbox first (never a marketing opt-in)
-      const boxes = termsBoxes(dlg || undefined);
-      const box = boxes.find((b) => TERMS.test(labelOf(b)) && !isChecked(b)) || (boxes.length === 1 && !isChecked(boxes[0]) ? boxes[0] : null);
-      if (box) {
-        if (once('a-agree')) { box.click(); report('arena-agree'); }
-        return; // next tick: the button (often enabled only once ticked)
-      }
-      if (!enabled(gBtn)) { report('arena-waiting'); return; }
-      if (once('a-google')) { gBtn.click(); leaveVia(c, 'button', ''); }
-      return;
-    }
-    const btn = loginButton();
-    if (btn && !dlg) {
-      // once, plus one retry after 10 s when no dialog showed up
-      const key = now() - login.startedAt < 10_000 ? 'a-open:0' : 'a-open:1';
-      if (once(key)) { btn.click(); report('arena-open'); return; }
-    }
-    // no dialog / button found in time → what the Google button does
-    if (now() - login.startedAt > DIRECT_AFTER_MS) { leaveVia(c, 'direct', googleSignInUrl(s.state === 'guest')); return; }
-    if (login.stage !== 'arena-open') report('arena-waiting'); // keep "clicked 登录" while the dialog loads
+    if (once('a-go')) goGoogle(c, c.mode === 'add' ? 'arena-add' : 'arena-google');
   }
 
   function step() {
@@ -662,12 +654,12 @@
 
   function startLogin(creds) {
     const c = creds && typeof creds === 'object' ? creds : {};
-    const clean = { accountId: c.accountId ? String(c.accountId) : '', email: c.email ? String(c.email).trim() : '', startedAt: Number(c.startedAt) || 0 };
-    if (!clean.email) throw new Error('缺少账号邮箱');
+    const clean = { accountId: c.accountId ? String(c.accountId) : '', email: c.email ? String(c.email).trim() : '', startedAt: Number(c.startedAt) || 0, mode: c.mode === 'add' ? 'add' : 'relogin' };
+    if (!clean.email && clean.mode !== 'add') throw new Error('缺少账号邮箱');
     if (clean.startedAt && now() - clean.startedAt > LOGIN_TTL_MS) return { started: false, reason: 'expired' };
     if (login && login.creds.startedAt === clean.startedAt && login.creds.email === clean.email) return { started: true, host: hostOf(), already: true };
     stopLogin(false);
-    login = { creds: clean, startedAt: clean.startedAt || now(), done: new Set(), timer: null, obs: null, stage: '', leaving: false, leftAt: 0 };
+    login = { creds: clean, startedAt: clean.startedAt || now(), done: new Set(), timer: null, obs: null, stage: '', leaving: false };
     login.timer = setInterval(step, 700);
     try {
       if (typeof W.MutationObserver === 'function' && D.documentElement) {

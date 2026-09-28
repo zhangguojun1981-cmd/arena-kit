@@ -116,7 +116,7 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   let app = await start(dev);
   const aliceId = app.flow.accounts.activeId;
 
-  // ── 添加另一个账号: current session kept, page cleared, page leaves for the root ──
+  // ── 添加另一个账号: current session kept, page cleared, page leaves for /agent, Rust carries mode:add ──
   const add = await app.flow.add();
   assert.equal(add.ok, true);
   assert.equal(add.via, 'page');
@@ -126,12 +126,13 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
   assert.equal(stored(dev).pending.type, 'add', 'the pending add survives the reload in the store');
   assert.equal(stored(dev).list.find((a) => a.id === aliceId).cookies.length > 0, true, 'Alice\'s session is still saved');
-  assert.ok(dev.rust.invokes.some((i) => i.cmd === 'login_clear'));
+  assert.equal(dev.rust.login.mode, 'add', 'the next page load opens Google sign-in → "Use another account"');
+  assert.equal(dev.rust.login.email, '');
 
   // ── reload: logged-out page, pending add → waiting for the user to log in ──
   app = await start(dev);
   assert.equal(app.flow.accounts.pending.type, 'add');
-  assert.match(app.log.status.at(-1), /请在页面中登录另一个账号/);
+  assert.match(app.log.status.at(-1), /请在 Google 页面输入要添加的账号/);
   assert.equal(app.flow.accounts.activeId, null, 'a logged-out page has no current account');
   assert.ok(app.flow.find(aliceId), 'Alice is still in the list');
 
@@ -345,18 +346,15 @@ test('dead saved session → 需登录; one tap on 登录 runs the manual Google
   assert.equal((await app.flow.startLogin(app.flow.find('carol'))).ok, true);
   assert.equal(app.flow.accounts.pending.type, 'login');
   assert.deepEqual({ ...dev.rust.login, startedAt: 0 }, { accountId: 'carol', email: 'carol@gmail.com', startedAt: 0 }, 'login_set: who, not credentials');
-  // arena: 登录 → dialog → 同意 → Continue with Google
+  // arena: the stale (guest) session is dropped, then straight to the URL the
+  // site's Google button opens — without linking history (that is what
+  // failed with {"error":"Auth session missing!"})
   const page = app.page;
-  const loginBtn = page.mk('button', {}, 'Login');
+  const siteBtn = page.mk('button', {}, 'Continue with Google');
   page.flushTimeouts(); page.tickIntervals();
-  assert.equal(loginBtn.clicks, 1);
-  const dlg = page.mk('div', { role: 'dialog' }, '');
-  const lab = page.mk('label', {}, 'I agree to the Terms of Service', { parent: dlg });
-  const agree = page.mk('input', { type: 'checkbox' }, '', { parent: lab });
-  const google = page.mk('button', {}, 'Continue with Google', { parent: dlg });
-  page.tickIntervals(); page.tickIntervals();
-  assert.equal(agree.checked, true);
-  assert.equal(google.clicks, 1);
+  assert.equal(siteBtn.clicks, 0, 'the site button (shouldLinkHistory=true) is not used');
+  assert.equal(plain(page.api.snapshot()).hasAuthCookie, false, 'stale session cookies cleared first');
+  assert.deepEqual(page.navigations.map((n) => n.url), ['https://arena.ai/nextjs-api/sign-in/google?shouldLinkHistory=false&marketingConsent=false&returnTo=%2Fagent']);
 
   // accounts.google.com: no IPC — Rust's on_page_load evals __AK_LOGIN_APPLY__(creds)
   const g = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
@@ -425,7 +423,7 @@ test('targets without a session: an email → clear + reload into the re-login; 
   await app.flow.stopLogin();
   assert.equal(dev.rust.login, null);
   assert.equal(app.flow.accounts.pending, null);
-  assert.match(app.log.loginStatus.at(-1), /已停止/);
+  assert.match(app.log.loginStatus.at(-1), /已取消自动登录/);
 });
 
 test('a pending operation older than 5 minutes is dropped instead of misjudged; saveCurrent reports a logged-out page', async () => {
@@ -449,4 +447,36 @@ test('login for the account that is already logged in: nothing happens on the pa
   assert.equal(dev.rust.login, null, 'no credentials handed to Rust');
   assert.equal(app.flow.accounts.pending, null);
   assert.match(app.log.loginStatus.at(-1), /已经登录/);
+});
+
+test('添加另一个账号 opens Google sign-in and taps "Use another account"; the user types the new account; back on arena it is saved', async () => {
+  const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
+  let app = await start(dev);
+  assert.equal((await app.flow.add()).ok, true);
+  assert.match(app.log.loginStatus.at(-1), /添加账号/);
+  // next page load (/agent, logged out): Rust pushes mode:add → Google sign-in
+  app = await start(dev, { pathname: '/agent' });
+  assert.equal(plain(app.page.sandbox.__AK_LOGIN_APPLY__(dev.rust.login)).started, true);
+  app.page.flushTimeouts(); app.page.tickIntervals();
+  assert.match(app.page.navigations.at(-1).url, /\/nextjs-api\/sign-in\/google\?shouldLinkHistory=false&/);
+  // Google chooser: never one of the known rows, "Use another account" instead
+  const g = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
+  const aliceRow = g.mk('div', { 'data-identifier': 'alice@example.com' }, 'Alice');
+  const wrap = g.mk('li', {}, '');
+  const another = g.mk('div', { role: 'link' }, 'Use another account', { parent: wrap });
+  g.sandbox.__AK_LOGIN_APPLY__(dev.rust.login); g.flushTimeouts(); g.tickIntervals(); g.tickIntervals();
+  assert.equal(another.clicks, 1);
+  assert.equal(aliceRow.clicks, 0);
+  // account input page: the user types, nothing is filled
+  g.clearElements(); g.location.pathname = '/v3/signin/identifier';
+  const idIn = g.mk('input', { type: 'email', id: 'identifierId' });
+  g.tickIntervals();
+  assert.equal(idIn.value, '');
+  assert.match(g.doc.getElementById('ak-relogin-bar').children[0].textContent, /请输入要添加的 Google 账号/);
+  // back on arena logged in as Bob → added
+  dev.jar = sessionJar({ email: 'bob@example.com', id: 'ub', name: 'Bob' });
+  app = await start(dev, { pathname: '/agent' });
+  assert.deepEqual(app.flow.accounts.list.map((a) => a.email).sort(), ['alice@example.com', 'bob@example.com']);
+  assert.equal(app.flow.accounts.pending, null);
+  assert.equal(dev.rust.login, null);
 });

@@ -318,86 +318,64 @@ test('re-login needs the account email; no password / TOTP is accepted or kept',
   assert.equal(d.sandbox.__AK_TOTP__, undefined, 'the TOTP lib is gone');
 });
 
-test('re-login on arena (guest): 登录 → tick the terms box (never the marketing one) → Continue with Google', () => withClock(5_000_000, (advance) => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: guestJar() });
+test('re-login on arena: stale session cookies dropped, then the Google sign-in URL WITHOUT linking history; the site\'s own buttons are never clicked', () => withClock(5_000_000, () => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: [...guestJar(), { name: '_ga', value: 'keep' }] });
   const loginBtn = d.mk('button', {}, 'Login');
+  const googleBtn = d.mk('button', {}, 'Continue with Google');
   d.api.startLogin(ALICE());
   run(d);
-  assert.equal(loginBtn.clicks, 1, '登录 clicked');
-  assert.equal(stages(d).at(-1), 'arena-open');
-  run(d, 3);
-  assert.equal(loginBtn.clicks, 1, 'not re-clicked inside 10 s');
-  // the sign-in dialog renders
-  const dlg = d.mk('div', { role: 'dialog' }, 'Sign in to Arena');
-  const mLabel = d.mk('label', {}, 'Send me product updates and marketing emails', { parent: dlg });
-  const marketing = d.mk('input', { type: 'checkbox' }, '', { parent: mLabel });
-  const tLabel = d.mk('label', {}, 'I agree to the Terms of Use and Privacy Policy', { parent: dlg });
-  const terms = d.mk('input', { type: 'checkbox' }, '', { parent: tLabel });
-  const google = d.mk('button', {}, 'Continue with Google', { parent: dlg });
-  run(d);
-  assert.equal(terms.clicks, 1, 'terms ticked');
-  assert.equal(terms.checked, true);
-  assert.equal(marketing.clicks, 0, 'marketing opt-in never ticked');
-  assert.equal(google.clicks, 0, 'button waits for the next tick');
-  assert.equal(stages(d).at(-1), 'arena-agree');
-  run(d);
-  assert.equal(google.clicks, 1, 'Continue with Google clicked once');
+  assert.equal(loginBtn.clicks + googleBtn.clicks, 0);
+  assert.equal(plain(d.api.snapshot()).hasAuthCookie, false, 'the dead / guest session is gone before Google');
+  assert.ok(d.cookies.has('|_ga'), 'unrelated cookies kept');
+  assert.deepEqual(d.navigations.map((n) => n.url), [GOOGLE_URL('false')]);
   assert.equal(stages(d).at(-1), 'arena-google');
   assert.equal(JSON.parse(d.sessionStorage.getItem('arenakit.relogin.try')).n, 1, 'round trip recorded');
   run(d, 5);
-  assert.equal(google.clicks, 1, 'no second OAuth start while Google loads');
-  assert.equal(loginBtn.clicks, 1);
-  // the click never navigated → after 15 s the button's own URL, once
-  advance(16_000); run(d);
-  assert.deepEqual(d.navigations.map((n) => n.url), [GOOGLE_URL('true')]);
-  advance(16_000); run(d);
-  assert.equal(d.navigations.length, 1);
+  assert.equal(d.navigations.length, 1, 'no second OAuth start while Google loads');
+  // the leaving page cannot write the stale session back
+  for (const c of guestJar()) d.doc.cookie = `${c.name}=${c.value}; Path=/`;
+  assert.equal(plain(d.api.snapshot()).hasAuthCookie, false);
 }));
 
-test('re-login: a role=checkbox terms control and a button enabled only after ticking', () => withClock(5_100_000, () => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-  const dlg = d.mk('div', { role: 'dialog' }, '');
-  const box = d.mk('button', { role: 'checkbox', 'aria-checked': 'false' }, '', { parent: dlg });
-  d.mk('span', {}, '我已阅读并同意服务条款', { parent: dlg });
-  const google = d.mk('button', { disabled: '' }, '使用 Google 继续', { parent: dlg });
-  d.api.startLogin(ALICE());
-  run(d);
-  assert.equal(box.attrs['aria-checked'], 'true', 'single unlabeled-ish checkbox in the dialog is ticked');
-  run(d);
-  assert.equal(google.clicks, 0, 'disabled button not clicked');
-  assert.equal(stages(d).at(-1), 'arena-waiting');
-  delete google.attrs.disabled;
-  run(d);
-  assert.equal(google.clicks, 1);
+test('re-login: an auth route answering {"error":"Auth session missing!"} → one fresh attempt, then the error text and back to /agent', () => withClock(5_100_000, () => {
+  const session = new Map();
+  const c = ALICE();
+  const page1 = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: guestJar(), session });
+  page1.api.startLogin(c); run(page1);
+  assert.equal(page1.navigations.length, 1);
+  // the sign-in route answered JSON instead of redirecting
+  const errPage = () => {
+    const p = fakeDom({ hostname: 'arena.ai', pathname: '/nextjs-api/sign-in/google', jar: guestJar(), session });
+    p.doc.body = { textContent: '{"error":"Auth session missing!"}' };
+    p.sandbox.__AK_LOGIN_APPLY__(c); run(p);
+    return p;
+  };
+  const p2 = errPage();
+  assert.deepEqual(p2.navigations.map((n) => n.url), [GOOGLE_URL('false')], 'retried once with the cookies cleared again');
+  assert.equal(stages(p2).at(-1), 'arena-retry');
+  assert.equal(plain(p2.api.snapshot()).hasAuthCookie, false);
+  const p3 = errPage();
+  const ev = p3.lastEvent('login').payload;
+  assert.equal(ev.stage, 'error');
+  assert.match(ev.error, /Auth session missing!/);
+  assert.deepEqual(p3.navigations.map((n) => n.how + ' ' + n.url), ['replace /agent'], 'no raw JSON page left on screen');
+  assert.ok(p3.invokes.some((i) => i.cmd === 'login_clear'));
+  // an empty body on an auth route = a redirect in progress → wait
+  const p4 = fakeDom({ hostname: 'arena.ai', pathname: '/nextjs-api/callback/google', session: new Map() });
+  p4.sandbox.__AK_LOGIN_APPLY__(ALICE()); run(p4);
+  assert.equal(stages(p4).at(-1), 'arena-waiting');
+  assert.equal(p4.navigations.length, 0);
 }));
 
-test('re-login: model buttons that merely say "Google" are never clicked on the bare page', () => withClock(5_200_000, () => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-  const model = d.mk('button', {}, 'Google Gemini 2.5 Pro');
-  const login = d.mk('button', {}, 'Log in');
-  d.api.startLogin(ALICE());
-  run(d, 3);
-  assert.equal(model.clicks, 0);
-  assert.equal(login.clicks, 1);
-  const real = d.mk('a', { href: '/nextjs-api/sign-in/google' }, 'Continue with Google');
+test('add mode: no email needed; on arena it goes to Google the same way; any logged-in account completes it', () => withClock(5_200_000, () => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: guestJar() });
+  assert.equal(plain(d.sandbox.__AK_LOGIN_APPLY__({ mode: 'add', startedAt: Date.now() })).started, true);
   run(d);
-  assert.equal(real.clicks, 1, 'an explicit sign-in label outside a dialog is fine');
-  assert.equal(model.clicks, 0);
-}));
-
-test('re-login fallback: no login UI within 20 s → the Google sign-in URL (history linked only for a guest)', () => withClock(6_000_000, (advance) => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-  d.api.startLogin(ALICE());
-  run(d);
-  assert.equal(d.navigations.length, 0);
-  assert.equal(stages(d).at(-1), 'arena-waiting');
-  advance(21_000); run(d);
-  assert.deepEqual(d.navigations.map((n) => n.url), [GOOGLE_URL('true')]);
-  assert.equal(stages(d).at(-1), 'arena-google-direct');
-  const d2 = fakeDom({ hostname: 'arena.ai', pathname: '/' });
-  d2.api.startLogin(ALICE());
-  advance(21_000); run(d2);
-  assert.deepEqual(d2.navigations.map((n) => n.url), [GOOGLE_URL('false')], 'no guest session → nothing to link');
+  assert.deepEqual(d.navigations.map((n) => n.url), [GOOGLE_URL('false')]);
+  assert.equal(stages(d).at(-1), 'arena-add');
+  const back = fakeDom({ hostname: 'arena.ai', pathname: '/agent', jar: userJar('new@gmail.com', 'un') });
+  back.sandbox.__AK_LOGIN_APPLY__({ mode: 'add', startedAt: Date.now() }); run(back);
+  assert.equal(stages(back).at(-1), 'done');
 }));
 
 test('re-login, back on arena after Google: right account → done + login_clear; wrong → wrong-account; still logged out → error once, never loops', () => withClock(7_000_000, () => {
@@ -424,16 +402,15 @@ test('re-login, back on arena after Google: right account → done + login_clear
 
 test('re-login yields to the user: a real tap pauses it for 10 s', () => withClock(8_000_000, (advance) => {
   const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
-  const loginBtn = d.mk('button', {}, 'Login');
   d.api.startLogin(ALICE());
   d.userEvent('pointerdown', {});
   run(d);
-  assert.equal(loginBtn.clicks, 0);
+  assert.equal(d.navigations.length, 0);
   assert.equal(stages(d).at(-1), 'user-active');
   advance(10_500);
   d.userEvent('pointerdown', { isTrusted: false }); // our own clicks never count
   run(d);
-  assert.equal(loginBtn.clicks, 1, 'resumes after the pause');
+  assert.equal(d.navigations.length, 1, 'resumes after the pause');
 }));
 
 test('Google side: account chooser → the target row; confirmation → 继续 (not the account chip); each once', () => {

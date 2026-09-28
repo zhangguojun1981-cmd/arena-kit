@@ -227,7 +227,7 @@ export function resolvePending(state, snap, now = Date.now()) {
     return { state: dropped, outcome: { status: 'lost', account: target ? dropped.list.find((a) => a.id === target.id) || target : null, message: lostMessage(target, guest) } };
   }
   if (p.type === 'add') {
-    if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' + (guest ? '（游客状态不会被记录）' : '') } };
+    if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在 Google 页面输入要添加的账号（或在页面中手动登录）；登录完成后会自动保存' + (guest ? '（游客状态不会被记录）' : '') } };
     return { state: { ...st, pending: null }, outcome: { status: 'added', message: '已保存账号 ' + (snap.email || snap.userId) } };
   }
   if (p.type === 'login') {
@@ -241,13 +241,13 @@ export function resolvePending(state, snap, now = Date.now()) {
 export function loginStageText(stage, extra = {}) {
   const who = extra.email ? ' ' + extra.email : '';
   const map = {
-    'arena-open': '重新登录' + who + '：已点「登录」…',
-    'arena-agree': '重新登录' + who + '：已勾选同意条款…',
-    'arena-google': '重新登录' + who + '：已点 Google 登录，正在跳转…',
-    'arena-google-direct': '重新登录' + who + '：未找到登录按钮，直接打开 Google 登录…',
-    'arena-waiting': '重新登录' + who + '：等待登录界面…',
+    'arena-google': '重新登录' + who + '：已清除失效的登录状态，正在打开 Google 登录…',
+    'arena-add': '添加账号：正在打开 Google 登录…',
+    'arena-retry': '登录接口报错，已清除登录状态再试一次…',
+    'arena-waiting': '重新登录' + who + '：等待页面…',
     'google-pick': 'Google：已选择账号' + who + '…',
     'google-continue': 'Google：已点「继续」…',
+    'google-another': 'Google：已点「使用其他账号」，请输入新账号',
     'google-waiting': 'Google：等待页面…',
     'google-not-listed': 'Google 账号列表里没有' + who + '：请手动登录一次',
     'google-need-user': 'Google 要求输入密码 / 验证：请手动完成',
@@ -255,8 +255,8 @@ export function loginStageText(stage, extra = {}) {
     'wrong-account': '页面已登录另一个账号' + (extra.email ? '（' + extra.email + '）' : ''),
     'user-active': '你正在操作页面，自动登录暂停 10 秒…',
     done: '登录完成 ✓',
-    stopped: '已停止重新登录',
-    timeout: '重新登录超时（3 分钟），请手动完成',
+    stopped: '已取消自动登录',
+    timeout: '自动登录超时（5 分钟），请手动完成',
     error: '重新登录失败：' + (extra.error || '未知错误'),
   };
   return map[stage] || ('重新登录：' + stage);

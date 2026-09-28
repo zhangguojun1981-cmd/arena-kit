@@ -182,7 +182,7 @@ export function createAccountFlow(deps) {
     st = setPending(st, { type: 'login', id: acc.id }, d.now());
     await flow.save(st);
     const creds = credsFor(acc);
-    d.loginStatus('正在重新登录 ' + accountLabel(acc) + '：登录 → 同意 → Google → 选择账号 → 继续');
+    d.loginStatus('正在重新登录 ' + accountLabel(acc) + '：清除失效登录 → Google 登录 → 选择该账号 → 继续');
     await invoke('login_set', { creds });
     // A page that still holds another (real) session is cleared and left for
     // the site root; a guest / logged-out page runs the helper right here.
@@ -199,7 +199,9 @@ export function createAccountFlow(deps) {
   };
 
   /* 添加另一个账号: keep the current one, clear the page's session (guest
-   * cookies included), leave for the site root → the user logs in there. */
+   * cookies included) and go straight to Google's sign-in, where the page
+   * taps "Use another account" → Google's account input page; the user types
+   * the new account there. The first real login afterwards is saved. */
   flow.add = async () => {
     if (flow.busy) return { ok: false, reason: 'busy' };
     flow.busy = true;
@@ -210,16 +212,21 @@ export function createAccountFlow(deps) {
       if (isRealLogin(snap)) st = applySnapshot(st, snap, d.now()).state;
       st = setPending(st, { type: 'add' }, d.now());
       await flow.save(st);
-      await invoke('login_clear', {});
-      d.status('已清除页面登录状态；请在页面中登录另一个账号，登录完成后会自动保存');
+      const creds = { mode: 'add', accountId: '', email: '', startedAt: d.now() };
+      await invoke('login_set', { creds });
+      d.status('正在打开 Google 登录：自动点「使用其他账号」，请在 Google 页面输入要添加的账号；登录完成后自动保存');
+      d.loginStatus('添加账号：正在打开 Google 登录…');
       let res = null;
-      if (snap.hasAuthCookie) {
+      if (isRealLogin(snap)) {
+        // leave the current account's page first; the next page load starts the add
         try { res = await d.call('clear', { navigate: HOME_PATH }); } catch (e) {
           if (isTimeout(e)) return { ok: true, via: 'unknown' };
           throw e;
         }
+        return { ok: true, via: await leave(res, 'add') };
       }
-      return { ok: true, via: await leave(res, 'add') };
+      await d.call('login', { creds }).catch((e) => d.loginStatus('无法打开 Google 登录: ' + errText(e)));
+      return { ok: true, via: 'page' };
     } catch (e) {
       d.status('操作失败: ' + errText(e));
       return { ok: false, reason: errText(e) };
@@ -245,7 +252,7 @@ export function createAccountFlow(deps) {
     await invoke('login_clear', {});
     await flow.save(setPending(flow.accounts, null));
     await d.call('stop', {}).catch(() => null);
-    d.loginStatus('已停止重新登录');
+    d.loginStatus('已取消自动登录');
   };
 
   flow.find = (id) => flow.accounts.list.find((a) => a.id === id) || null;
