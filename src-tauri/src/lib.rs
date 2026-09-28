@@ -100,6 +100,19 @@ fn guarded(out: &mut String, name: &str, src: &str) {
     ));
 }
 
+/// Host gate for the arena-only document_start modules (page hooks, stream
+/// taps, watchdog, ENI, link routing). The same webview also loads the
+/// sign-in pages (accounts.google.com …) and third-party frames (Cloudflare
+/// Turnstile); wrapping their fetch / XHR / WebSocket / window.open and
+/// watching their DOM there bought nothing and could stall them.
+const ARENA_HOST_FLAG: &str = "window.__ARENAKIT_ON_ARENA__=/(^|\\.)(arena\\.ai|lmarena\\.ai)$/.test(location.hostname||'');\n";
+
+fn guarded_arena(out: &mut String, name: &str, src: &str) {
+    out.push_str("if(window.__ARENAKIT_ON_ARENA__){\n");
+    guarded(out, name, src);
+    out.push_str("}\n");
+}
+
 /// Assemble the bridge + all injected scripts into one init script that runs
 /// in the MAIN world before page load. UI scripts are deferred to
 /// DOMContentLoaded so they see a ready DOM. `embedded_dock` (mobile) is
@@ -112,15 +125,18 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     // document_start scripts.
     guarded(&mut s, "bridge", BRIDGE_JS);
     guarded(&mut s, "gm-shim", GM_SHIM_JS);
-    guarded(&mut s, "snoop", SNOOP_JS);
-    guarded(&mut s, "monitor", MONITOR_JS);
-    guarded(&mut s, "pulse", PULSE_JS);
-    guarded(&mut s, "unlock", UNLOCK_JS);
-    guarded(&mut s, "eni", ENI_JS);
-    guarded(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
-    guarded(&mut s, "probe", PROBE_JS);
-    guarded(&mut s, "watchdog", WATCHDOG_JS);
-    guarded(&mut s, "links", LINKS_JS);
+    // arena only (see ARENA_HOST_FLAG); bridge / TOTP / account run on the
+    // sign-in hosts too — the login helper lives there.
+    s.push_str(ARENA_HOST_FLAG);
+    guarded_arena(&mut s, "snoop", SNOOP_JS);
+    guarded_arena(&mut s, "monitor", MONITOR_JS);
+    guarded_arena(&mut s, "pulse", PULSE_JS);
+    guarded_arena(&mut s, "unlock", UNLOCK_JS);
+    guarded_arena(&mut s, "eni", ENI_JS);
+    guarded_arena(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
+    guarded_arena(&mut s, "probe", PROBE_JS);
+    guarded_arena(&mut s, "watchdog", WATCHDOG_JS);
+    guarded_arena(&mut s, "links", LINKS_JS);
     guarded(&mut s, "totp", TOTP_JS);
     guarded(&mut s, "account", ACCOUNT_JS);
     // defer UI scripts until the DOM is ready — and only on arena itself: the
@@ -857,6 +873,20 @@ mod tests {
         // UI scripts / the embedded dock only mount on arena hosts
         assert!(s.contains("(arena\\.ai|lmarena\\.ai)$/.test(location.hostname||''))return;"));
         assert!(s.find("lmarena\\.ai)$/.test(location.hostname").unwrap() < deferred);
+        // page hooks are gated to arena hosts; the login helper is not
+        let flag = s.find("window.__ARENAKIT_ON_ARENA__=").unwrap();
+        for name in ["snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links"] {
+            let at = s.find(&format!("[ArenaKit] {} init failed", name)).unwrap();
+            let gate = s[..at].rfind("if(window.__ARENAKIT_ON_ARENA__){").unwrap();
+            assert!(flag < gate, "{}", name);
+            assert!(!s[gate..at].contains("init failed"), "{} sits in its own gate", name);
+        }
+        for name in ["bridge", "totp", "account"] {
+            let at = s.find(&format!("[ArenaKit] {} init failed", name)).unwrap();
+            let open = s[..at].rfind("if(window.__ARENAKIT_ON_ARENA__){");
+            let close_before = open.map(|o| s[o..at].contains("init failed',e);}\n}\n")).unwrap_or(true);
+            assert!(close_before, "{} runs on every host", name);
+        }
     }
 
     #[test]
