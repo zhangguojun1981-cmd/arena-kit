@@ -50,10 +50,13 @@ export function formatReset(anchorMs, nowMs) {
 
 /* Small state machine the dock feeds with `pulse` page events. */
 export function createPulseState({ now = Date.now } = {}) {
-  const s = { percent: null, refreshedAt: 0, anchor: 0, error: '', updatedAt: 0, blockedUntil: 0 };
+  const s = { percent: null, refreshedAt: 0, anchor: 0, error: '', updatedAt: 0, blockedUntil: 0, pending: false, pendingSince: 0, transient: false };
   return {
     ingest(ev) {
       const t = Number(ev?.at) || now();
+      // a manual refresh was accepted — the last value (if any) stays visible
+      if (ev && ev.pending === true) { s.pending = true; s.pendingSince = t; return this.view(t); }
+      if (ev && (ev.ok === true || ev.ok === false)) s.pending = false;
       if (ev && ev.ok === true && Number.isFinite(Number(ev.percent))) {
         s.percent = Math.max(0, Math.min(100, Math.round(Number(ev.percent))));
         s.refreshedAt = Number(ev.refreshedAt) || 0;
@@ -61,7 +64,9 @@ export function createPulseState({ now = Date.now } = {}) {
         s.error = '';
         s.updatedAt = t;
       } else if (ev && ev.ok === false) {
+        // transient (429 / token refresh / timeout) never wipes the known value
         s.error = String(ev.error || '额度读取失败');
+        s.transient = ev.transient === true;
         if (Number(ev.retryAfterMs) > 0) s.blockedUntil = t + Math.min(Number(ev.retryAfterMs), 600_000);
       }
       return this.view(t);
@@ -70,9 +75,10 @@ export function createPulseState({ now = Date.now } = {}) {
       const known = s.percent !== null;
       const reset = formatReset(s.anchor, t);
       let text;
-      if (!known) text = s.error ? `额度：${s.error}` : '额度读取中…';
+      if (!known) text = s.pending ? '额度刷新中…' : s.error ? `额度：${s.error}` : '额度读取中…';
+      else if (s.pending) text = `剩余额度 ${s.percent}% · 刷新中…`;
       else text = `剩余额度 ${s.percent}%` + (reset ? ' · ' + reset : '') + (s.error ? ' · ' + s.error : '');
-      return { percent: s.percent, band: band(s.percent ?? NaN), reset, error: s.error, text, anchor: s.anchor, updatedAt: s.updatedAt };
+      return { percent: s.percent, band: band(s.percent ?? NaN), reset, error: s.error, pending: s.pending, pendingSince: s.pendingSince, transient: s.transient, text, anchor: s.anchor, updatedAt: s.updatedAt };
     },
     get state() { return { ...s }; },
   };

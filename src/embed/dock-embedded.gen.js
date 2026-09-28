@@ -2324,10 +2324,13 @@ function formatReset(anchorMs, nowMs) {
 
 /* Small state machine the dock feeds with `pulse` page events. */
 function createPulseState({ now = Date.now } = {}) {
-  const s = { percent: null, refreshedAt: 0, anchor: 0, error: '', updatedAt: 0, blockedUntil: 0 };
+  const s = { percent: null, refreshedAt: 0, anchor: 0, error: '', updatedAt: 0, blockedUntil: 0, pending: false, pendingSince: 0, transient: false };
   return {
     ingest(ev) {
       const t = Number(ev?.at) || now();
+      // a manual refresh was accepted — the last value (if any) stays visible
+      if (ev && ev.pending === true) { s.pending = true; s.pendingSince = t; return this.view(t); }
+      if (ev && (ev.ok === true || ev.ok === false)) s.pending = false;
       if (ev && ev.ok === true && Number.isFinite(Number(ev.percent))) {
         s.percent = Math.max(0, Math.min(100, Math.round(Number(ev.percent))));
         s.refreshedAt = Number(ev.refreshedAt) || 0;
@@ -2335,7 +2338,9 @@ function createPulseState({ now = Date.now } = {}) {
         s.error = '';
         s.updatedAt = t;
       } else if (ev && ev.ok === false) {
+        // transient (429 / token refresh / timeout) never wipes the known value
         s.error = String(ev.error || '额度读取失败');
+        s.transient = ev.transient === true;
         if (Number(ev.retryAfterMs) > 0) s.blockedUntil = t + Math.min(Number(ev.retryAfterMs), 600_000);
       }
       return this.view(t);
@@ -2344,9 +2349,10 @@ function createPulseState({ now = Date.now } = {}) {
       const known = s.percent !== null;
       const reset = formatReset(s.anchor, t);
       let text;
-      if (!known) text = s.error ? `额度：${s.error}` : '额度读取中…';
+      if (!known) text = s.pending ? '额度刷新中…' : s.error ? `额度：${s.error}` : '额度读取中…';
+      else if (s.pending) text = `剩余额度 ${s.percent}% · 刷新中…`;
       else text = `剩余额度 ${s.percent}%` + (reset ? ' · ' + reset : '') + (s.error ? ' · ' + s.error : '');
-      return { percent: s.percent, band: band(s.percent ?? NaN), reset, error: s.error, text, anchor: s.anchor, updatedAt: s.updatedAt };
+      return { percent: s.percent, band: band(s.percent ?? NaN), reset, error: s.error, pending: s.pending, pendingSince: s.pendingSince, transient: s.transient, text, anchor: s.anchor, updatedAt: s.updatedAt };
     },
     get state() { return { ...s }; },
   };
@@ -4383,11 +4389,33 @@ function renderPulse() {
   // Header right column: only the reset hint stays (the old #ak-hud-percent
   // "–" placeholder was removed — quota is shown on the floating pill instead).
   const reset = q('ak-hud-pulse');
-  reset.textContent = v.percent === null ? (v.error ? '额度：' + v.error : '额度读取中…') : [v.reset || '', v.error].filter(Boolean).join(' · ') || '剩余额度';
-  reset.classList.toggle('ak-warn', !!v.error);
+  reset.textContent = v.pending
+    ? (v.percent === null ? '额度刷新中…' : [v.reset || '', '刷新中…'].filter(Boolean).join(' · '))
+    : v.percent === null ? (v.error ? '额度：' + v.error : '额度读取中…') : [v.reset || '', v.error].filter(Boolean).join(' · ') || '剩余额度';
+  reset.classList.toggle('ak-warn', !!v.error && !v.pending);
   renderPill();
 }
 onPage('pulse', (ev) => { state.pulse.ingest(ev); renderPulse(); });
+/* Manual 刷新额度: immediate feedback, then the page answers (pending / value /
+ * the reason it cannot fetch yet). No answer within 20 s → say so instead of
+ * leaving the button looking dead. */
+function refreshPulseNow() {
+  const at = Date.now();
+  state.pulse.ingest({ pending: true, at });
+  renderPulse();
+  setStatus('正在刷新额度…');
+  Promise.resolve().then(() => dispatchToPage('pulse-refresh', null)).catch((e) => {
+    state.pulse.ingest({ ok: false, transient: true, error: '无法联系页面：' + (e?.message || e) });
+    renderPulse();
+  });
+  setTimeout(() => {
+    const v = state.pulse.view();
+    if (v.pending && v.pendingSince <= at + 1000) {
+      state.pulse.ingest({ ok: false, transient: true, error: '刷新无响应（页面可能还在加载），稍后自动重试' });
+      renderPulse();
+    }
+  }, 20_000);
+}
 setInterval(renderPulse, 1000);
 
 // ── module: reply monitor (stream anomaly badges) ───────────────────────
@@ -4842,8 +4870,7 @@ function wireControls() {
       } else if (a === 'probe-stop') {
         if (state.probe?.stop()) probeLog('正在停止…');
       } else if (a === 'pulse-refresh') {
-        dispatchToPage('pulse-refresh', null);
-        setStatus('已请求刷新额度');
+        refreshPulseNow();
       } else if (a === 'nav-back') {
         page('navBack');
       } else if (a === 'nav-forward') {

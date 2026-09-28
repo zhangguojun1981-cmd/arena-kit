@@ -1012,11 +1012,33 @@ function renderPulse() {
   // Header right column: only the reset hint stays (the old #ak-hud-percent
   // "–" placeholder was removed — quota is shown on the floating pill instead).
   const reset = q('ak-hud-pulse');
-  reset.textContent = v.percent === null ? (v.error ? '额度：' + v.error : '额度读取中…') : [v.reset || '', v.error].filter(Boolean).join(' · ') || '剩余额度';
-  reset.classList.toggle('ak-warn', !!v.error);
+  reset.textContent = v.pending
+    ? (v.percent === null ? '额度刷新中…' : [v.reset || '', '刷新中…'].filter(Boolean).join(' · '))
+    : v.percent === null ? (v.error ? '额度：' + v.error : '额度读取中…') : [v.reset || '', v.error].filter(Boolean).join(' · ') || '剩余额度';
+  reset.classList.toggle('ak-warn', !!v.error && !v.pending);
   renderPill();
 }
 onPage('pulse', (ev) => { state.pulse.ingest(ev); renderPulse(); });
+/* Manual 刷新额度: immediate feedback, then the page answers (pending / value /
+ * the reason it cannot fetch yet). No answer within 20 s → say so instead of
+ * leaving the button looking dead. */
+function refreshPulseNow() {
+  const at = Date.now();
+  state.pulse.ingest({ pending: true, at });
+  renderPulse();
+  setStatus('正在刷新额度…');
+  Promise.resolve().then(() => dispatchToPage('pulse-refresh', null)).catch((e) => {
+    state.pulse.ingest({ ok: false, transient: true, error: '无法联系页面：' + (e?.message || e) });
+    renderPulse();
+  });
+  setTimeout(() => {
+    const v = state.pulse.view();
+    if (v.pending && v.pendingSince <= at + 1000) {
+      state.pulse.ingest({ ok: false, transient: true, error: '刷新无响应（页面可能还在加载），稍后自动重试' });
+      renderPulse();
+    }
+  }, 20_000);
+}
 setInterval(renderPulse, 1000);
 
 // ── module: reply monitor (stream anomaly badges) ───────────────────────
@@ -1471,8 +1493,7 @@ function wireControls() {
       } else if (a === 'probe-stop') {
         if (state.probe?.stop()) probeLog('正在停止…');
       } else if (a === 'pulse-refresh') {
-        dispatchToPage('pulse-refresh', null);
-        setStatus('已请求刷新额度');
+        refreshPulseNow();
       } else if (a === 'nav-back') {
         page('navBack');
       } else if (a === 'nav-forward') {
