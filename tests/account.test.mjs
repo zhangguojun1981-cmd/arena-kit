@@ -129,6 +129,46 @@ test('watcher announces the initial state and every auth-cookie change (not unre
   assert.equal(d.lastEvent('account').payload.loggedIn, false);
 });
 
+/* Google's Next controls are wrapper DIVs around the real button
+ * (`#identifierNext > div > button`, seen in every public automation recipe
+ * for accounts.google.com). Clicking the wrapper does nothing; the helper
+ * must click the inner <button>. */
+test('login helper clicks the <button> inside Google\'s #identifierNext / #passwordNext wrapper divs', () => {
+  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/identifier' });
+  const creds = { accountId: 'acc1', email: 'alice@gmail.com', password: 'pw-123', totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', provider: 'google' };
+  const emailIn = d.mk('input', { type: 'email', id: 'identifierId' });
+  const wrap1 = d.mk('div', { id: 'identifierNext' });
+  const mid1 = d.mk('div', {}, '', { parent: wrap1 });
+  const btn1 = d.mk('button', { type: 'button' }, 'Next', { parent: mid1 });
+  assert.equal(plain(d.sandbox.__AK_LOGIN_APPLY__(creds)).started, true);
+  d.flushTimeouts(); d.flushTimeouts();
+  assert.equal(emailIn.value, 'alice@gmail.com');
+  assert.equal(btn1.clicks, 1, 'inner button clicked');
+  assert.equal(wrap1.clicks, 0, 'wrapper div not clicked');
+  assert.equal(mid1.clicks, 0);
+  // password page: same wrapper shape; a role=button wrapper is clicked directly
+  d.clearElements(); d.location.pathname = '/v3/signin/challenge/pwd';
+  const pwdIn = d.mk('input', { type: 'password', name: 'Passwd' });
+  const wrap2 = d.mk('div', { id: 'passwordNext', role: 'button' });
+  const btn2 = d.mk('button', {}, 'Next', { parent: wrap2 });
+  d.tickIntervals(); d.flushTimeouts();
+  assert.equal(pwdIn.value, 'pw-123');
+  assert.equal(wrap2.clicks, 1, 'role=button wrapper is itself the control');
+  assert.equal(btn2.clicks, 0);
+  // hidden wrapper without any button inside → fall back to the visible Next button by text
+  d.clearElements(); d.location.pathname = '/v3/signin/challenge/totp';
+  const totpIn = d.mk('input', { type: 'tel', id: 'totpPin', name: 'totpPin' });
+  const wrap3 = d.mk('div', { id: 'totpNext', hidden: true });
+  const byText = d.mk('button', {}, '下一步');
+  const realNow = d.sandbox.Date.now;
+  d.sandbox.Date.now = () => 59_000; // RFC 6238 vector → 287082
+  d.tickIntervals(); d.flushTimeouts();
+  d.sandbox.Date.now = realNow;
+  assert.equal(totpIn.value, '287082');
+  assert.equal(wrap3.clicks, 0);
+  assert.equal(byText.clicks, 1, 'text match fallback');
+});
+
 test('watcher does not run on foreign hosts (accounts.google.com has no IPC)', () => {
   const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/identifier' });
   d.flushTimeouts(); d.tickIntervals();

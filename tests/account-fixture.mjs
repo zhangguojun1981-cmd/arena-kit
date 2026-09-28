@@ -96,16 +96,22 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
     },
   });
 
-  const mk = (tag, attrs = {}, text = '') => {
+  /* `parent`: nest the element (Google wraps its Next buttons:
+   * `<div id="identifierNext"><div><button>Next</button></div></div>`);
+   * nested elements are reachable through parent.querySelector(). */
+  const mk = (tag, attrs = {}, text = '', { parent = null } = {}) => {
     const el = {
-      tag: tag.toLowerCase(), attrs: { ...attrs }, textContent: text, value: attrs.value || '', connected: true, clicks: 0, dispatched: [],
+      tag: tag.toLowerCase(), attrs: { ...attrs }, textContent: text, value: attrs.value || '', connected: true, clicks: 0, dispatched: [], children: [],
+      get tagName() { return this.tag.toUpperCase(); },
       getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       getClientRects() { return this.attrs.hidden ? [] : [{}]; },
       click() { this.clicks++; if (typeof this.onclick === 'function') this.onclick(); },
       focus() {}, dispatchEvent(ev) { this.dispatched.push(ev.type); return true; },
       closest() { return null; }, get isConnected() { return this.connected; },
+      querySelector(sel) { const all = (n) => n.children.flatMap((c) => [c, ...all(c)]); return all(this).find((e) => e.connected && matches(e, sel)) || null; },
       form: null,
     };
+    if (parent) { parent.children.push(el); parent.textContent = (parent.textContent || '') + text; }
     elements.push(el);
     return el;
   };

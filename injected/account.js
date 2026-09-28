@@ -261,9 +261,20 @@
   function findButton(re, root) {
     return q('button, [role="button"], input[type="submit"], a[href]', root).find((b) => re.test(textOf(b))) || null;
   }
+  // Google's #identifierNext / #passwordNext / #totpNext are wrapper DIVs
+  // around the real <button> (`#identifierNext > div > button`); click the
+  // button itself so the click takes the same handler path as a finger.
+  const isClickable = (el) => /^(button|input|a)$/i.test(String((el && el.tagName) || '')) || (el && el.getAttribute && el.getAttribute('role') === 'button');
+  function innerButton(el) {
+    if (!el || isClickable(el)) return el;
+    try {
+      const inner = el.querySelector && el.querySelector('button, [role="button"], input[type="submit"]');
+      return inner || el;
+    } catch (_) { return el; }
+  }
   function submitNear(el, btnRe, idSel) {
     let b = null;
-    try { b = idSel ? D.querySelector(idSel) : null; } catch (_) { b = null; }
+    try { b = idSel ? innerButton(D.querySelector(idSel)) : null; } catch (_) { b = null; }
     if (!b || !visible(b)) b = findButton(btnRe, (el.closest && el.closest('form')) || D) || findButton(btnRe);
     if (b) { b.click(); return 'button'; }
     const f = el.form || (el.closest && el.closest('form'));

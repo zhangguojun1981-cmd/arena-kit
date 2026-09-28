@@ -179,7 +179,7 @@
 - **桌面**:`cargo tauri dev`,用户在自己的浏览器登录态里操作;助手采集截图/日志核对,**不代替用户点击**准备/出牌/支付/授权。区分已验证事实/推断/未知。
 - **Android**:CI 出 debug apk(GitHub Actions 跑单测 + 构建),真机安装验证。产物在 **Releases**(每次构建一个 `build-<run>` 预发布,附件就是 `.dmg` / `.apk` 原文件;Actions 的 Artifacts 下载永远是 zip,所以只用作 job 间中转,1 天过期)。
 - 排障沿真实会话/请求转储/服务日志对齐;取证先落地(把错误体、状态码写进可见日志)再改;禁"听起来合理"的推测修复。
-- **账号功能真机清单**(沙箱只能用假 DOM / 假 Cookie 罐验证,见 `tests/account-flow.test.mjs`):① 登录后打开「账号」页应自动出现当前账号(邮箱 / 头像 / `Cookie 作用域`);若显示「检测到登录 Cookie,但无法解析」= Cookie 名或编码变了,先看 `document.cookie` 里 `arena-auth-*` 的样子。② 「添加另一个账号」→ 页面应回到未登录 → 登第二个 → 列表两项。③ 点「切换」→ 刷新后应是目标账号且提示「已切换到 …」;若提示「登录状态已失效」= 服务端拒绝了换回去的刷新令牌(令牌轮换族被吊销),需要缩短快照间隔或改走登录助手。④ 填好邮箱 / 密码 / 2FA 后点「保存并登录」:看「登录助手」状态行的阶段;Google 页若出现 `disallowed_useragent` = UA 处理失效;若卡在某一步 = 选择器不匹配,把当时的输入框 / 按钮 outerHTML 记下来。⑤ 邮箱验证码流程应弹到账号页要验证码,输入后代填。
+- **账号功能真机清单**(沙箱只能用假 DOM / 假 Cookie 罐验证,见 `tests/account-flow.test.mjs`):① 登录后打开「账号」页应自动出现当前账号(邮箱 / 头像 / `Cookie 作用域`);若显示「检测到登录 Cookie,但无法解析」= Cookie 名或编码变了,先看 `document.cookie` 里 `arena-auth-*` 的样子。② 「添加另一个账号」→ 页面应回到未登录 → 登第二个 → 列表两项。③ 点「切换」→ 刷新后应是目标账号且提示「已切换到 …」;若提示「登录状态已失效」= 服务端拒绝了换回去的刷新令牌(令牌轮换族被吊销),需要缩短快照间隔或改走登录助手。④ 填好邮箱 / 密码 / 2FA 后点「保存并登录」:看「登录助手」状态行的阶段;Google 页若出现 `disallowed_useragent` = UA 处理失效;若卡在某一步 = 选择器不匹配,把当时的输入框 / 按钮 outerHTML 记下来(现用选择器:`#identifierId` / `input[name=Passwd]` / `#totpPin`,「下一步」= `#identifierNext` / `#passwordNext` / `#totpNext` 包裹 div 里的内层 `<button>`,找不到再按按钮文字 Next / 下一步 / 继续 匹配;沙箱里只能通过 fetch 看到 Google 登录页的文案(Sign in / Email or phone / Next),元素 id 来自公开的自动化脚本,尚未在真机上核对)。⑤ 邮箱验证码流程应弹到账号页要验证码,输入后代填。
 
 ---
 
