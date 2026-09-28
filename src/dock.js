@@ -169,7 +169,6 @@ const DEFAULT_PREFS = {
   quickRename: false,       // rename the conversation after the session probe identifies its model
   theme: 'auto',            // 'auto' (follow system, like the reference DayNight theme) | 'light' | 'dark'
   panelTab: 'chat',         // last selected segmented tab
-  pillRefresh: true,        // 悬浮窗显示刷新按钮 (Android status pill ⟳ zone)
   autoRefresh: true,        // 回复出错或空白时自动刷新 (reply watchdog)
   ballCenter: 'percent-model', // 悬浮球显示: 'percent-model' | 'percent' | 'model'
   capture: true,            // 截获会话流 (extension 监听 toggle): hand run tokens to Rust
@@ -209,14 +208,14 @@ function applyPageFlags() {
 // the embedded pill + bottom sheet is Android-only. Historical
 // `prefs.desktopLayout` values are ignored.)
 
-// 悬浮球显示 (embedded pill only — the desktop dock has no pill, the row is
-// hidden via CSS). Three modes:
-//   'percent-model' (default): ring = quota %, label = current model / task
-//   'percent'                  : ring = quota %, no label
-//   'model'                    : label only, no ring (model name centred)
-// The shell renders the picked mode via setPill({mode}); CSS hides the ring
-// or the label accordingly. The alert blink (reply anomaly) is independent
-// of the mode and always lights the border red.
+// 悬浮球显示 (Android ball only — the desktop dock has no ball, the row is
+// hidden via CSS). Three modes for the ball centre (lib/pill-layout.js
+// ballCentre; the neon quota ring is always drawn):
+//   'percent-model' (default): top = quota %, bottom = model / task / flash
+//   'percent'                  : quota % only (a task / flash still shows below)
+//   'model'                    : model name only (split over two lines)
+// The shell renders the picked mode via setPill({mode}). The alert blink
+// (reply anomaly) is independent of the mode and always flashes the ball red.
 const BALL_CENTERS = ['percent-model', 'percent', 'model'];
 function wireBallCenter() {
   const row = q('ak-ballcenter-row');
@@ -249,18 +248,9 @@ function wireSettings() {
       if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
     });
   }
-  // 悬浮窗显示刷新按钮 (embedded only; the row is hidden in the split-view dock via CSS)
+  // Reload hint (the Android ball has no ⟳ zone: reload = quick menu / 工具 / pull-up / this row)
   const refreshNote = q('ak-refresh-note');
   if (refreshNote && DESKTOP) refreshNote.textContent = '⌘R / Ctrl+R / F5 也会刷新；刷新时顶部显示进度条。';
-  const pillRefresh = q('ak-pill-refresh');
-  if (pillRefresh) {
-    pillRefresh.checked = state.prefs.pillRefresh !== false;
-    if (EMBED && typeof EMBED.setRefreshButton === 'function') EMBED.setRefreshButton(pillRefresh.checked);
-    pillRefresh.addEventListener('change', () => {
-      savePrefs({ pillRefresh: pillRefresh.checked });
-      if (EMBED && typeof EMBED.setRefreshButton === 'function') EMBED.setRefreshButton(pillRefresh.checked);
-    });
-  }
   // 回复出错或空白时自动刷新 (reply watchdog policy)
   const autoRefresh = q('ak-auto-refresh');
   if (autoRefresh) {
@@ -280,7 +270,7 @@ function wireSettings() {
   }));
 }
 
-// ── page reload (pill ⟳ · header ⟳ · 工具 → 刷新 · quick menu · pull-up) ──
+// ── page reload (quick menu 刷新页面 · 工具 → 刷新 · pull-up · desktop ⌘R) ──
 /* Reference MainActivity.requestReload: 800 ms debounce; when a probe /
  * cleanup is running ask first ("停止并刷新"), then stop it and reload. The
  * page marks sessionStorage so the NEXT document shows the top progress bar
@@ -1010,7 +1000,7 @@ onPage('reply-monitor', (summary) => {
 
 // ── in-app link tab (native layer on Android; injected/links.js reports its state) ──
 // Desktop menu bar 「页面」 (src-tauri/src/menu.rs): reload goes through the
-// same requestReload as the pill ⟳ (debounce · busy confirm · progress bar).
+// same requestReload as the quick menu (debounce · busy confirm · progress bar).
 onPage('menu', (p) => {
   const action = p && p.action;
   if (action === 'reload') requestReload('menu');
@@ -1509,9 +1499,9 @@ async function boot() {
   wireSessionProbe();
   wireAccounts();
   if (state.rpc) state.probe = createDockProbe();
-  // Status-pill gestures (reference MainActivity): tap → panel (the shell
-  // opens it itself), tap on ⟳ → reload, long press → quick menu, pull-up at
-  // the bottom of the conversation → reload.
+  // Floating-ball gestures (reference MainActivity): tap → panel (the shell
+  // opens it itself), long press → quick menu (below), pull-up at the bottom
+  // of the conversation → reload.
   if (EMBED && typeof EMBED.onAction === 'function') {
     const probeRunning = () => !!state.probe?.isRunning && state.probe.mode !== 'cleanup';
     const cleanupRunning = () => !!state.probe?.isRunning && state.probe.mode === 'cleanup';

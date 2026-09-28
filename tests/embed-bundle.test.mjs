@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { read } from './helpers.mjs';
 import { generate, transformModule, collectModules, extractMarkup } from '../scripts/bundle-dock.mjs';
-import { shadowCss, clampPos, mount, ringPalette, fitFont, BALL_SIZE, PILL_HEIGHT, RING_C } from '../src/embed/shell.js';
-import { pillPlacement, releasePosition, snapSide, fractionForY, pillLabel, turnHeadline, ringBand, PILL_MARGIN } from '../src/lib/pill-layout.js';
+import { shadowCss, clampPos, mount, ringPalette, fitFont, BALL_SIZE, PILL_HEIGHT, RING_R, RING_C, TAP_SLOP, TAP_MAX_MS } from '../src/embed/shell.js';
+import { pillPlacement, releasePosition, snapSide, fractionForY, pillLabel, turnHeadline, ringBand, ballCentre, shortModel, BALL_MODES, PILL_MARGIN } from '../src/lib/pill-layout.js';
 import { summarizeUsage, formatMoney } from '../src/lib/usage.js';
 import { buildTitle } from '../src/lib/rename.js';
 
@@ -92,23 +92,52 @@ test('shadowCss retargets document-level rules to the shadow root', () => {
 
 test('clampPos keeps a dragged box inside the viewport', () => {
   assert.equal(BALL_SIZE, PILL_HEIGHT);
-  assert.deepEqual(clampPos({ x: -20, y: 5000 }, 360, 640), { x: 0, y: 640 - PILL_HEIGHT });
+  assert.equal(BALL_SIZE, 60, 'neon ball box is 60 px');
+  assert.ok(RING_R * 2 < BALL_SIZE + 4 && Math.abs(RING_C - 2 * Math.PI * RING_R) < 1e-9);
+  assert.deepEqual(clampPos({ x: -20, y: 5000 }, 360, 640), { x: 0, y: 640 - BALL_SIZE });
   assert.deepEqual(clampPos({ x: -20, y: 5000 }, 360, 640, 46), { x: 0, y: 594 });
   assert.deepEqual(clampPos({ x: 350, y: 100 }, 360, 640, 36, 120), { x: 240, y: 100 });
   assert.deepEqual(clampPos(null, 360, 640), { x: 0, y: 0 });
 });
 
-test('ringPalette / ringBand follow the reference quota health bands (brand ≥20, warn 10–19, danger <10, unknown → track only)', () => {
+test('ringPalette / ringBand follow the reference quota health bands (neon blue ≥20, amber 10–19, red <10, unknown → dim full circle)', () => {
   assert.equal(ringPalette(null).dim, true);
   assert.equal(ringPalette(null).band, 'unknown');
   assert.equal(ringPalette(undefined).base, '#2F6BFF');
-  assert.deepEqual(ringPalette(0), { band: 'danger', base: '#D93025', dim: false });
+  assert.deepEqual(ringPalette(0), { band: 'danger', base: '#E11D2A', bright: '#FF7A7A', dim: false });
   assert.equal(ringPalette(9).band, 'danger');
   assert.equal(ringPalette(10).band, 'warning');
-  assert.equal(ringPalette(19).base, '#B26A00');
+  assert.deepEqual(ringPalette(19), { band: 'warning', base: '#FF8A00', bright: '#FFC85C', dim: false });
   assert.equal(ringPalette(20).band, 'ok');
-  assert.equal(ringPalette(100).base, '#2F6BFF');
+  assert.deepEqual(ringPalette(100), { band: 'ok', base: '#2F6BFF', bright: '#4CE3FF', dim: false });
   assert.equal(ringBand(''), 'unknown');
+});
+
+/* Ball centre text per 设置 → 悬浮球显示 (the neon ring is always drawn). */
+test('ballCentre / shortModel: percent-model | percent | model modes', () => {
+  assert.deepEqual(BALL_MODES, ['percent-model', 'percent', 'model']);
+  assert.deepEqual(shortModel('claude-opus-4-1'), { top: 'claude-opus', bottom: '4-1' });
+  assert.deepEqual(shortModel('gpt-5'), { top: 'gpt', bottom: '5' });
+  assert.deepEqual(shortModel('gemini-2.5-pro · 强'), { top: 'gemini', bottom: '2.5-pro · 强' });
+  assert.deepEqual(shortModel('grok / xai'), { top: 'grok', bottom: '' });
+  assert.deepEqual(shortModel(''), { top: '', bottom: '' });
+  // percent-model: number on top, model / hint / transient below
+  assert.deepEqual(ballCentre({ mode: 'percent-model', percent: 72, text: 'gpt-5', tone: 'normal' }), { top: '72%', bottom: 'gpt-5', kind: 'model' });
+  assert.deepEqual(ballCentre({ mode: 'percent-model', percent: 72, text: 'claude-opus-4-1', tone: 'routed' }), { top: '72%', bottom: 'claude-opus', kind: 'model' });
+  assert.deepEqual(ballCentre({ mode: 'percent-model', percent: 72, text: '识别中…', tone: 'muted' }), { top: '72%', bottom: '识别中…', kind: 'hint' });
+  assert.deepEqual(ballCentre({ mode: 'percent-model', percent: 72, text: '已发送 ✓', tone: 'active' }), { top: '72%', bottom: '已发送 ✓', kind: 'transient' });
+  assert.deepEqual(ballCentre({ mode: 'percent-model', percent: null, text: '', tone: 'muted' }), { top: '…', bottom: '', kind: 'percent' });
+  assert.deepEqual(ballCentre({ percent: 101.6, text: '', tone: 'muted' }), { top: '100%', bottom: '', kind: 'percent' });
+  // percent: number only — a transient still gets the bottom line
+  assert.deepEqual(ballCentre({ mode: 'percent', percent: 15, text: 'gpt-5', tone: 'normal' }), { top: '15%', bottom: '', kind: 'percent' });
+  assert.deepEqual(ballCentre({ mode: 'percent', percent: 15, text: '探针 2/5', tone: 'active' }), { top: '15%', bottom: '探针 2/5', kind: 'transient' });
+  // model: name split over two lines, transient replaces it, nothing → …
+  assert.deepEqual(ballCentre({ mode: 'model', percent: 15, text: 'claude-opus-4-1', tone: 'normal' }), { top: 'claude-opus', bottom: '4-1', kind: 'model' });
+  assert.deepEqual(ballCentre({ mode: 'model', percent: 15, text: '已发送 ✓', tone: 'active' }), { top: '已发送 ✓', bottom: '', kind: 'transient' });
+  assert.deepEqual(ballCentre({ mode: 'model', percent: 15, text: '新对话', tone: 'muted' }), { top: '新对话', bottom: '', kind: 'hint' });
+  assert.deepEqual(ballCentre({ mode: 'model', percent: 15, text: '', tone: 'muted' }), { top: '…', bottom: '', kind: 'empty' });
+  // unknown mode → default
+  assert.equal(ballCentre({ mode: 'wat', percent: 3, text: 'gpt-5', tone: 'normal' }).bottom, 'gpt-5');
 });
 
 /* ── pill geometry (FloatingDragHelper port) ─────────────────────────── */
@@ -225,7 +254,9 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   assert.equal(mount(win), true);
   const api = win.__ARENAKIT_EMBED__;
   assert.equal(api.root, shadow);
-  assert.ok(shadow.innerHTML.includes('<style>') && shadow.innerHTML.includes('id="ak-status"') && shadow.innerHTML.includes('class="ak-pill"'));
+  assert.ok(shadow.innerHTML.includes('<style>') && shadow.innerHTML.includes('id="ak-status"') && shadow.innerHTML.includes('class="ak-ball"'));
+  assert.ok(shadow.innerHTML.includes('class="ak-ball-glow"') && shadow.innerHTML.includes('class="ak-ball-comet"') && shadow.innerHTML.includes('url(#ak-core)'), 'neon ring: glow + comet + obsidian core');
+  assert.ok(!shadow.innerHTML.includes('ak-pill-refresh'), 'no ⟳ zone on the ball');
   assert.ok(shadow.innerHTML.includes('class="ak-sheet"'), 'bottom sheet');
   assert.ok(shadow.innerHTML.includes('class="ak-sheet-handle"'), 'grabber bar above the header (swipe-down handle)');
   assert.ok(shadow.innerHTML.indexOf('ak-sheet-handle') < shadow.innerHTML.indexOf('class="ak-sheet-top"'), 'grabber sits above the header block');
@@ -235,38 +266,56 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
   const events = [];
   api.onAction((n, a) => events.push(a ? n + ':' + a : n));
   api.toggle(); assert.equal(api.isOpen(), true);
-  const wrap = shadow.querySelector('.ak-pill-wrap');
-  assert.equal(wrap.dataset.hidden, 'true', 'pill fades out while the sheet is open');
+  const wrap = shadow.querySelector('.ak-ball-wrap');
+  assert.equal(wrap.dataset.hidden, 'true', 'ball fades out while the sheet is open');
   api.close(); assert.equal(api.isOpen(), false);
   assert.equal(wrap.dataset.hidden, 'false');
   assert.deepEqual(events, ['open', 'close']);
   // default placement: right edge, 18 % down
   assert.equal(wrap.dataset.side, 'right');
-  assert.equal(wrap.style.left, (360 - 46 - PILL_MARGIN) + 'px');
-  // pill API: percent → arc length + band; label + tone; busy orbit
-  const arc = shadow.querySelector('.ak-pill-arc');
+  assert.equal(wrap.style.left, (360 - BALL_SIZE - PILL_MARGIN) + 'px');
+  assert.equal(api.ballSize, BALL_SIZE);
+  // ball API: percent → arc + glow length, band + neon colours; centre text per mode
+  const ball = shadow.querySelector('.ak-ball');
+  const arc = shadow.querySelector('.ak-ball-arc');
+  const glow = shadow.querySelector('.ak-ball-glow');
+  const top = shadow.querySelector('.ak-ball-top');
+  const bottom = shadow.querySelector('.ak-ball-bottom');
+  assert.equal(top.textContent, '…', 'unknown quota before the first pulse');
+  assert.equal(ball.dataset.dim, 'true');
   api.setPill({ percent: 15, label: 'gpt-5', tone: 'routed', busy: false });
   assert.equal(arc.dataset.band, 'warning');
+  assert.equal(arc.attr_stroke, '#FF8A00');
+  assert.equal(glow.attr_stroke, '#FFC85C');
   assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.15 * RING_C).toFixed(3)));
-  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '15');
-  assert.equal(shadow.querySelector('.ak-pill-label').textContent, 'gpt-5');
-  assert.equal(shadow.querySelector('.ak-pill-label').dataset.tone, 'routed');
+  assert.equal(glow['attr_stroke-dasharray'], arc['attr_stroke-dasharray'], 'glow follows the lit arc');
+  assert.equal(shadow.querySelector('.ak-ball-mask')['attr_stroke-dasharray'], arc['attr_stroke-dasharray'], 'comet is masked to the lit arc');
+  assert.equal(top.textContent, '15%');
+  assert.equal(bottom.textContent, 'gpt-5');
+  assert.equal(ball.dataset.kind, 'model');
+  assert.equal(ball.dataset.tone, 'routed');
+  assert.equal(ball.dataset.dim, 'false');
+  assert.equal(ball.attr_aria_label ?? ball['attr_aria-label'], 'ArenaKit 15% gpt-5');
   api.setPill({ percent: null, label: '', tone: 'muted', busy: true });
-  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '–');
+  assert.equal(top.textContent, '…');
+  assert.equal(bottom.textContent, '');
   assert.equal(arc.dataset.band, 'unknown');
-  assert.equal(shadow.querySelector('.ak-pill').dataset.busy, 'true');
-  // legacy setBall still maps onto the pill
+  assert.ok(String(arc['attr_stroke-dasharray']).startsWith(RING_C.toFixed(3)), 'unknown → dim full circle');
+  assert.equal(ball.dataset.dim, 'true');
+  assert.equal(ball.dataset.busy, 'true');
+  // legacy setBall still maps onto the ball
   api.setBall({ percent: 72, top: '72%', bottom: 'claude-opus', isModel: true, routed: false });
-  assert.equal(shadow.querySelector('.ak-pill-label').textContent, 'claude-opus');
-  assert.equal(shadow.querySelector('.ak-pill-pct').textContent, '72');
-  // ⟳ zone toggle + loading state + back key + menu provider + confirm
+  assert.equal(bottom.textContent, 'claude-opus');
+  assert.equal(top.textContent, '72%');
+  assert.equal(ball.dataset.tone, 'normal');
+  // setRefreshButton is a no-op now (no ⟳ zone) + loading state + back key + menu provider + confirm
   api.setRefreshButton(false);
-  assert.equal(shadow.querySelector('.ak-pill').dataset.refresh, 'false');
+  assert.equal(ball.dataset.refresh, undefined);
   api.setLoading(true);
-  assert.equal(shadow.querySelector('.ak-pill').dataset.refreshing, 'true');
+  assert.equal(ball.dataset.refreshing, 'true');
   assert.equal(shadow.querySelector('.ak-progress').dataset.show, 'true');
   api.setLoading(false);
-  assert.equal(shadow.querySelector('.ak-pill').dataset.refreshing, 'false');
+  assert.equal(ball.dataset.refreshing, 'false');
   api.open();
   assert.equal(api.handleBack(), true, 'back closes the sheet');
   assert.equal(api.isOpen(), false);
@@ -287,7 +336,7 @@ test('mount() builds the shadow host once and publishes the embed API', async ()
  * never stays open. The shell must (a) install a shadow-root capture `click`
  * listener, (b) arm a ~600 ms guard after every pointer-initiated open, and
  * (c) consume the synthesized event while the guard is live. */
-test('pill tap opens the panel and survives the synthesized click (Android)', () => {
+test('ball tap opens the panel and survives the synthesized click (Android)', () => {
   const { doc, shadow } = fakeDom();
   const win = {
     document: doc, innerWidth: 360, innerHeight: 640,
@@ -297,7 +346,7 @@ test('pill tap opens the panel and survives the synthesized click (Android)', ()
   };
   assert.equal(mount(win), true);
   const api = win.__ARENAKIT_EMBED__;
-  const wrap = shadow.querySelector('.ak-pill-wrap');
+  const wrap = shadow.querySelector('.ak-ball-wrap');
 
   // The production code registers exactly one shadow-root capture-phase click
   // listener; without it, no shadow-internal click could be intercepted before
@@ -310,10 +359,18 @@ test('pill tap opens the panel and survives the synthesized click (Android)', ()
   let mockedNow = realNow();
   Date.now = () => mockedNow;
   try {
-    // 1) pill pointerup → opens the panel AND arms the guard
-    wrap.listeners.pointerdown[0]({ pointerId: 11, clientX: 340, clientY: 130, button: 0 });
-    wrap.listeners.pointerup[0]({ pointerId: 11, clientX: 340, clientY: 130 });
+    // 1) ball pointerdown → a few px of finger jitter (< TAP_SLOP) → pointerup
+    //    opens the panel AND arms the guard
+    const restingLeft = wrap.style.left;
+    assert.equal(restingLeft, (360 - BALL_SIZE - PILL_MARGIN) + 'px');
+    wrap.listeners.pointerdown[0]({ pointerId: 11, clientX: 340, clientY: 130, button: 0, pointerType: 'touch' });
+    wrap.listeners.pointermove[0]({ pointerId: 11, clientX: 347, clientY: 137 });
+    assert.equal(wrap.style.left, restingLeft, 'jitter below the slop is not a drag');
+    wrap.listeners.pointerup[0]({ pointerId: 11, clientX: 347, clientY: 137 });
     assert.equal(api.isOpen(), true, 'panel is open');
+    // the `click` Blink synthesizes right after the tap must not re-toggle
+    wrap.listeners.click[0]({ preventDefault() {} });
+    assert.equal(api.isOpen(), true, 'follow-up click is deduped against the pointer tap');
 
     // While the guard is live, the capture listener must stopPropagation the
     // synthesized click — the scrim bubble handler would otherwise close it.
@@ -344,14 +401,32 @@ test('pill tap opens the panel and survives the synthesized click (Android)', ()
     ev3.preventDefault = () => { ev3._pd++; };
     capture(ev3);
     assert.equal(ev3._sp, 0, 'programmatic open does not arm the guard');
+
+    // 3) a WebView that swallowed the pointer pair still opens on the plain
+    //    `click` (fallback), but only outside the TAP_MAX_MS dedupe window.
+    api.close();
+    mockedNow += TAP_MAX_MS + 1;
+    wrap.listeners.click[0]({ preventDefault() {} });
+    assert.equal(api.isOpen(), true, 'click fallback opens the panel');
+    api.close();
+    // 4) a real drag (beyond the slop) never opens the panel; it snaps to a side
+    mockedNow += 10_000;
+    wrap.listeners.pointerdown[0]({ pointerId: 12, clientX: 340, clientY: 130, button: 0, pointerType: 'touch' });
+    wrap.listeners.pointermove[0]({ pointerId: 12, clientX: 340 - TAP_SLOP - 1, clientY: 130 });
+    wrap.listeners.pointermove[0]({ pointerId: 12, clientX: 120, clientY: 300 });
+    wrap.listeners.pointerup[0]({ pointerId: 12, clientX: 120, clientY: 300 });
+    assert.equal(api.isOpen(), false, 'drag release is not a tap');
+    assert.equal(wrap.dataset.side, 'left', 'released nearer the left edge → snapped left');
+    assert.equal(wrap.dataset.snap, 'true');
+    wrap.listeners.click[0]({ preventDefault() {} });
+    assert.equal(api.isOpen(), true, 'a click after a drag is a fresh gesture (no pointer tap to dedupe against)');
   } finally { Date.now = realNow; }
 });
 
-/* 悬浮球显示 setting (设置 → 悬浮球显示):
- *   percent-model (default) | percent | model
- * The picked mode is stored on the pill's data-mode attribute; CSS hides the
- * ring or the label accordingly. */
-test('ball-centre mode (设置 → 悬浮球显示) drives pill data-mode and CSS visibility', () => {
+/* Android fires `contextmenu` after a touch long press. By then the pointer
+ * long-press timer has already opened the quick menu; a touch-born contextmenu
+ * must only be suppressed (no browser menu), never toggle ours back off. */
+test('touch-born contextmenu does not toggle the quick menu; mouse right-click does', () => {
   const { doc, shadow } = fakeDom();
   const win = {
     document: doc, innerWidth: 360, innerHeight: 640,
@@ -361,35 +436,90 @@ test('ball-centre mode (设置 → 悬浮球显示) drives pill data-mode and CS
   };
   assert.equal(mount(win), true);
   const api = win.__ARENAKIT_EMBED__;
-  const pill = shadow.querySelector('.ak-pill');
-  const ring = shadow.querySelector('.ak-pill-ring');
-  const label = shadow.querySelector('.ak-pill-label');
+  api.setMenuProvider(() => [{ id: 'probe', label: '探针' }]);
+  const wrap = shadow.querySelector('.ak-ball-wrap');
+  const ball = shadow.querySelector('.ak-ball');
+  const menu = shadow.querySelector('.ak-menu');
+  const ctx = (init) => { const e = { prevented: false, preventDefault() { e.prevented = true; }, ...init }; ball.listeners.contextmenu.forEach((fn) => fn(e)); return e; };
+  // touch press in progress (long-press timer pending) → Android contextmenu → ignored
+  wrap.listeners.pointerdown[0]({ pointerId: 1, clientX: 340, clientY: 130, button: 0, pointerType: 'touch' });
+  assert.equal(ctx({ pointerType: 'touch', button: 0 }).prevented, true, 'browser context menu suppressed');
+  assert.notEqual(menu.dataset.show, 'true', 'touch contextmenu did not open our menu');
+  // (pretend the 500 ms timer fired) menu open → a second touch contextmenu must not close it
+  api.close();
+  wrap.listeners.pointercancel[0]({ pointerId: 1 });
+  wrap.listeners.pointerdown[0]({ pointerId: 2, clientX: 340, clientY: 130, button: 0, pointerType: 'touch' });
+  ctx({});
+  assert.notEqual(menu.dataset.show, 'true');
+  wrap.listeners.pointercancel[0]({ pointerId: 2 });
+  // mouse right-click toggles
+  assert.equal(ctx({ pointerType: 'mouse', button: 2 }).prevented, true);
+  assert.equal(menu.dataset.show, 'true');
+  ctx({ button: 2 });
+  assert.equal(menu.dataset.show, 'false');
+});
 
-  // default = percent-model
-  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent-model' });
-  assert.equal(pill.dataset.mode, 'percent-model');
-  // ring + label both visible (the fake-DOM doesn't model CSS hiding; we
-  // verify the data-mode attribute and a representative effect below)
-  assert.ok(ring.children.length > 0 || shadow.querySelector('.ak-pill-arc'), 'arc present');
+/* 悬浮球显示 setting (设置 → 悬浮球显示):
+ *   percent-model (default) | percent | model
+ * The picked mode is stored on the ball's data-mode attribute and drives the
+ * two centre lines; the neon ring always shows the quota. */
+test('ball-centre mode (设置 → 悬浮球显示) drives the two centre lines', () => {
+  const { doc, shadow } = fakeDom();
+  const win = {
+    document: doc, innerWidth: 360, innerHeight: 640,
+    localStorage: { getItem: () => null, setItem: () => {} },
+    addEventListener: () => {},
+    history: { back() {}, forward() {} },
+  };
+  assert.equal(mount(win), true);
+  const api = win.__ARENAKIT_EMBED__;
+  const ball = shadow.querySelector('.ak-ball');
+  const arc = shadow.querySelector('.ak-ball-arc');
+  const top = shadow.querySelector('.ak-ball-top');
+  const bottom = shadow.querySelector('.ak-ball-bottom');
 
-  // percent → no label
-  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'percent' });
-  assert.equal(pill.dataset.mode, 'percent');
+  // default = percent-model: number on top, model below
+  api.setPill({ percent: 72, label: 'claude-opus-4-1', tone: 'normal', mode: 'percent-model' });
+  assert.equal(ball.dataset.mode, 'percent-model');
+  assert.equal(top.textContent, '72%');
+  assert.equal(bottom.textContent, 'claude-opus');
+  assert.equal(ball.dataset.kind, 'model');
+  assert.equal(top.style.fontSize, '13px', 'two lines → smaller number');
+  assert.ok(parseFloat(bottom.style.fontSize) <= 9 && parseFloat(bottom.style.fontSize) >= 7);
 
-  // model → no ring (arc dataset still present but the CSS hides the ring)
-  api.setPill({ percent: null, label: 'gpt-5', tone: 'normal', mode: 'model' });
-  assert.equal(pill.dataset.mode, 'model');
-  assert.equal(label.textContent, 'gpt-5');
+  // percent → number only; the ring still shows 72 %
+  api.setPill({ percent: 72, label: 'claude-opus-4-1', tone: 'normal', mode: 'percent' });
+  assert.equal(ball.dataset.mode, 'percent');
+  assert.equal(top.textContent, '72%');
+  assert.equal(bottom.textContent, '');
+  assert.equal(top.style.fontSize, '15px');
+  assert.equal(arc.dataset.band, 'ok');
+  // …but a running task / flash still gets the bottom line
+  api.setPill({ percent: 72, label: '探针 2/5', tone: 'active', mode: 'percent' });
+  assert.equal(bottom.textContent, '探针 2/5');
+  assert.equal(ball.dataset.kind, 'transient');
 
-  // unknown mode falls back to default
-  api.setPill({ percent: 72, label: 'gpt-5', tone: 'normal', mode: 'wat' });
-  assert.equal(pill.dataset.mode, 'percent-model');
+  // model → name split over the two lines, quota only on the ring
+  api.setPill({ percent: 72, label: 'claude-opus-4-1', tone: 'normal', mode: 'model' });
+  assert.equal(ball.dataset.mode, 'model');
+  assert.equal(top.textContent, 'claude-opus');
+  assert.equal(bottom.textContent, '4-1');
+  assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.72 * RING_C).toFixed(3)), 'ring keeps the quota');
+  api.setPill({ percent: 72, label: '', tone: 'muted', mode: 'model' });
+  assert.equal(top.textContent, '…');
+  assert.equal(ball.dataset.kind, 'empty');
 
-  // alert on the pill is independent of mode (the blink CSS path is unchanged)
+  // unknown mode / tone fall back to defaults
+  api.setPill({ percent: 72, label: 'gpt-5', tone: 'wat', mode: 'wat' });
+  assert.equal(ball.dataset.mode, 'percent-model');
+  assert.equal(ball.dataset.tone, 'normal');
+  assert.equal(bottom.textContent, 'gpt-5');
+
+  // alert on the ball is independent of mode (the whole ball blinks red)
   api.alert(true);
-  assert.equal(pill.dataset.alert, 'true');
+  assert.equal(ball.dataset.alert, 'true');
   api.alert(false);
-  assert.equal(pill.dataset.alert, 'false');
+  assert.equal(ball.dataset.alert, 'false');
 });
 
 test('desktop input: Esc closes the open layer, ⌘R / F5 fire refresh, ⌘[ ⌘] page history, right-click on the pill opens the quick menu', () => {
@@ -426,10 +556,10 @@ test('desktop input: Esc closes the open layer, ⌘R / F5 fire refresh, ⌘[ ⌘
   assert.deepEqual(hist, ['back', 'forward'], 'history shortcuts stay out of editors');
   // right-click on the pill = long press → quick menu; Esc closes it first.
   api.setMenuProvider(() => [{ id: 'probe', label: '探针' }, { id: 'reload', label: '刷新' }]);
-  const pill = shadow.querySelector('.ak-pill');
-  const ctx = { prevented: false, preventDefault() { ctx.prevented = true; } };
+  const pill = shadow.querySelector('.ak-ball');
+  const ctx = { prevented: false, pointerType: 'mouse', button: 2, preventDefault() { ctx.prevented = true; } };
   pill.listeners.contextmenu.forEach((fn) => fn(ctx));
-  assert.equal(ctx.prevented, true, 'no browser context menu on the pill');
+  assert.equal(ctx.prevented, true, 'no browser context menu on the ball');
   const menu = shadow.querySelector('.ak-menu');
   assert.equal(menu.dataset.show, 'true');
   assert.ok(menu.innerHTML.includes('data-menu="probe"') && menu.innerHTML.includes('data-menu="reload"'));
@@ -494,8 +624,10 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   const { doc, byId, shadow } = fakeDom();
   const store = new Map();
   const listeners = {};
+  const winListeners = {};
   const sandbox = {
     document: doc, innerWidth: 360, innerHeight: 640,
+    addEventListener: (t, fn) => { (winListeners[t] ||= []).push(fn); },
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k), key: (i) => [...store.keys()][i], get length() { return store.size; } },
     navigator: { clipboard: { writeText: async () => {} } },
     location: { pathname: '/agent/s1', href: 'https://arena.ai/agent/s1', assign() {}, reload() {} },
@@ -518,33 +650,36 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(byId['ak-status'].textContent, '就绪（内嵌模式）');
   assert.ok(listeners['arenakit://trace'] && listeners['arenakit://page'], 'dock subscribed to both Rust events');
   const emit = (name, payload) => listeners[name]({ payload });
-  const pct = shadow.querySelector('.ak-pill-pct');
-  const label = shadow.querySelector('.ak-pill-label');
-  const pill = shadow.querySelector('.ak-pill');
-  const arc = shadow.querySelector('.ak-pill-arc');
+  const pct = shadow.querySelector('.ak-ball-top');
+  const label = shadow.querySelector('.ak-ball-bottom');
+  const pill = shadow.querySelector('.ak-ball');
+  const arc = shadow.querySelector('.ak-ball-arc');
+  assert.equal(pill.dataset.mode, 'percent-model', 'default 悬浮球显示 = 百分比 + 模型');
 
   // quota → header reset hint + ring (arc = 72 %, number inside). The old
-  // header #ak-hud-percent "–" placeholder was removed; the floating pill is
+  // header #ak-hud-percent "–" placeholder was removed; the floating ball is
   // the only place the percent is shown in the header area.
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 72, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
   assert.match(byId['ak-hud-pulse'].textContent, /后重置$/);
-  assert.equal(pct.textContent, '72');
+  assert.equal(pct.textContent, '72%');
   assert.equal(arc.dataset.band, 'ok');
   assert.ok(String(arc['attr_stroke-dasharray']).startsWith((0.72 * RING_C).toFixed(3)));
 
-  // turn 1: token → status line + "识别中…" on the pill; model → header + pill label
+  // turn 1: token → status line + "识别中…" under the number; model → header + ball
   emit('arenakit://trace', { stage: 'token', sessionId: 's1', runId: 'run_1' });
   assert.equal(byId['ak-hud-status'].textContent, '第 1 轮 · 已截获令牌，正在识别模型…');
   assert.equal(label.textContent, '识别中…');
-  assert.equal(label.dataset.tone, 'muted');
+  assert.equal(pill.dataset.tone, 'muted');
+  assert.equal(pill.dataset.kind, 'hint');
   emit('arenakit://trace', { stage: 'model', sessionId: 's1', runId: 'run_1', complete: true, models: [{ model: 'claude-opus-4-1', provider: 'anthropic' }], spans: [] });
   await settle();
   assert.equal(byId['ak-hud-model'].textContent, 'claude-opus-4-1');
   assert.equal(byId['ak-hud-model'].dataset.known, 'true');
   assert.equal(byId['ak-hud-model'].dataset.routed, 'false');
   assert.equal(byId['ak-hud-status'].textContent, '第 1 轮 · claude-opus-4-1'); // reference TurnTracker wording
-  assert.equal(label.textContent, 'claude-opus-4-1');
-  assert.equal(label.dataset.tone, 'normal');
+  assert.equal(label.textContent, 'claude-opus', 'long id → name part under the number');
+  assert.equal(pill.dataset.tone, 'normal');
+  assert.equal(pill.dataset.kind, 'model');
   assert.equal(byId['ak-turn-head'].textContent, '共 1 轮 · 首轮 claude-opus-4-1');
   assert.ok(byId['ak-turn-list'].innerHTML.includes('R1') && byId['ak-turn-list'].innerHTML.includes('ak-turn-ok'));
 
@@ -555,17 +690,18 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(byId['ak-hud-model'].dataset.routed, 'true');
   assert.match(byId['ak-hud-status'].textContent, /^第 2 轮 · 已切换模型 → gpt-5/);
   assert.equal(label.textContent, 'gpt-5');
-  assert.equal(label.dataset.tone, 'routed');
+  assert.equal(pill.dataset.tone, 'routed');
   assert.equal(byId['ak-turn-head'].textContent, '共 2 轮 · 首轮 claude-opus-4-1 · 当前已切换');
   const rows = byId['ak-turn-list'].innerHTML;
   assert.ok(rows.indexOf('R2') < rows.indexOf('R1'), 'newest turn first');
   assert.ok(rows.includes('已切换'));
 
-  // low quota → danger band on the pill ring (the dock header has no percent
-  // element any more, the pill carries it)
+  // low quota → danger band on the ring (the dock header has no percent
+  // element any more, the ball carries it)
   emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 6, refreshedAt: Date.now() - 3600e3, at: Date.now() } });
   assert.equal(arc.dataset.band, 'danger');
-  assert.equal(pct.textContent, '6');
+  assert.equal(arc.attr_stroke, '#E11D2A');
+  assert.equal(pct.textContent, '6%');
 
   // reply anomaly → alert outline
   emit('arenakit://page', { name: 'reply-monitor', payload: { sessionId: 's1', runId: 'run_2', frames: 3, textChars: 0, errorFrames: 0, ended: 'done', durationMs: 1200, at: Date.now() } });
@@ -575,13 +711,12 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   emit('arenakit://page', { name: 'nav', payload: { sessionId: null, path: '/agent', title: '', agentPath: true } });
   assert.equal(byId['ak-hud-model'].textContent, '模型待确认');
   assert.equal(byId['ak-hud-status'].textContent, '等待会话流…');
-  assert.equal(pct.textContent, '6');
+  assert.equal(pct.textContent, '6%');
   assert.equal(label.textContent, '新对话');
   assert.ok(byId['ak-turn-list'].innerHTML.includes('暂无轮次记录'));
 
   // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
   assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, autoRefresh: true }));
-  assert.equal(byId['ak-pill-refresh'].checked, true, 'pill ⟳ switch defaults on');
   assert.equal(byId['ak-auto-refresh'].checked, true, 'auto-refresh switch defaults on');
   assert.equal(sandbox.__ARENAKIT_EMBED__.host.dataset.embed, 'true');
   const capture = byId['ak-capture-on'];
@@ -602,27 +737,35 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(typeof sandbox.__ARENAKIT_EMBED__.handleBack, 'function');
   void tabs;
 
-  // status pill ⟳ → requestReload marks sessionStorage + reloads the page, pill spins
+  // a tap anywhere on the ball opens the panel (there is no ⟳ zone any more)
   let reloaded = 0;
   sandbox.location.reload = () => { reloaded++; };
   sandbox.sessionStorage = { data: {}, setItem(k, v) { this.data[k] = v; }, getItem(k) { return this.data[k] ?? null; }, removeItem(k) { delete this.data[k]; } };
-  const wrapEl = shadow.querySelector('.ak-pill-wrap');
-  wrapEl.listeners.pointerdown[0]({ pointerId: 1, clientX: 340, clientY: 130, button: 0 });
+  const wrapEl = shadow.querySelector('.ak-ball-wrap');
+  wrapEl.listeners.pointerdown[0]({ pointerId: 1, clientX: 340, clientY: 130, button: 0, pointerType: 'touch' });
   wrapEl.listeners.pointerup[0]({ pointerId: 1, clientX: 340, clientY: 130 });
   await settle();
-  // the fake refresh zone rect spans x 10..56, so this tap opened the panel instead
   assert.equal(sandbox.__ARENAKIT_EMBED__.isOpen(), true);
   sandbox.__ARENAKIT_EMBED__.close();
-  wrapEl.listeners.pointerdown[0]({ pointerId: 2, clientX: 30, clientY: 130, button: 0 });
-  wrapEl.listeners.pointerup[0]({ pointerId: 2, clientX: 30, clientY: 130 });
+  wrapEl.listeners.pointerdown[0]({ pointerId: 2, clientX: 14, clientY: 24, button: 0, pointerType: 'touch' });
+  wrapEl.listeners.pointerup[0]({ pointerId: 2, clientX: 14, clientY: 24 });
   await settle();
-  assert.equal(reloaded, 1, 'tap on the ⟳ zone reloads');
+  assert.equal(sandbox.__ARENAKIT_EMBED__.isOpen(), true, 'the left end of the ball (old ⟳ zone) opens the panel too');
+  assert.equal(reloaded, 0, 'no tap reloads the page');
+  sandbox.__ARENAKIT_EMBED__.close();
+  // quick-menu 刷新 (= long press → 刷新页面) → requestReload marks sessionStorage
+  // + reloads the page; the ring's comet speeds up while loading
+  const winKeydown = (winListeners.keydown || [])[0];
+  assert.equal(typeof winKeydown, 'function', 'shell keyboard hook installed');
+  const reloadKey = () => winKeydown({ key: 'F5', preventDefault() {}, stopPropagation() {} });
+  reloadKey();
+  await settle();
+  assert.equal(reloaded, 1, 'refresh action reloads');
   assert.ok(sandbox.sessionStorage.data['arenakit.reloading'], 'reload stamped for the boot progress bar');
   assert.equal(pill.dataset.refreshing, 'true');
-  wrapEl.listeners.pointerdown[0]({ pointerId: 3, clientX: 30, clientY: 130, button: 0 });
-  wrapEl.listeners.pointerup[0]({ pointerId: 3, clientX: 30, clientY: 130 });
+  reloadKey();
   await settle();
-  assert.equal(reloaded, 1, '800 ms debounce swallows the second tap');
+  assert.equal(reloaded, 1, '800 ms debounce swallows the second request');
 
   // reply watchdog: the page reports an error card twice (≥ 2 s apart) for the
   // OPEN conversation → auto reload; the switch off → nothing.

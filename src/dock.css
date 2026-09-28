@@ -356,4 +356,4 @@ select.ak-input { appearance: auto; }
 .ak-seg button[aria-pressed="true"] { background: var(--ak-brand-container); color: var(--ak-on-brand-container); font-weight: 600; }
 
 /* embedded-only bits are hidden in the desktop dock (dock.js sets data-embed) */
-:root:not([data-embed="true"]) .ak-embed-only, :root:not([data-embed="true"]) #ak-pill-refresh-row { display: none; }
+:root:not([data-embed="true"]) .ak-embed-only { display: none; }

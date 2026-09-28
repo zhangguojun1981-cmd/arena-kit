@@ -1,28 +1,34 @@
-/* Embedded dock shell (Android, and the default "pill" layout on desktop).
+/* Embedded dock shell (Android only — macOS runs the dock in its own webview
+ * next to the page and has no floating ball).
  *
  * Mobile Tauri gives us exactly one webview per window, so the dock is mounted
- * INSIDE the arena.ai page, following the reference app's (arena-trace-android
- * v0.6.x) overlay; desktop runs the very same shell by default (设置 → 桌面布局
- * switches back to the split view with the dock in its own webview):
+ * INSIDE the arena.ai page, following the reference app's (arena-trace-android)
+ * overlay:
  *
- *   status pill   flat 36 dp capsule hugging a screen edge: quota ring (arc =
- *                 remaining %, number inside) + one-line label (model / task
- *                 progress / flash message) + optional ⟳ zone (spins while
- *                 the page loads). Drag to move; on release it snaps to the
- *                 nearer side. Position is stored as (side, yFraction).
- *   gestures      tap → panel · tap on ⟳ → reload · long press → quick menu
- *                 (probe / session probe / cleanup / reload / panel)
+ *   floating ball neon quota ring (arc = remaining %, blue ≥ 20 %, amber
+ *                 10–19 %, red < 10 %, breathing glow + comet sweep) on an
+ *                 obsidian core hugging a screen edge. The centre shows the
+ *                 quota % and/or the model per 设置 → 悬浮球显示 (百分比 + 模型 /
+ *                 百分比 / 模型; lib/pill-layout.js ballCentre); a running task
+ *                 or a flash message takes the bottom line. Reply anomaly →
+ *                 the rim and glow blink red (alert). Drag to move; on release
+ *                 it snaps to the nearer side. Position = (side, yFraction).
+ *   gestures      tap → panel · long press → quick menu (probe / session
+ *                 probe / cleanup / reload / account / panel). No ⟳ zone: a
+ *                 tap anywhere on the ball opens the panel (reload lives in
+ *                 the quick menu, the 工具 page and pull-up).
  *   panel         bottom sheet flush with the bottom edge (grabber bar,
  *                 header with ✕, tabs); scrim tap, swipe-down on the grabber /
  *                 header or the back key closes it. It
  *                 hosts the very same dock markup (dock.html body) and
  *                 stylesheet (dock.css) in a shadow root, so arena's CSS and
- *                 ours never touch. The pill fades out while the sheet is open.
+ *                 ours never touch. The ball fades out while the sheet is open.
  *   extras        2 dp page-load progress bar at the top, in-shadow confirm
  *                 dialog, pull-up-to-refresh at the bottom of the conversation.
- *   desktop       right-click on the pill = long press, Esc closes dialog →
- *                 menu → sheet, ⌘/Ctrl+R / F5 reload via the dock, ⌘[ / ⌘]
- *                 page history, hover styles.
+ *   keyboard      (kept for hardware keyboards / the browser preview) Esc
+ *                 closes dialog → menu → sheet, ⌘/Ctrl+R / F5 reload via the
+ *                 dock, ⌘[ / ⌘] page history; mouse right-click on the ball =
+ *                 long press.
  *
  * scripts/bundle-dock.mjs packs this file, dock.js and src/lib into one classic
  * script (src/embed/dock-embedded.gen.js) that Rust appends to the mobile init
@@ -30,21 +36,26 @@
  * (see `api` below) which dock.js reads at module evaluation time — the bundle
  * calls mount() first. */
 import { CSS, MARKUP } from './assets.gen.js';
-import { pillPlacement, releasePosition, normalizeFraction, ringBand, PILL_MARGIN, PILL_DEFAULT_Y, SNAP_MS } from '../lib/pill-layout.js';
+import { pillPlacement, releasePosition, normalizeFraction, ringBand, ballCentre, PILL_MARGIN, PILL_DEFAULT_Y, SNAP_MS } from '../lib/pill-layout.js';
 
 export const HOST_ID = 'arenakit-embed';
 const PILL_POS_KEY = 'arenakit.pill.pos';
-export const PILL_HEIGHT = 36;    // reference StatusPillView height
-export const RING_SIZE = 26;      // quota ring diameter
-const RING_STROKE = 2.5;
-const RING_R = (RING_SIZE - RING_STROKE) / 2;
+export const BALL_SIZE = 60;      // ball diameter (reference FloatingBallView: 64 dp incl. glow)
+const GLOW = 8;                   // glow band drawn outside the ball box
+const VB = BALL_SIZE + 2 * GLOW;  // svg viewBox / pixel size (1 unit = 1 px)
+const CX = VB / 2;
+export const RING_R = 29;         // neon ring radius
+const CORE_R = 25;                // obsidian core radius
+const RING_STROKE = 3.2;
 export const RING_C = 2 * Math.PI * RING_R;
-const TAP_SLOP = 6;               // px before a press becomes a drag
+export const TAP_SLOP = 12;       // px a press may wander and still count as a tap (Android touch slop ≈ 8 dp + finger jitter)
+export const TAP_MAX_MS = 700;    // click-fallback window after a pointer tap
 const LONG_PRESS_MS = 500;
 const PULL_THRESHOLD = 90;        // px of upward drag at the bottom → refresh
 const LOAD_STALL_MS = 30_000;     // reference: give up on a stalled load
-/* Backwards-compatible alias (older tests / callers). */
-export const BALL_SIZE = PILL_HEIGHT;
+/* Backwards-compatible aliases (older tests / callers). */
+export const PILL_HEIGHT = BALL_SIZE;
+export const RING_SIZE = 2 * RING_R;
 
 /* dock.css targets a standalone document; retarget its document-level rules to
  * the shadow root (`:host` carries the CSS variables, `.ak-shell` is "body"). */
@@ -57,15 +68,15 @@ export function shadowCss(css) {
     .replace(/(^|\n)html,\s*body\s*\{/g, '$1.ak-shell {');
 }
 
-/* Ring colours by quota health (reference StatusPillView / PulseBar). The
- * concrete colours come from the dock palette (CSS variables); this returns
- * the band + a fallback hex for environments without custom properties. */
+/* Neon palette by quota health (reference FloatingBallView.neonPalette /
+ * PulseBar.colorFor): base = arc, bright = glow / comet. Unknown percent →
+ * dim blue full circle (no comet). */
 export function ringPalette(percent) {
   const band = ringBand(percent);
-  if (band === 'danger') return { band, base: '#D93025', dim: false };
-  if (band === 'warning') return { band, base: '#B26A00', dim: false };
-  if (band === 'ok') return { band, base: '#2F6BFF', dim: false };
-  return { band, base: '#2F6BFF', dim: true };
+  if (band === 'danger') return { band, base: '#E11D2A', bright: '#FF7A7A', dim: false };
+  if (band === 'warning') return { band, base: '#FF8A00', bright: '#FFC85C', dim: false };
+  if (band === 'ok') return { band, base: '#2F6BFF', bright: '#4CE3FF', dim: false };
+  return { band, base: '#2F6BFF', bright: '#4CE3FF', dim: true };
 }
 
 /* Font size (px) that fits `text` into `maxWidth` at ~0.58 em per char (CJK counts double). */
@@ -78,7 +89,7 @@ export function fitFont(text, base, maxWidth, min = 7) {
 }
 
 /* Keep a free-floating box inside the viewport (used while dragging). */
-export function clampPos(pos, vw, vh, size = PILL_HEIGHT, w = size) {
+export function clampPos(pos, vw, vh, size = BALL_SIZE, w = size) {
   const x = Number(pos && pos.x) || 0;
   const y = Number(pos && pos.y) || 0;
   return {
@@ -89,66 +100,48 @@ export function clampPos(pos, vw, vh, size = PILL_HEIGHT, w = size) {
 
 export const EMBED_CSS = `
 :host { all: initial; }
-.ak-pill-wrap {
+.ak-ball-wrap {
   position: fixed; left: auto; right: ${PILL_MARGIN}px; top: 120px; z-index: 2147483001;
-  height: ${PILL_HEIGHT}px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  width: ${BALL_SIZE}px; height: ${BALL_SIZE}px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
   transition: opacity .15s ease-out;
 }
-.ak-pill-wrap[data-snap="true"] { transition: left ${SNAP_MS}ms cubic-bezier(.2,.8,.3,1), top ${SNAP_MS}ms cubic-bezier(.2,.8,.3,1), opacity .15s ease-out; }
-.ak-pill-wrap[data-hidden="true"] { opacity: 0; pointer-events: none; }
-.ak-pill {
-  display: flex; align-items: center; height: ${PILL_HEIGHT}px; padding: 0 5px; margin: 0;
-  border-radius: ${PILL_HEIGHT / 2}px; border: 1px solid var(--ak-pill-stroke); background: var(--ak-pill-bg); color: var(--ak-fg);
-  box-shadow: 0 2px 8px rgba(0,0,0,.14); cursor: pointer; overflow: hidden; box-sizing: border-box;
-  font: 500 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+.ak-ball-wrap[data-snap="true"] { transition: left ${SNAP_MS}ms cubic-bezier(.2,.8,.3,1), top ${SNAP_MS}ms cubic-bezier(.2,.8,.3,1), opacity .15s ease-out; }
+.ak-ball-wrap[data-hidden="true"] { opacity: 0; pointer-events: none; }
+.ak-ball {
+  position: absolute; inset: 0; width: ${BALL_SIZE}px; height: ${BALL_SIZE}px; padding: 0; margin: 0; border: 0; border-radius: 50%;
+  background: transparent; cursor: pointer; overflow: visible; -webkit-tap-highlight-color: transparent; touch-action: none;
+  font: 700 15px/1.1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
-.ak-pill:active { filter: brightness(.96); }
-@media (hover: hover) {
-  .ak-pill:hover { box-shadow: 0 3px 12px rgba(0,0,0,.2); }
-  .ak-menu button:hover:not([disabled]) { background: var(--ak-surface-low); }
+.ak-ball:active .ak-ball-core { filter: brightness(1.25); }
+.ak-ball svg { position: absolute; left: -${GLOW}px; top: -${GLOW}px; width: ${VB}px; height: ${VB}px; overflow: visible; pointer-events: none; }
+.ak-ball-track { fill: none; stroke: #fff; stroke-width: ${RING_STROKE}; opacity: .16; }
+.ak-ball-glow { fill: none; stroke-width: 6; stroke-linecap: round; transform-origin: ${CX}px ${CX}px; transform: rotate(-90deg); opacity: .6; animation: ak-breathe 2.6s ease-in-out infinite; transition: stroke-dasharray .4s; }
+.ak-ball-arc { fill: none; stroke-width: ${RING_STROKE}; stroke-linecap: round; transform-origin: ${CX}px ${CX}px; transform: rotate(-90deg); transition: stroke-dasharray .4s; }
+.ak-ball-comet { fill: none; stroke: #fff; stroke-width: ${RING_STROKE}; stroke-linecap: round; transform-origin: ${CX}px ${CX}px; animation: ak-sweep 2.4s linear infinite; opacity: .9; }
+.ak-ball-rim { fill: none; stroke: rgba(255,255,255,.1); stroke-width: 1; }
+.ak-ball[data-dim="true"] .ak-ball-arc, .ak-ball[data-dim="true"] .ak-ball-glow { opacity: .3; animation: none; }
+.ak-ball[data-dim="true"] .ak-ball-comet { display: none; }
+.ak-ball[data-busy="true"] .ak-ball-comet { animation-duration: .9s; display: block; }
+.ak-ball[data-refreshing="true"] .ak-ball-comet { animation-duration: .6s; display: block; stroke: #fff; }
+.ak-ball-text {
+  position: absolute; inset: 7px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; color: #fff; text-align: center; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,.6);
 }
-.ak-pill-ring { position: relative; flex: none; width: ${RING_SIZE}px; height: ${RING_SIZE}px; }
-.ak-pill-ring svg { position: absolute; inset: 0; width: ${RING_SIZE}px; height: ${RING_SIZE}px; overflow: visible; }
-.ak-pill-track { fill: none; stroke: var(--ak-surface-high); stroke-width: ${RING_STROKE}; }
-.ak-pill-arc { fill: none; stroke: var(--ak-brand); stroke-width: ${RING_STROKE}; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dasharray .4s; }
-.ak-pill-arc[data-band="warning"] { stroke: var(--ak-warn); }
-.ak-pill-arc[data-band="danger"] { stroke: var(--ak-danger); }
-.ak-pill-arc[data-band="unknown"] { stroke: transparent; }
-.ak-pill-orbit { fill: none; stroke: var(--ak-brand); stroke-width: ${RING_STROKE}; stroke-linecap: round; transform-origin: 50% 50%; display: none; }
-.ak-pill[data-busy="true"] .ak-pill-orbit { display: block; animation: ak-orbit 1.1s linear infinite; }
-.ak-pill[data-busy="true"] .ak-pill-arc { opacity: .35; }
-.ak-pill-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 700; letter-spacing: -.2px; color: var(--ak-fg); }
-.ak-pill-label { margin-left: 8px; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ak-fg); padding-right: 9px; }
-.ak-pill-label:empty { display: none; }
-.ak-pill-label[data-tone="routed"] { color: var(--ak-warn); }
-.ak-pill-label[data-tone="muted"] { color: var(--ak-sub); }
-.ak-pill-label[data-tone="active"] { color: var(--ak-brand); }
-.ak-pill-div { flex: none; width: 1px; height: 18px; background: var(--ak-line); margin-left: -1px; }
-.ak-pill-label:empty + .ak-pill-div { margin-left: 5px; }
-.ak-pill-refresh { flex: none; width: 34px; height: ${PILL_HEIGHT}px; margin-right: -5px; display: flex; align-items: center; justify-content: center; color: var(--ak-sub); }
-.ak-pill-refresh svg { width: 18px; height: 18px; fill: currentColor; }
-.ak-pill[data-refreshing="true"] .ak-pill-refresh svg { animation: ak-spin 1s linear infinite; color: var(--ak-brand); }
-.ak-pill[data-refresh="false"] .ak-pill-div, .ak-pill[data-refresh="false"] .ak-pill-refresh { display: none; }
-.ak-pill[data-refresh="false"] .ak-pill-label { padding-right: 9px; }
-
-/* ── ball-centre display mode (设置 → 悬浮球显示) ────────────────────── */
-.ak-pill[data-mode="percent"] .ak-pill-label,
-.ak-pill[data-mode="percent"] .ak-pill-div { display: none; }
-.ak-pill[data-mode="percent"] { padding: 0; width: ${RING_SIZE + 6}px; justify-content: center; }
-.ak-pill[data-mode="model"] .ak-pill-ring,
-.ak-pill[data-mode="model"] .ak-pill-div { display: none; }
-.ak-pill[data-mode="model"] { padding: 0 12px; }
-.ak-pill[data-mode="model"] .ak-pill-label { margin-left: 0; padding-right: 0; max-width: 240px; font-size: 14px; font-weight: 600; }
-.ak-pill[data-alert="true"] {
-  border-color: var(--ak-danger);
-  box-shadow: 0 0 0 2px var(--ak-danger-soft), 0 0 14px var(--ak-danger);
-  animation: ak-blink 0.8s steps(2, start) infinite;
-}
-.ak-pill[data-alert="true"] .ak-pill-arc { stroke: var(--ak-danger); }
-.ak-pill[data-alert="true"] .ak-pill-pct { color: var(--ak-danger); }
-@keyframes ak-orbit { to { transform: rotate(360deg); } }
-@keyframes ak-spin { to { transform: rotate(360deg); } }
-@keyframes ak-blink { 50% { border-color: var(--ak-pill-stroke); box-shadow: 0 2px 8px rgba(0,0,0,.14); } }
+.ak-ball-top { font-weight: 700; font-size: 15px; line-height: 1.1; white-space: nowrap; max-width: 100%; overflow: hidden; }
+.ak-ball-bottom { font-weight: 500; font-size: 9px; line-height: 1.15; color: #B7C4D6; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.ak-ball-bottom:empty { display: none; }
+.ak-ball[data-kind="model"] .ak-ball-bottom { color: #E6EDF7; font-weight: 600; }
+.ak-ball[data-tone="routed"][data-kind="model"] .ak-ball-bottom, .ak-ball[data-tone="routed"][data-mode="model"] .ak-ball-top { color: #FFB300; }
+.ak-ball[data-kind="transient"] .ak-ball-bottom, .ak-ball[data-kind="transient"][data-mode="model"] .ak-ball-top { color: #4CE3FF; }
+.ak-ball[data-kind="hint"] .ak-ball-bottom { color: #8FA0B8; }
+/* alert (reply anomaly, dock EMBED.alert): the whole ball blinks red */
+.ak-ball[data-alert="true"] .ak-ball-rim { stroke: #FF3B30; stroke-width: 2.4; animation: ak-blink .8s steps(2, start) infinite; }
+.ak-ball[data-alert="true"] .ak-ball-arc, .ak-ball[data-alert="true"] .ak-ball-glow, .ak-ball[data-alert="true"] .ak-ball-comet { stroke: #FF3B30; opacity: 1; animation: none; }
+.ak-ball[data-alert="true"] .ak-ball-glow { animation: ak-blink .8s steps(2, start) infinite; }
+.ak-ball[data-alert="true"] .ak-ball-text { color: #FF7A7A; }
+@keyframes ak-sweep { to { transform: rotate(360deg); } }
+@keyframes ak-breathe { 0%, 100% { opacity: .35; } 50% { opacity: .85; } }
+@keyframes ak-blink { 50% { opacity: .15; } }
 
 /* page-load progress: 2 dp brand bar at the very top (reference page_progress) */
 .ak-progress { position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 2147483005; pointer-events: none; opacity: 0; transition: opacity .25s; }
@@ -216,12 +209,20 @@ export const ICONS = {
   arrowUp: '<svg viewBox="0 0 24 24"><path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>',
 };
 
-function ringSvg() {
-  const c = RING_SIZE / 2;
-  return `<svg viewBox="0 0 ${RING_SIZE} ${RING_SIZE}" aria-hidden="true">`
-    + `<circle class="ak-pill-track" cx="${c}" cy="${c}" r="${RING_R}"/>`
-    + `<circle class="ak-pill-arc" data-band="unknown" cx="${c}" cy="${c}" r="${RING_R}" stroke-dasharray="0 ${RING_C}"/>`
-    + `<circle class="ak-pill-orbit" cx="${c}" cy="${c}" r="${RING_R}" stroke-dasharray="${(RING_C * 80 / 360).toFixed(2)} ${RING_C.toFixed(2)}"/>`
+function ballSvg() {
+  const full = `${RING_C.toFixed(3)} ${RING_C.toFixed(3)}`;
+  return `<svg viewBox="0 0 ${VB} ${VB}" aria-hidden="true">`
+    + '<defs>'
+    + '<radialGradient id="ak-core" cx="50%" cy="42%" r="55%"><stop offset="0" stop-color="#161B26"/><stop offset="1" stop-color="#0A0C12"/></radialGradient>'
+    + '<filter id="ak-blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="2.2"/></filter>'
+    + `<mask id="ak-lit"><circle class="ak-ball-mask" cx="${CX}" cy="${CX}" r="${RING_R}" fill="none" stroke="#fff" stroke-width="6" stroke-dasharray="${full}" transform="rotate(-90 ${CX} ${CX})"/></mask>`
+    + '</defs>'
+    + `<circle class="ak-ball-core" cx="${CX}" cy="${CX}" r="${CORE_R}" fill="url(#ak-core)"/>`
+    + `<circle class="ak-ball-rim" cx="${CX}" cy="${CX}" r="${CORE_R}"/>`
+    + `<circle class="ak-ball-track" cx="${CX}" cy="${CX}" r="${RING_R}"/>`
+    + `<circle class="ak-ball-glow" cx="${CX}" cy="${CX}" r="${RING_R}" stroke="#4CE3FF" stroke-dasharray="${full}" filter="url(#ak-blur)"/>`
+    + `<circle class="ak-ball-arc" data-band="unknown" cx="${CX}" cy="${CX}" r="${RING_R}" stroke="#2F6BFF" stroke-dasharray="${full}"/>`
+    + `<g mask="url(#ak-lit)"><circle class="ak-ball-comet" cx="${CX}" cy="${CX}" r="${RING_R}" stroke-dasharray="10 ${RING_C.toFixed(3)}"/></g>`
     + '</svg>';
 }
 
@@ -240,12 +241,10 @@ export function mount(win) {
   root.innerHTML = `<style>${shadowCss(CSS)}\n${EMBED_CSS}</style>`
     + '<div class="ak-progress" data-show="false"><div class="ak-progress-fill"></div></div>'
     + '<div class="ak-scrim" data-show="false"></div>'
-    + '<div class="ak-pill-wrap" data-side="right" data-hidden="false" data-snap="false">'
-    + '<div class="ak-pill" role="button" tabindex="0" aria-label="ArenaKit" data-busy="false" data-refresh="true" data-refreshing="false" data-alert="false">'
-    + `<span class="ak-pill-ring">${ringSvg()}<span class="ak-pill-pct">–</span></span>`
-    + '<span class="ak-pill-label" data-tone="muted"></span>'
-    + '<span class="ak-pill-div"></span>'
-    + `<span class="ak-pill-refresh" aria-label="刷新页面" title="刷新页面">${ICONS.refresh}</span>`
+    + '<div class="ak-ball-wrap" data-side="right" data-hidden="false" data-snap="false">'
+    + '<div class="ak-ball" role="button" tabindex="0" aria-label="ArenaKit" data-busy="false" data-refreshing="false" data-alert="false" data-dim="true" data-mode="percent-model" data-kind="percent" data-tone="muted">'
+    + ballSvg()
+    + '<span class="ak-ball-text"><span class="ak-ball-top">…</span><span class="ak-ball-bottom"></span></span>'
     + '</div></div>'
     + '<div class="ak-menu" data-show="false" role="menu" aria-label="快捷操作"></div>'
     + '<div class="ak-sheet" data-open="false" data-dragging="false" role="dialog" aria-label="ArenaKit">'
@@ -257,8 +256,8 @@ export function mount(win) {
     + `<div class="ak-pull" data-show="false" data-armed="false">${ICONS.arrowUp}<span>上拉刷新</span></div>`;
   (doc.body || doc.documentElement).appendChild(host);
 
-  const wrap = root.querySelector('.ak-pill-wrap');
-  const pill = root.querySelector('.ak-pill');
+  const wrap = root.querySelector('.ak-ball-wrap');
+  const pill = root.querySelector('.ak-ball');
   const sheet = root.querySelector('.ak-sheet');
   const shell = root.querySelector('.ak-shell');
   const scrim = root.querySelector('.ak-scrim');
@@ -309,7 +308,7 @@ export function mount(win) {
   const menuOpen = () => menu.dataset.show === 'true';
   const dialogOpen = () => dialog.dataset.show === 'true';
   const syncScrim = () => { scrim.dataset.show = isOpen() || menuOpen() ? 'true' : 'false'; };
-  const syncPillHidden = () => { wrap.dataset.hidden = isOpen() ? 'true' : 'false'; };
+  const syncPillHidden = () => { wrap.dataset.hidden = isOpen() ? 'true' : 'false'; }; // ball fades out under the sheet
   // After a pointer-initiated open, swallow the synthetic click Blink dispatches
   // on the same touch point (it would otherwise hit the scrim/sheet under the
   // finger and immediately close the panel we just opened). Window is ~600 ms
@@ -338,41 +337,46 @@ export function mount(win) {
     if (was !== !!v) { native({ cmd: 'panel', open: !!v }); fire(v ? 'open' : 'close'); }
   };
 
-  // ── pill rendering ────────────────────────────────────────────────────
-  const arc = root.querySelector('.ak-pill-arc');
-  const pctEl = root.querySelector('.ak-pill-pct');
-  const labelEl = root.querySelector('.ak-pill-label');
-  const refreshEl = root.querySelector('.ak-pill-refresh');
-  let pillState = { percent: null, label: '', tone: 'muted', busy: false };
+  // ── ball rendering ────────────────────────────────────────────────────
+  const arc = root.querySelector('.ak-ball-arc');
+  const glow = root.querySelector('.ak-ball-glow');
+  const maskArc = root.querySelector('.ak-ball-mask');
+  const comet = root.querySelector('.ak-ball-comet');
+  const topEl = root.querySelector('.ak-ball-top');
+  const bottomEl = root.querySelector('.ak-ball-bottom');
+  const TEXT_W = BALL_SIZE - 14; // .ak-ball-text inset 7 px each side
+  let pillState = { percent: null, label: '', tone: 'muted', busy: false, mode: 'percent-model' };
+  /* { percent (0..100 | null), label, tone ('normal'|'routed'|'muted'|'active'), busy, mode } */
   function setPill(p = {}) {
     pillState = { ...pillState, ...p };
     const raw = pillState.percent;
     const pct = raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) ? Math.max(0, Math.min(100, Math.round(Number(raw)))) : null;
-    const band = ringBand(pct);
-    if (arc) {
-      arc.setAttribute('data-band', band);
-      arc.dataset.band = band;
-      arc.setAttribute('stroke-dasharray', `${((pct === null ? 0 : pct / 100) * RING_C).toFixed(3)} ${RING_C.toFixed(3)}`);
-    }
-    pctEl.textContent = pct === null ? '–' : String(pct);
-    const text = String(pillState.label || '');
-    labelEl.textContent = text;
-    labelEl.dataset.tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
-    pill.dataset.busy = pillState.busy ? 'true' : 'false';
-    // Display mode drives what shows in the centre of the pill:
-    //   'percent-model' (default): ring + label, both visible
-    //   'percent'                 : ring only, label hidden
-    //   'model'                   : label centred (no ring)
-    // CSS hides whichever element does not belong. The flash / alert states
-    // override the visual but never the data-mode attr.
+    const pal = ringPalette(pct);
+    const lit = ((pct === null ? 100 : pct) / 100) * RING_C;
+    const dash = `${lit.toFixed(3)} ${RING_C.toFixed(3)}`;
+    if (arc) { arc.setAttribute('data-band', pal.band); arc.dataset.band = pal.band; arc.setAttribute('stroke', pal.base); arc.setAttribute('stroke-dasharray', dash); }
+    if (glow) { glow.setAttribute('stroke', pal.bright); glow.setAttribute('stroke-dasharray', dash); }
+    if (maskArc) maskArc.setAttribute('stroke-dasharray', dash);
+    if (comet) comet.setAttribute('stroke', pal.bright);
+    pill.dataset.dim = pal.dim ? 'true' : 'false';
     const mode = ['percent-model', 'percent', 'model'].includes(pillState.mode) ? pillState.mode : 'percent-model';
+    const tone = ['normal', 'routed', 'muted', 'active'].includes(pillState.tone) ? pillState.tone : 'normal';
+    const c = ballCentre({ mode, percent: pct, text: pillState.label, tone });
+    topEl.textContent = c.top;
+    topEl.style.fontSize = fitFont(c.top, c.bottom ? 13 : 15, TEXT_W) + 'px';
+    bottomEl.textContent = c.bottom;
+    bottomEl.style.fontSize = fitFont(c.bottom, 9, TEXT_W, 7) + 'px';
     pill.dataset.mode = mode;
-    pill.setAttribute('aria-label', 'ArenaKit ' + (pct === null ? '' : pct + '% ') + text);
-    place(); // the label width changed → keep the right-hand edge on the margin
+    pill.dataset.kind = c.kind;
+    pill.dataset.tone = tone;
+    pill.dataset.busy = pillState.busy ? 'true' : 'false';
+    pill.setAttribute('aria-label', 'ArenaKit ' + [pct === null ? '' : pct + '%', pillState.label].filter(Boolean).join(' '));
   }
-  const setRefreshButton = (on) => { pill.dataset.refresh = on ? 'true' : 'false'; place(); };
+  /* The ball has no ⟳ zone any more (a tap anywhere opens the panel); kept
+   * as a no-op so older dock builds / tests can still call it. */
+  const setRefreshButton = () => {};
 
-  // ── page-load progress + spinning ⟳ ──────────────────────────────────
+  // ── page-load progress + fast comet on the ring ──────────────────────
   let loadTimer = 0;
   let stallTimer = 0;
   let loadValue = 0;
@@ -434,15 +438,14 @@ export function mount(win) {
     syncScrim();
   }
 
-  // ── pill placement (side + y fraction, snap on release) ──────────────
+  // ── ball placement (side + y fraction, snap on release) ──────────────
   let pos = { side: 'right', y: PILL_DEFAULT_Y };
   try {
     const saved = JSON.parse(win.localStorage.getItem(PILL_POS_KEY) || 'null');
     if (saved && typeof saved === 'object') pos = { side: saved.side === 'left' ? 'left' : 'right', y: normalizeFraction(saved.y) };
   } catch (_) { /* storage blocked: default position */ }
-  const pillWidth = () => wrap.offsetWidth || (wrap.getBoundingClientRect && wrap.getBoundingClientRect().width) || 120;
   function place(animate = false) {
-    const p = pillPlacement(pos, vw(), vh(), pillWidth(), PILL_HEIGHT);
+    const p = pillPlacement(pos, vw(), vh(), BALL_SIZE, BALL_SIZE);
     wrap.dataset.snap = animate ? 'true' : 'false';
     wrap.dataset.side = p.side;
     wrap.style.left = p.x + 'px'; wrap.style.top = p.y + 'px'; wrap.style.right = 'auto';
@@ -452,18 +455,27 @@ export function mount(win) {
   onWin('resize', () => place(false));
   if (win.visualViewport && typeof win.visualViewport.addEventListener === 'function') win.visualViewport.addEventListener('resize', () => place(false));
 
-  // ── pill gestures: tap / ⟳ tap / long press / drag ───────────────────
+  // ── ball gestures: tap / long press / drag ───────────────────────────
+  // Tap = pointerdown … pointerup within TAP_SLOP px and before the long-press
+  // timer. Android WebView jitters a few px under a finger, so the slop is
+  // generous (12 px). If the WebView never delivers pointer events (or ate
+  // them with a pointercancel), the plain `click` that follows a touch still
+  // opens the panel — the fallback only runs when no pointer tap was handled
+  // in the last TAP_MAX_MS.
   let drag = null;
   let longTimer = 0;
-  const inRefreshZone = (x) => {
-    if (pill.dataset.refresh === 'false') return false;
-    const rr = rectOf(refreshEl);
-    return rr.width > 0 && x >= rr.left - 2 && x <= rr.right + 2;
+  let lastPointerType = 'touch';
+  let lastTapAt = 0;
+  const tap = () => {
+    lastTapAt = Date.now();
+    fire('panel');
+    setOpen(true, { pointer: true });
   };
   wrap.addEventListener('pointerdown', (e) => {
-    if (e.button !== undefined && e.button !== 0) return;
+    if (e.button !== undefined && e.button !== null && e.button !== 0) return;
+    lastPointerType = e.pointerType || 'touch';
     const r = wrap.getBoundingClientRect();
-    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false, long: false, last: null };
+    drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, moved: false, long: false, last: null, at: Date.now() };
     try { wrap.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
     clearTimeout(longTimer);
     longTimer = later(() => {
@@ -478,8 +490,7 @@ export function mount(win) {
     const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (!drag.moved && Math.hypot(dx, dy) < TAP_SLOP) return;
     if (!drag.moved) { drag.moved = true; clearTimeout(longTimer); wrap.dataset.snap = 'false'; }
-    const w = pillWidth();
-    drag.last = clampPos({ x: drag.ox + dx, y: drag.oy + dy }, vw(), vh(), PILL_HEIGHT, w);
+    drag.last = clampPos({ x: drag.ox + dx, y: drag.oy + dy }, vw(), vh(), BALL_SIZE, BALL_SIZE);
     wrap.style.left = drag.last.x + 'px'; wrap.style.top = drag.last.y + 'px'; wrap.style.right = 'auto';
   });
   const end = (e) => {
@@ -488,18 +499,32 @@ export function mount(win) {
     clearTimeout(longTimer);
     if (d.long) return;
     if (d.moved) {
-      if (d.last) { pos = releasePosition(d.last, vw(), vh(), pillWidth(), PILL_HEIGHT); place(true); savePos(); }
+      if (d.last) { pos = releasePosition(d.last, vw(), vh(), BALL_SIZE, BALL_SIZE); place(true); savePos(); }
       return;
     }
-    if (inRefreshZone(e.clientX)) { fire('refresh'); return; }
-    fire('panel');
-    setOpen(true, { pointer: true });
+    tap();
   };
   wrap.addEventListener('pointerup', end);
   wrap.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; clearTimeout(longTimer); place(true); } });
+  // Fallback for WebViews that never delivered the pointer pair (see above).
+  wrap.addEventListener('click', (e) => {
+    if (Date.now() - lastTapAt < TAP_MAX_MS) return; // already handled through pointerup
+    if (drag) return; // a press is still in progress (multi-touch / capture oddities)
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    if (!isOpen()) tap();
+  });
   pill.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fire('panel'); setOpen(true); } });
-  // Desktop (mouse): right-click = the long-press quick menu.
-  pill.addEventListener('contextmenu', (e) => { e.preventDefault(); clearTimeout(longTimer); drag = null; if (menuOpen()) setMenu(false); else { openMenu(); fire('longpress'); } });
+  // Mouse right-click = the long-press quick menu. Android also fires
+  // `contextmenu` after a touch long press — by then the pointer timer has
+  // already opened the menu, so a touch-born contextmenu must only be
+  // suppressed, never toggle the menu back off.
+  pill.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const mouse = (e.pointerType || lastPointerType) === 'mouse' || (typeof e.button === 'number' && e.button === 2);
+    if (!mouse) return;
+    clearTimeout(longTimer); drag = null;
+    if (menuOpen()) setMenu(false); else { openMenu(); fire('longpress'); }
+  });
   place(false);
 
   // ── keyboard (desktop): Esc closes dialog → menu → sheet; ⌘/Ctrl+R / F5
@@ -632,15 +657,15 @@ export function mount(win) {
     linkTabOpen: () => { try { const l = win.__ARENAKIT_LINKS__; return !!(l && typeof l.isOpen === 'function' && l.isOpen()); } catch { return false; } },
     /* Open a web URL in the in-app link tab (desktop: separate window). */
     openLink: (url) => { try { const l = win.__ARENAKIT_LINKS__; return !!(l && typeof l.open === 'function' && l.open(url)); } catch { return false; } },
-    /* reply-monitor anomaly: red blinking outline (reference alert ring). */
+    /* reply-monitor anomaly: the ball blinks red (rim + glow + text). */
     alert: (on) => { pill.dataset.alert = on ? 'true' : 'false'; },
-    /* Pill display: { percent (0..100 | null), label, tone ('normal'|'routed'|'muted'|'active'), busy }. */
+    /* Ball display: { percent (0..100 | null), label, tone ('normal'|'routed'|'muted'|'active'), busy, mode ('percent-model'|'percent'|'model') }. */
     setPill,
     /* Legacy alias for the old ball API: {percent, top, bottom, isModel, routed}. */
     setBall: (b = {}) => setPill({ percent: b.percent ?? null, label: [b.top && !/%$/.test(String(b.top)) ? b.top : '', b.bottom].filter(Boolean).join(' '), tone: b.routed ? 'routed' : (b.isModel ? 'normal' : 'muted'), busy: false, mode: b.mode || 'percent-model' }),
-    /* Show / hide the ⟳ zone (设置 → 悬浮窗显示刷新按钮). */
+    /* No ⟳ zone on the ball any more — kept as a no-op for older callers. */
     setRefreshButton,
-    /* Page load in progress: spinning ⟳ + top progress bar. */
+    /* Page load in progress: fast comet sweep on the ring + top progress bar. */
     setLoading,
     /* Quick actions: 'panel' | 'refresh' | 'pull-refresh' | 'menu' (id) | 'longpress' | 'open' | 'close'. */
     onAction: (fn) => { actionHandler = fn; },
@@ -653,8 +678,8 @@ export function mount(win) {
     /* Native Android shell channel (no-op elsewhere). */
     native,
     scrollTo: (el) => { if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start' }); else if (shell) shell.scrollTop = 0; },
-    ballSize: PILL_HEIGHT,
-    pillSize: PILL_HEIGHT,
+    ballSize: BALL_SIZE,
+    pillSize: BALL_SIZE,
   };
   setPill({});
   win.__ARENAKIT_EMBED__ = api;

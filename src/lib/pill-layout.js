@@ -84,3 +84,55 @@ export function turnHeadline({ count = 0, firstModel = '', routed = false, resto
   if (restored) parts.push('本地记录');
   return parts.join(' · ');
 }
+
+/* ── neon ball centre (Android floating ball) ──────────────────────────── */
+
+/* "claude-opus-4-1-20250805" → {top:"claude-opus", bottom:"4-1-20250805"};
+ * "gpt-4o" → {top:"gpt", bottom:"4o"}; "grok" → {top:"grok", bottom:""}.
+ * Reference applyBallModel: split at the first numeric token, ≤ 12 chars a
+ * line (the ball is ~46 px wide inside the ring). A " · strength" suffix is
+ * kept on the bottom line. */
+export function shortModel(model) {
+  const raw = String(model || '').trim();
+  if (!raw) return { top: '', bottom: '' };
+  const [idPart, ...rest] = raw.split(' · ');
+  const suffix = rest.length ? ' · ' + rest.join(' · ') : '';
+  const id = String(idPart || '').split(' / ')[0].trim();
+  const parts = id.split(/[-_ /]+/).filter(Boolean);
+  const v = parts.findIndex((x) => /^\d/.test(x));
+  const clip = (x) => (x.length > 12 ? x.slice(0, 11) + '…' : x);
+  if (v <= 0) return { top: clip(id), bottom: suffix.trim() };
+  return { top: clip(parts.slice(0, v).join('-')), bottom: clip(parts.slice(v).join('-') + suffix) };
+}
+
+export const BALL_MODES = ['percent-model', 'percent', 'model'];
+
+/* What the two text lines inside the ball show, per 设置 → 悬浮球显示:
+ *   percent-model  top = quota %, bottom = model (short) / transient
+ *   percent        top = quota %, bottom only for a transient (task / flash)
+ *   model          top = model name (split over two lines) / transient;
+ *                  the quota stays visible as the ring
+ * `text` / `tone` come from pillLabel(): tone 'active' marks a transient
+ * (flash / running task), 'normal' | 'routed' a model, 'muted' a hint
+ * (识别中… / 新对话). Unknown quota shows "…" instead of a number. */
+export function ballCentre({ mode = 'percent-model', percent = null, text = '', tone = 'muted' } = {}) {
+  const m = BALL_MODES.includes(mode) ? mode : 'percent-model';
+  const p = percent === null || percent === undefined || percent === '' ? NaN : Number(percent);
+  const pct = Number.isFinite(p) ? Math.max(0, Math.min(100, Math.round(p))) + '%' : '…';
+  const t = String(text || '');
+  const transient = tone === 'active' && !!t;
+  const isModel = (tone === 'normal' || tone === 'routed') && !!t;
+  if (m === 'model') {
+    if (transient) return { top: t, bottom: '', kind: 'transient' };
+    if (isModel) { const s = shortModel(t); return { top: s.top || '…', bottom: s.bottom, kind: 'model' }; }
+    return { top: t || '…', bottom: '', kind: t ? 'hint' : 'empty' };
+  }
+  if (m === 'percent') return { top: pct, bottom: transient ? t : '', kind: transient ? 'transient' : 'percent' };
+  if (transient) return { top: pct, bottom: t, kind: 'transient' };
+  if (isModel) {
+    // one model line under the number: the whole id when it fits, else the name part
+    const id = t.split(' · ')[0].split(' / ')[0].trim();
+    return { top: pct, bottom: id.length <= 12 ? id : shortModel(t).top, kind: 'model' };
+  }
+  return { top: pct, bottom: t, kind: t ? 'hint' : 'percent' };
+}

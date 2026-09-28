@@ -161,8 +161,7 @@
           <button class="ak-btn ak-btn-sm" data-action="nav-forward">前进 ›</button>
           <button class="ak-btn ak-btn-sm" data-action="nav-reload">刷新</button>
         </div>
-        <label class="ak-switch" id="ak-pill-refresh-row"><span class="ak-switch-text">悬浮窗显示刷新按钮</span><input type="checkbox" id="ak-pill-refresh" checked /><i class="ak-switch-track"></i></label>
-        <div class="ak-note ak-embed-only" id="ak-refresh-note">在对话底部按住页面向上滑动也会刷新；刷新时顶部显示进度条。</div>
+        <div class="ak-note ak-embed-only" id="ak-refresh-note">长按悬浮球 → 刷新，或在对话底部按住页面向上滑动；刷新时悬浮球光环加速、顶部显示进度条。</div>
       </div>
       <hr class="ak-divider" />
       <div class="ak-group">
@@ -264,7 +263,7 @@
             <button type="button" data-ballcenter-pick="percent" aria-pressed="false">百分比</button>
             <button type="button" data-ballcenter-pick="model" aria-pressed="false">模型</button>
           </div>
-          <div class="ak-note">切换后立即生效：「百分比」只显示环 + 数字；「模型」隐藏环，只显示当前模型；「百分比 + 模型」同时显示。回复异常时环和边框会闪烁红色，与本设置无关。</div>
+          <div class="ak-note">切换后立即生效：「百分比 + 模型」上行额度 %、下行当前模型；「百分比」只显示数字；「模型」只显示模型名。霓虹环始终表示剩余额度（蓝 ≥ 20%、橙 10–19%、红 &lt; 10%），回复异常时整球闪烁红色，与本设置无关。</div>
         </label>
         <label class="ak-switch"><span class="ak-switch-text">截获会话流<small>识别模型的前提；关闭后不再上报运行令牌</small></span><input type="checkbox" id="ak-capture-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">额度轮询<small>每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新</small></span><input type="checkbox" id="ak-pulse-on" checked /><i class="ak-switch-track"></i></label>
