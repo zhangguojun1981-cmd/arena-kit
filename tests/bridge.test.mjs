@@ -146,3 +146,14 @@ test('stream activity re-runs the last lookup after the 45 s cooldown, never for
   now = exp * 1000 - 1000;
   assert.equal(ak.onActivity({ sessionId: 'sess-1', page: '/agent/sess-1' }), false);
 });
+
+test('nav-announce re-sends the current navigation (desktop dock missed init)', () => {
+  const page = fakePage({ pathname: '/agent/sess-9' });
+  runInjected('injected/bridge.js', page.sandbox);
+  const navs = () => page.calls.filter((c) => c.cmd === 'page_event' && c.args.name === 'nav').map((c) => c.args.payload);
+  assert.equal(navs().length, 1);
+  page.sandbox.__ARENAKIT__.dispatch('nav-announce', null);
+  assert.equal(navs().length, 2, 'not swallowed by the same-path dedupe');
+  assert.equal(navs()[1].reason, 'seed');
+  assert.equal(navs()[1].sessionId, 'sess-9');
+});

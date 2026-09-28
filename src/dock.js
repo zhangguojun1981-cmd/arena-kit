@@ -138,10 +138,30 @@ function sessionRecord(sessionId) {
 // id that differs from the id in the realtime stream URL, while all turn data
 // is attributed to the stream id. In-memory only; learned from captured tokens.
 const MAX_ALIASES = 512;
+// 0.4.8: persisted (store key `aliases`). The page id in /agent/{id} is not
+// always the stream session id the history records are keyed by; with the map
+// in memory only, every app restart lost it and a known conversation showed
+// "此对话尚无本地记录" with no model name.
+const ALIASES_KEY = 'aliases';
+let aliasSaveTimer = 0;
 function aliasSession(pageId, streamId) {
   if (!pageId || !streamId || pageId === streamId) return;
-  if (state.aliases.size >= MAX_ALIASES) state.aliases.clear();
+  if (state.aliases.get(pageId) === streamId) return;
+  state.aliases.delete(pageId);
   state.aliases.set(pageId, streamId);
+  // drop the oldest instead of forgetting everything
+  while (state.aliases.size > MAX_ALIASES) state.aliases.delete(state.aliases.keys().next().value);
+  clearTimeout(aliasSaveTimer);
+  aliasSaveTimer = setTimeout(() => {
+    state.store?.set(ALIASES_KEY, Object.fromEntries(state.aliases)).catch(() => {});
+  }, 500);
+}
+async function loadAliases() {
+  const saved = await state.store?.get(ALIASES_KEY).catch(() => null);
+  if (!saved || typeof saved !== 'object') return;
+  for (const [k, v] of Object.entries(saved)) {
+    if (typeof k === 'string' && typeof v === 'string' && k && v && k !== v && !state.aliases.has(k)) state.aliases.set(k, v);
+  }
 }
 function conversationFor(id) {
   let current = id || null;
@@ -1641,6 +1661,7 @@ async function boot() {
       }
     });
   }
+  await loadAliases();
   await loadHistoryIndex();
   if (!state.tauri) {
     setStatus('浏览器预览模式(无 Tauri 运行时)');
@@ -1658,6 +1679,10 @@ async function boot() {
     const h = pageHandlers.get('nav');
     if (h) { try { h({ ...globalThis.__ARENAKIT__.navState(), reason: 'init' }); } catch (err) { console.warn('[dock] nav seed', err); } }
   }
+  // Desktop: the arena webview may have announced its first navigation while
+  // the dock was still loading prefs/history — ask it to announce again so the
+  // current conversation's stored model shows up right away.
+  if (!EMBED) dispatchToPage('nav-announce', null);
   applyPageFlags();
   renderMonitor();
   // The page may have announced its session before our listener existed

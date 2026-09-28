@@ -169,7 +169,7 @@
     const s = navState();
     onRoutedNavigation(s.path);
     const sig = s.path + '|' + s.title;
-    if (sig === lastSig && reason !== 'init') return;
+    if (sig === lastSig && reason !== 'init' && reason !== 'seed') return;
     lastSig = sig;
     send('nav', { ...s, reason });
   };
@@ -190,6 +190,9 @@
     if (!el || typeof MutationObserver !== 'function') return;
     new MutationObserver(() => announce('title')).observe(el, { childList: true, characterData: true, subtree: true });
   };
+  // The desktop dock asks for a re-announce once its listener is up (it may
+  // have missed 'init' while loading its history).
+  on('nav-announce', () => announce('seed'));
   const init = () => { announce('init'); watchTitle(); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
