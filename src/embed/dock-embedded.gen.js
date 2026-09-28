@@ -2532,10 +2532,17 @@ __define("lib/accounts.js", function (__exports, __require) {
  * every switch needs — the embedded dock on Android dies with the page).
  *
  * Snapshots come from injected/account.js (`account` page event or the
- * `snapshot` RPC): { loggedIn, userId, email, name, avatar, provider,
- * expiresAt, cookies, sig, at }. The active account's cookies are refreshed
- * on every snapshot — Supabase rotates refresh tokens, so an old copy would be
- * dead within the hour. */
+ * `snapshot` RPC): { loggedIn, anonymous, userId, email, name, avatar,
+ * provider, expiresAt, cookies, sig, at }. The active account's cookies are
+ * refreshed on every snapshot — Supabase rotates refresh tokens, so an old
+ * copy would be dead within the hour.
+ *
+ * Only a real login becomes a record: arena signs visitors in anonymously
+ * (Supabase anonymous users — a cookie, a user id, no email), and those guest
+ * sessions must never pile up in the list. A snapshot counts as logged in
+ * only when the page says so AND it carries an email AND it is not anonymous;
+ * records without any email / login email / label (guest leftovers from older
+ * builds) are dropped on load. */
 
 const PENDING_TTL_MS = 5 * 60 * 1000;
 
@@ -2580,8 +2587,15 @@ function normalizeAccount(a) {
       auto: login.auto !== false,
     },
   };
-  if (!acc.userId && !acc.email && !acc.login.email && !acc.label) return null;
+  // No email, no login email, no label → nothing a person could recognise or
+  // use; this is what an anonymous (guest) session left behind. Drop it.
+  if (!acc.email && !acc.login.email && !acc.label) return null;
   return acc;
+}
+
+/* A snapshot describes a real, saveable login (not the site's guest session). */
+function isRealLogin(snap) {
+  return !!(snap && snap.loggedIn && !snap.anonymous && emailKey(snap.email) && Array.isArray(snap.cookies) && snap.cookies.length);
 }
 
 /* Display name: label → name → email → login email. */
@@ -2631,11 +2645,12 @@ function findForSnapshot(state, snap) {
 }
 
 /* Merge a snapshot of the page's CURRENT session into the store. Returns
- * { state, account, created, changed }. A logged-out snapshot leaves the
- * records alone and only clears activeId (the page holds no session). */
+ * { state, account, created, changed }. A logged-out (or anonymous / guest)
+ * snapshot leaves the records alone and only clears activeId (the page holds
+ * no session worth keeping). */
 function applySnapshot(state, snap, now = Date.now()) {
   const st = normalizeAccounts(state);
-  if (!snap || !snap.loggedIn || !Array.isArray(snap.cookies) || !snap.cookies.length) {
+  if (!isRealLogin(snap)) {
     const changed = st.activeId !== null;
     return { state: { ...st, activeId: null }, account: null, created: false, changed };
   }
@@ -2727,16 +2742,17 @@ function resolvePending(state, snap, now = Date.now()) {
   const p = st.pending;
   if (!p) return { state: st, outcome: null };
   if (now - (Number(p.at) || 0) > PENDING_TTL_MS) return { state: { ...st, pending: null }, outcome: { status: 'expired', message: '上次的账号操作已超时' } };
-  const loggedIn = !!(snap && snap.loggedIn);
+  const loggedIn = isRealLogin(snap);
+  const guest = !loggedIn && !!(snap && snap.anonymous);
   const target = p.id ? st.list.find((a) => a.id === p.id) : null;
   const same = loggedIn && target && ((target.userId && target.userId === str(snap.userId)) || (!target.userId && target.email && target.email === emailKey(snap.email)) || (!target.userId && !target.email && emailKey(target.login.email) === emailKey(snap.email)));
   if (p.type === 'switch') {
     if (same) return { state: { ...st, pending: null }, outcome: { status: 'switched', account: target, message: '已切换到 ' + accountLabel(target) } };
     if (loggedIn) return { state: { ...st, pending: null }, outcome: { status: 'other', message: '页面登录的是另一个账号（' + (snap.email || snap.userId) + '）' } };
-    return { state: { ...st, pending: null }, outcome: { status: 'lost', account: target, message: (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效，需要重新登录' } };
+    return { state: { ...st, pending: null }, outcome: { status: 'lost', account: target, message: (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效' + (guest ? '（页面回到了游客状态）' : '') + '，需要重新登录' } };
   }
   if (p.type === 'add') {
-    if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' } };
+    if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' + (guest ? '（游客状态不会被记录）' : '') } };
     return { state: { ...st, pending: null }, outcome: { status: 'added', message: '已保存账号 ' + (snap.email || snap.userId) } };
   }
   if (p.type === 'login') {
@@ -2788,7 +2804,7 @@ function sessionAgeText(acc, now = Date.now()) {
   return Math.round(h / 24) + ' 天前保存';
 }
 
-__exports.PENDING_TTL_MS = PENDING_TTL_MS; __exports.newId = newId; __exports.normalizeAccounts = normalizeAccounts; __exports.normalizeAccount = normalizeAccount; __exports.accountLabel = accountLabel; __exports.accountEmail = accountEmail; __exports.initialOf = initialOf; __exports.hasSession = hasSession; __exports.hasLogin = hasLogin; __exports.credsFor = credsFor; __exports.findForSnapshot = findForSnapshot; __exports.applySnapshot = applySnapshot; __exports.upsertLogin = upsertLogin; __exports.removeAccount = removeAccount; __exports.planSwitch = planSwitch; __exports.setPending = setPending; __exports.resolvePending = resolvePending; __exports.loginStageText = loginStageText; __exports.sessionAgeText = sessionAgeText;
+__exports.PENDING_TTL_MS = PENDING_TTL_MS; __exports.newId = newId; __exports.normalizeAccounts = normalizeAccounts; __exports.normalizeAccount = normalizeAccount; __exports.isRealLogin = isRealLogin; __exports.accountLabel = accountLabel; __exports.accountEmail = accountEmail; __exports.initialOf = initialOf; __exports.hasSession = hasSession; __exports.hasLogin = hasLogin; __exports.credsFor = credsFor; __exports.findForSnapshot = findForSnapshot; __exports.applySnapshot = applySnapshot; __exports.upsertLogin = upsertLogin; __exports.removeAccount = removeAccount; __exports.planSwitch = planSwitch; __exports.setPending = setPending; __exports.resolvePending = resolvePending; __exports.loginStageText = loginStageText; __exports.sessionAgeText = sessionAgeText;
 });
 __define("lib/account-flow.js", function (__exports, __require) {
 'use strict';
@@ -2801,7 +2817,10 @@ __define("lib/account-flow.js", function (__exports, __require) {
  * Deps (all optional except call/reload):
  *   call(action, args, opts) → Promise<data>   page RPC (snapshot / restore / clear / login / fill / stop)
  *   loadStore() → Promise<raw>, saveStore(state) → Promise   persistence (store key `accounts`)
- *   reload() → Promise                          reload the Arena page (`account` source)
+ *   reload() → Promise                          reload the Arena page (`account` source) — only used
+ *                                               when the page could not navigate by itself
+ *   navigating(url)                             the page is leaving on its own (restore / clear with
+ *                                               `navigate`): show the loading state, close the sheet
  *   invoke(cmd, args) → Promise                 Tauri commands login_set / login_clear
  *   status(text)                                账号 page status line
  *   loginStatus(text)                           登录助手 status line
@@ -2809,14 +2828,19 @@ __define("lib/account-flow.js", function (__exports, __require) {
  *   needLogin(account)                          the target has no credentials → open the editor
  *   onChange()                                  re-render hook (state/snapshot changed)
  *   sleep(ms), now()                            timing (tests shrink them) */
-const { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, hasLogin } = __require("lib/accounts.js");
+const { normalizeAccounts, applySnapshot, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, hasLogin, isRealLogin } = __require("lib/accounts.js");
 
 const noop = () => {};
 const errText = (e) => (e && e.message) || String(e);
+const isTimeout = (e) => /超时|timeout/i.test(errText(e));
+/* Where a switch / add lands: the site root. The URL we are on belongs to the
+ * account we are leaving (its conversation) — the new account cannot open it,
+ * and a failed load there is what used to end in a logged-out page. */
+const HOME_PATH = '/';
 
 function createAccountFlow(deps) {
   const d = {
-    loadStore: async () => null, saveStore: async () => {}, invoke: null,
+    loadStore: async () => null, saveStore: async () => {}, invoke: null, navigating: noop,
     status: noop, loginStatus: noop, toast: noop, needLogin: noop, onChange: noop,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: Date.now,
     ...deps,
@@ -2825,6 +2849,14 @@ function createAccountFlow(deps) {
   const flow = { accounts: normalizeAccounts(null), snap: null, busy: false };
   const invoke = (cmd, args) => (d.invoke ? Promise.resolve(d.invoke(cmd, args)).catch((e) => d.toast(cmd + ' 失败: ' + errText(e))) : Promise.resolve());
   const changed = () => { try { d.onChange(); } catch { /* render errors must not break the flow */ } };
+  /* After a page-side `restore` / `clear` answered with navigateTo the page is
+   * already on its way; otherwise (older page script) reload it ourselves. */
+  const leave = async (res, source) => {
+    if (res && res.navigateTo) { try { d.navigating(res.navigateTo, source); } catch { /* ui only */ } return 'page'; }
+    await d.sleep(300);
+    await d.reload();
+    return 'reload';
+  };
 
   flow.load = async () => { flow.accounts = normalizeAccounts(await d.loadStore().catch(() => null)); changed(); return flow.accounts; };
   flow.save = async (next) => {
@@ -2870,26 +2902,45 @@ function createAccountFlow(deps) {
     }
   }
 
-  /* 切换 → target with a saved session: swap cookies + reload; otherwise login helper. */
+  /* 切换 → target with a saved session: swap cookies + leave for the site
+   * root; otherwise login helper. The swap is guarded by the snapshot's
+   * signature: if the page's cookies rotated between our snapshot and the
+   * restore, the page refuses, we persist the newer tokens of the account we
+   * are leaving and try once more — so no saved session is ever older than
+   * what the site last issued. */
   flow.switchTo = async (id) => {
     const plan = planSwitch(flow.accounts, id);
     if (!plan.ok) { d.status(plan.reason); return { ok: false, reason: plan.reason }; }
     if (flow.busy) return { ok: false, reason: 'busy' };
     flow.busy = true;
+    let navigated = false;
     try {
       const snap = await d.call('snapshot', {}).catch((e) => { d.status('读取页面登录状态失败: ' + errText(e)); return null; });
       if (!snap) return { ok: false, reason: 'no-snapshot' };
       let st = flow.accounts;
-      if (snap.loggedIn) st = applySnapshot(st, snap, d.now()).state; // the account we leave stays fresh
+      if (isRealLogin(snap)) st = applySnapshot(st, snap, d.now()).state; // the account we leave stays fresh
       if (plan.mode === 'login') { await flow.startLogin(plan.target, { snap, st }); return { ok: true, mode: 'login' }; }
       st = setPending(st, { type: 'switch', id }, d.now());
       await flow.save(st);
       d.status('正在切换到 ' + accountLabel(plan.target) + '…');
-      await d.call('restore', { cookies: plan.target.cookies, scope: snap.scope || '' });
-      await d.sleep(350); // let the WebView flush document.cookie writes before navigating
-      await d.reload();
-      return { ok: true, mode: 'cookies' };
+      const args = { cookies: plan.target.cookies, scope: snap.scope || '', navigate: HOME_PATH };
+      let res = await d.call('restore', { ...args, expectSig: snap.sig || '' });
+      if (res && res.stale) {
+        // token rotation slipped in between: save what the page holds now, retry once
+        if (isRealLogin(res.previous)) await flow.save(applySnapshot(flow.accounts, res.previous, d.now()).state);
+        res = await d.call('restore', { ...args, expectSig: (res.previous && res.previous.sig) || '' });
+        if (res && res.stale) throw new Error('页面的登录状态正在变化，请稍后再试');
+      }
+      navigated = (await leave(res, 'switch')) === 'page';
+      return { ok: true, mode: 'cookies', via: navigated ? 'page' : 'reload' };
     } catch (e) {
+      if (isTimeout(e) && !navigated) {
+        // The page answers and leaves in the same task; a lost answer most
+        // likely means it is already loading the new session. Leave the
+        // pending switch for the first snapshot (or its 5 min TTL) to settle.
+        d.status('页面正在跳转，等待新账号加载…');
+        return { ok: true, mode: 'cookies', via: 'unknown' };
+      }
       d.status('切换失败: ' + errText(e));
       await flow.save(setPending(flow.accounts, null));
       return { ok: false, reason: errText(e) };
@@ -2910,23 +2961,28 @@ function createAccountFlow(deps) {
       return { ok: false, reason: 'no-credentials' };
     }
     const cur = snap || await d.call('snapshot', {}).catch(() => null);
-    if (cur && cur.loggedIn) st = applySnapshot(st, cur, d.now()).state;
+    if (isRealLogin(cur)) st = applySnapshot(st, cur, d.now()).state;
     st = setPending(st, { type: 'login', id: acc.id }, d.now());
     await flow.save(st);
     const creds = credsFor(acc);
     d.loginStatus('登录助手已启动：' + accountLabel(acc));
     await invoke('login_set', { creds });
-    if (cur && cur.hasAuthCookie) {
-      await d.call('clear', {}).catch((e) => d.status('清除登录 Cookie 失败: ' + errText(e)));
-      await d.sleep(300);
-      await d.reload();
-      return { ok: true, via: 'reload' };
+    // A page that still holds another (real) session is cleared and left for
+    // the site root; a guest / logged-out page runs the helper right here.
+    if (cur && cur.hasAuthCookie && !cur.anonymous) {
+      let res = null;
+      try { res = await d.call('clear', { navigate: HOME_PATH }); } catch (e) {
+        if (!isTimeout(e)) { d.status('清除登录 Cookie 失败: ' + errText(e)); await d.reload(); return { ok: true, via: 'reload' }; }
+        return { ok: true, via: 'unknown' };
+      }
+      return { ok: true, via: await leave(res, 'login') };
     }
     await d.call('login', { creds }).catch((e) => d.loginStatus('无法启动登录助手: ' + errText(e)));
     return { ok: true, via: 'page' };
   };
 
-  /* 添加另一个账号: keep the current one, clear the page's session, reload → login. */
+  /* 添加另一个账号: keep the current one, clear the page's session (guest
+   * cookies included), leave for the site root → the user logs in there. */
   flow.add = async () => {
     if (flow.busy) return { ok: false, reason: 'busy' };
     flow.busy = true;
@@ -2934,15 +2990,19 @@ function createAccountFlow(deps) {
       const snap = await d.call('snapshot', {}).catch((e) => { d.status('无法读取页面登录状态: ' + errText(e)); return null; });
       if (!snap) return { ok: false, reason: 'no-snapshot' };
       let st = flow.accounts;
-      if (snap.loggedIn) st = applySnapshot(st, snap, d.now()).state;
+      if (isRealLogin(snap)) st = applySnapshot(st, snap, d.now()).state;
       st = setPending(st, { type: 'add' }, d.now());
       await flow.save(st);
-      if (snap.hasAuthCookie) await d.call('clear', {});
       await invoke('login_clear', {});
-      d.status('已清除页面登录状态；刷新后请登录另一个账号，登录完成后会自动保存');
-      await d.sleep(300);
-      await d.reload();
-      return { ok: true };
+      d.status('已清除页面登录状态；请在页面中登录另一个账号，登录完成后会自动保存');
+      let res = null;
+      if (snap.hasAuthCookie) {
+        try { res = await d.call('clear', { navigate: HOME_PATH }); } catch (e) {
+          if (isTimeout(e)) return { ok: true, via: 'unknown' };
+          throw e;
+        }
+      }
+      return { ok: true, via: await leave(res, 'add') };
     } catch (e) {
       d.status('操作失败: ' + errText(e));
       return { ok: false, reason: errText(e) };
@@ -2955,7 +3015,7 @@ function createAccountFlow(deps) {
   flow.saveCurrent = async () => {
     const snap = await d.call('snapshot', {}).catch((e) => { d.status('读取失败: ' + errText(e)); return null; });
     if (!snap) return null;
-    if (!snap.loggedIn) { d.status(snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息' : '页面当前未登录'); return null; }
+    if (!isRealLogin(snap)) { d.status(snap.anonymous ? '页面当前是游客状态（未登录），不会记录' : (snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息' : '页面当前未登录')); return null; }
     const r = await flow.onSnapshot(snap);
     d.status('已保存 ' + (snap.email || snap.userId));
     return r.account;
@@ -2975,7 +3035,7 @@ function createAccountFlow(deps) {
   return flow;
 }
 
-__exports.createAccountFlow = createAccountFlow;
+__exports.HOME_PATH = HOME_PATH; __exports.createAccountFlow = createAccountFlow;
 });
 __define("lib/totp.js", function (__exports, __require) {
 'use strict';
@@ -4438,6 +4498,14 @@ function createAccounts() {
     loadStore: () => state.store.get(ACCOUNTS_KEY),
     saveStore: (st) => state.store.set(ACCOUNTS_KEY, st),
     reload: () => requestReload('account'),
+    // restore / clear answered with navigateTo: the page is leaving for the
+    // site root on its own — mirror requestReload's loading UI only.
+    navigating: (url, source) => {
+      setStatus(source === 'switch' ? '切换账号，正在打开新账号的页面…' : '页面跳转中…');
+      state.loadingAt = Date.now();
+      if (EMBED && typeof EMBED.setLoading === 'function') EMBED.setLoading(true);
+      if (EMBED) EMBED.close();
+    },
     invoke: state.tauri ? (cmd, args) => state.tauri.invoke(cmd, args) : null,
     status: acctStatus,
     loginStatus: acctLoginStatus,
@@ -4536,7 +4604,7 @@ function renderAccounts() {
   const cur = q('ak-acct-current');
   if (cur) {
     if (!snap) cur.innerHTML = '<div class="ak-empty">尚未读取到登录状态（打开 Arena 页面后自动读取）</div>';
-    else if (!snap.loggedIn) cur.innerHTML = `<div class="ak-empty">${snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息（请点「保存当前登录」重试）' : '页面当前未登录'}</div>`;
+    else if (!snap.loggedIn) cur.innerHTML = `<div class="ak-empty">${snap.anonymous ? '页面当前是游客状态（未登录）：登录后会自动记录账号，游客状态不会被保存' : (snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息（请点「保存当前登录」重试）' : '页面当前未登录')}</div>`;
     else {
       const active = acct().active();
       const shown = active || { id: '', label: '', name: snap.name, email: snap.email, avatar: snap.avatar, provider: snap.provider, cookies: snap.cookies || [], capturedAt: 0, login: { email: '', password: '', totp: '', auto: true } };

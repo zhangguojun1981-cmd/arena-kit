@@ -1204,6 +1204,14 @@ function createAccounts() {
     loadStore: () => state.store.get(ACCOUNTS_KEY),
     saveStore: (st) => state.store.set(ACCOUNTS_KEY, st),
     reload: () => requestReload('account'),
+    // restore / clear answered with navigateTo: the page is leaving for the
+    // site root on its own — mirror requestReload's loading UI only.
+    navigating: (url, source) => {
+      setStatus(source === 'switch' ? '切换账号，正在打开新账号的页面…' : '页面跳转中…');
+      state.loadingAt = Date.now();
+      if (EMBED && typeof EMBED.setLoading === 'function') EMBED.setLoading(true);
+      if (EMBED) EMBED.close();
+    },
     invoke: state.tauri ? (cmd, args) => state.tauri.invoke(cmd, args) : null,
     status: acctStatus,
     loginStatus: acctLoginStatus,
@@ -1302,7 +1310,7 @@ function renderAccounts() {
   const cur = q('ak-acct-current');
   if (cur) {
     if (!snap) cur.innerHTML = '<div class="ak-empty">尚未读取到登录状态（打开 Arena 页面后自动读取）</div>';
-    else if (!snap.loggedIn) cur.innerHTML = `<div class="ak-empty">${snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息（请点「保存当前登录」重试）' : '页面当前未登录'}</div>`;
+    else if (!snap.loggedIn) cur.innerHTML = `<div class="ak-empty">${snap.anonymous ? '页面当前是游客状态（未登录）：登录后会自动记录账号，游客状态不会被保存' : (snap.hasAuthCookie ? '检测到登录 Cookie，但无法解析账号信息（请点「保存当前登录」重试）' : '页面当前未登录')}</div>`;
     else {
       const active = acct().active();
       const shown = active || { id: '', label: '', name: snap.name, email: snap.email, avatar: snap.avatar, provider: snap.provider, cookies: snap.cookies || [], capturedAt: 0, login: { email: '', password: '', totp: '', auto: true } };

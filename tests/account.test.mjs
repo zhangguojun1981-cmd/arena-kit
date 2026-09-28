@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { plain } from './helpers.mjs';
-import { jwt, supabaseSession, chunked, fakeDom } from './account-fixture.mjs';
+import { jwt, supabaseSession, anonymousSession, chunked, fakeDom } from './account-fixture.mjs';
 
 /* injected/account.js: Supabase cookie → identity, snapshot / restore /
  * clear on a document.cookie jar, watcher events, and the login helper on
@@ -25,6 +25,31 @@ test('snapshot decodes the chunked Supabase cookie into an identity', () => {
   assert.deepEqual(s.cookies.map((c) => c.name), jar.filter((c) => c.name.startsWith('arena-auth')).map((c) => c.name), 'only auth cookies, chunk order kept');
   assert.equal(typeof s.sig, 'string');
   assert.equal(s.hasAuthCookie, true);
+  assert.equal(s.anonymous, false);
+});
+
+/* arena.ai signs visitors in anonymously (Supabase anonymous users): the
+ * guest state has the same cookie names, a user id and no email. It must read
+ * as logged OUT, otherwise every guest session becomes a junk account. */
+test('the site\'s anonymous (guest) session is reported as logged out, not as an account', () => {
+  const { api, events, flushTimeouts } = fakeDom({ jar: chunked('arena-auth-prod-v1', anonymousSession()) });
+  const s = plain(api.snapshot());
+  assert.equal(s.hasAuthCookie, true, 'the guest cookie exists');
+  assert.equal(s.anonymous, true);
+  assert.equal(s.loggedIn, false, 'guest ≠ logged in');
+  assert.equal(s.userId, 'anon-0001', 'identity still decoded (for diagnostics)');
+  assert.equal(s.email, '');
+  // the watcher says the same
+  flushTimeouts();
+  const ev = events.find((e) => e.name === 'account');
+  assert.equal(ev.payload.loggedIn, false);
+  assert.equal(ev.payload.anonymous, true);
+  // a real session without an email claim is not saveable either (nothing to show / match by)
+  const noEmail = { ...supabaseSession({ email: '' }) };
+  noEmail.user = { ...noEmail.user, email: '' };
+  const s2 = plain(fakeDom({ jar: chunked('arena-auth-prod-v1', noEmail) }).api.snapshot());
+  assert.equal(s2.loggedIn, false);
+  assert.equal(s2.anonymous, false);
 });
 
 test('chunks are joined by index (10 sorts after 9), legacy URL-encoded JSON and JWT fallbacks are understood', () => {
@@ -70,6 +95,49 @@ test('restore swaps the auth cookies for another account, matching the site\'s c
   assert.equal(d.cookies.get('|cf_clearance').value, 'keep', 'non-auth cookies untouched');
   // both RPC answers went out on the bridge with their reqIds
   assert.deepEqual(d.events.filter((e) => e.name === 'account-result').map((e) => e.payload.reqId), ['r1', 'r2']);
+  assert.equal(res.data.previous.email, 'alice@example.com', 'the session being left comes back with the answer');
+  assert.deepEqual(d.navigations, [], 'no navigate requested → the page stays');
+});
+
+/* Switching = swap + leave in the same task. `expectSig` protects the account
+ * being left: if its cookies rotated after the dock's snapshot, the page
+ * refuses and hands back the newer session instead of swapping. */
+test('restore with expectSig refuses a stale swap (returns previous, touches nothing); with navigate it leaves for the site root after answering', async () => {
+  const a1 = chunked('arena-auth-prod-v1', supabaseSession({ email: 'alice@example.com', id: 'ua', refresh: 'rt-a1' }));
+  const a2 = chunked('arena-auth-prod-v1', supabaseSession({ email: 'alice@example.com', id: 'ua', refresh: 'rt-a2' }));
+  const b = chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub' }), 200);
+  const d = fakeDom({ pathname: '/agent/conv-of-alice', jar: a1 });
+  const sigA1 = plain(d.api.snapshot()).sig;
+  // the site rotates Alice's token after the dock took its snapshot
+  for (const c of a2) d.doc.cookie = `${c.name}=${c.value}; Path=/`;
+  const stale = plain(await d.api.call('restore', JSON.stringify({ cookies: b, expectSig: sigA1, navigate: '/' }), 'r1'));
+  assert.equal(stale.ok, true);
+  assert.equal(stale.data.stale, true);
+  assert.equal(stale.data.previous.email, 'alice@example.com');
+  assert.notEqual(stale.data.previous.sig, sigA1);
+  assert.equal(plain(d.api.snapshot()).email, 'alice@example.com', 'cookies untouched');
+  assert.deepEqual(d.navigations, [], 'no navigation on a refused swap');
+  // retry with the newer signature → swap + navigate (site root, not Alice's conversation)
+  const ok = plain(await d.api.call('restore', JSON.stringify({ cookies: b, expectSig: stale.data.previous.sig, navigate: '/' }), 'r2'));
+  assert.equal(ok.ok, true, ok.error);
+  assert.equal(ok.data.navigateTo, '/');
+  assert.equal(plain(d.api.snapshot()).email, 'bob@example.com');
+  assert.deepEqual(d.navigations, [{ how: 'replace', url: 'https://arena.ai/' }]);
+  assert.ok(Number(d.sessionStorage.getItem('arenakit.reloading')) > 0, 'boot progress stamp set for the next document');
+  const answers = d.events.filter((e) => e.name === 'account-result').map((e) => e.payload.reqId);
+  assert.deepEqual(answers, ['r1', 'r2'], 'the answer left before the navigation');
+  // navigate targets are same-origin paths only
+  assert.equal(d.api.navTarget('//evil.example'), '/');
+  assert.equal(d.api.navTarget('https://evil.example/'), '/');
+  assert.equal(d.api.navTarget('/agent'), '/agent');
+  assert.equal(d.api.navTarget(true), '/');
+  // clear with navigate: guest-free page, then leave
+  const d2 = fakeDom({ jar: a1 });
+  const cl = plain(await d2.api.call('clear', JSON.stringify({ navigate: true }), 'c1'));
+  assert.equal(cl.ok, true);
+  assert.equal(cl.data.previous.email, 'alice@example.com');
+  assert.equal(plain(d2.api.snapshot()).hasAuthCookie, false);
+  assert.deepEqual(d2.navigations, [{ how: 'replace', url: 'https://arena.ai/' }]);
 });
 
 test('restore on a host-only site keeps host-only scope; clear() removes every auth cookie', async () => {

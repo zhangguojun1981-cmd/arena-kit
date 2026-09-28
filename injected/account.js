@@ -17,10 +17,21 @@
  *   • arena.ai has no 2FA of its own; TOTP belongs to the identity provider
  *     (Google …). The login helper fills email / password / TOTP on those pages
  *     (`window.__AK_TOTP__` from injected/totp.gen.js computes the code).
+ *   • A logged-out visitor is NOT cookie-less: the site signs visitors in
+ *     anonymously (Supabase anonymous users: `is_anonymous: true`, no email),
+ *     so the same cookie names exist in the guest state. Such a session is
+ *     reported with loggedIn:false / anonymous:true and must never become an
+ *     account record — only identities with an email count as logged in.
+ *   • Switching = `restore` rewrites the cookies AND navigates the page itself
+ *     (same JS task as the cookie writes, to the site root — not back to the
+ *     other account's conversation URL, which the new account cannot open).
+ *     `expectSig` lets the dock refuse a swap when the cookies moved between
+ *     its snapshot and the restore (token rotation), so the account being
+ *     left is always saved with its newest tokens.
  *
  * Dock → page:  window.ArenaAccount.call(action, argsJson, reqId)
- *               actions: snapshot · restore{cookies,scope} · clear · login{creds}
- *               · fill{code} · stop
+ *               actions: snapshot · restore{cookies,scope,expectSig,navigate}
+ *               · clear{navigate} · login{creds} · fill{code} · stop
  * Page → dock:  __ARENAKIT__.send('account-result', {reqId, ok, data|error})
  *               __ARENAKIT__.send('account', snapshot)   (watcher, on change)
  *               __ARENAKIT__.send('login', {stage, …})   (helper progress)
@@ -79,10 +90,25 @@
       D.cookie = `${name}=; Max-Age=0; Path=/${dom}`;
     }
   }
-  function clearAuth() {
-    const names = [...new Set(authCookies().map((c) => c.name))];
+  /* Expire every auth cookie the page can see, plus the chunk siblings of
+   * every base name involved (`name`, `name.0` … `name.N+2`) — a leftover
+   * chunk from a longer session would otherwise be glued onto the restored
+   * one and break the site's JSON parse. */
+  function clearAuth(extra) {
+    const names = new Set(authCookies().map((c) => c.name));
+    const bases = new Map();
+    for (const n of [...names, ...((extra || []).map((c) => c.name))]) {
+      const m = /^(.*?)(?:\.(\d+))?$/.exec(n);
+      const idx = m[2] == null ? 0 : Number(m[2]);
+      bases.set(m[1], Math.max(bases.get(m[1]) || 0, idx));
+    }
+    for (const [base, max] of bases) {
+      names.add(base);
+      for (let i = 0; i <= max + 2; i++) names.add(base + '.' + i);
+    }
+    const present = authCookies().length;
     for (const n of names) expireCookie(n);
-    return names.length;
+    return present;
   }
 
   // ── session decoding ─────────────────────────────────────────────────
@@ -148,7 +174,10 @@
     const avatar = String(md.avatar_url || md.picture || '');
     const provider = String((u.app_metadata && u.app_metadata.provider) || (jwt && jwt.app_metadata && jwt.app_metadata.provider) || '');
     const expiresAt = (Number(session.expires_at) * 1000) || (jwt && Number(jwt.exp) * 1000) || 0;
-    return { userId, email, name, avatar, provider, expiresAt };
+    // Supabase anonymous sign-in (the site's guest state): is_anonymous claim,
+    // no email. Treated as logged out everywhere.
+    const anonymous = u.is_anonymous === true || !!(jwt && jwt.is_anonymous === true) || provider === 'anonymous';
+    return { userId, email, name, avatar, provider, expiresAt, anonymous };
   }
   function sigOf(cookies) {
     const s = cookies.map((c) => c.name + '=' + c.value).join(';');
@@ -163,11 +192,27 @@
     const cookies = authCookies();
     const dec = decodeSession(cookies);
     const id = dec ? identity(dec.session) : null;
+    // Only a real identity (email, not anonymous) is a login worth saving.
+    const loggedIn = !!(id && !id.anonymous && id.email);
     return Object.assign(
-      { ok: true, host: hostOf(), loggedIn: !!(id && (id.userId || id.email)), hasAuthCookie: cookies.length > 0 },
+      { ok: true, host: hostOf(), loggedIn, anonymous: !!(id && id.anonymous), hasAuthCookie: cookies.length > 0 },
       id || {},
       { cookies, sig: sigOf(cookies), scope: scopeCache(), at: now() }
     );
+  }
+
+  /* Leave the current page for `path` on this origin (site root by default)
+   * in the same task as the cookie writes, so the site's own auth client
+   * cannot write the old session back in between. The `arenakit.reloading`
+   * stamp lets bridge.js draw the boot progress bar. */
+  const navTarget = (v) => (typeof v === 'string' && /^\/(?!\/)\S*$/.test(v) ? v : '/');
+  function navigateTo(path) {
+    const origin = L.origin || ('https://' + hostOf());
+    const url = origin + navTarget(path);
+    try { W.sessionStorage.setItem('arenakit.reloading', String(now())); } catch (_) { /* storage blocked */ }
+    try { if (typeof L.replace === 'function') { L.replace(url); return url; } } catch (_) { /* fall through */ }
+    try { L.href = url; } catch (_) { /* ignore */ }
+    return url;
   }
 
   /* Host-only vs Domain=.arena.ai: a restored cookie must use the SAME scope
@@ -204,27 +249,43 @@
     if (s.hasAuthCookie && !s.scope) s.scope = await detectScope(s.cookies);
     return s;
   }
+  /* restore{cookies, scope, expectSig, navigate}: swap the page's auth cookies
+   * for `cookies`. `previous` is the page's session right before the swap (the
+   * dock persists it for the account being left). When `expectSig` is given
+   * and the page's cookies no longer match it, nothing is touched and
+   * { stale: true, previous } comes back so the dock can save the newer
+   * tokens first and retry. `navigate` (true | "/path") makes the page leave
+   * for that path right after answering. */
   async function actRestore(args) {
     const list = Array.isArray(args && args.cookies)
       ? args.cookies.filter((c) => c && typeof c.name === 'string' && isAuthName(c.name) && validValue(c.value))
       : [];
     if (!list.length) throw new Error('没有可恢复的登录 Cookie');
+    const previous = snapshot();
+    if (args && args.expectSig && previous.sig !== args.expectSig) return { ok: true, stale: true, previous };
     let scope = (args && args.scope) || scopeCache();
     if (!scope) scope = (await detectScope()) || 'host';
-    const cleared = clearAuth();
+    const cleared = clearAuth(list);
     for (const c of list) writeCookie(c.name, c.value, scope);
     const after = authCookies();
     const missing = list.filter((c) => !after.some((a) => a.name === c.name && a.value === c.value));
     if (missing.length) throw new Error('写入 Cookie 失败: ' + missing.map((c) => c.name).join(', '));
+    const strangers = after.filter((a) => !list.some((c) => c.name === a.name));
+    if (strangers.length) throw new Error('无法清除旧的登录 Cookie: ' + strangers.map((c) => c.name).join(', '));
     lastSig = sigOf(after); // our own change — the dock already knows
-    return { ok: true, cleared, written: list.length, scope };
+    const res = { ok: true, cleared, written: list.length, scope, previous };
+    if (args && args.navigate) res.navigateTo = navTarget(args.navigate === true ? '/' : args.navigate);
+    return res;
   }
-  function actClear() {
+  function actClear(args) {
+    const previous = snapshot();
     const cleared = clearAuth();
     const remaining = authCookies();
     lastSig = sigOf(remaining);
     if (remaining.length) throw new Error('部分 Cookie 无法删除: ' + remaining.map((c) => c.name).join(', '));
-    return { ok: true, cleared };
+    const res = { ok: true, cleared, previous };
+    if (args && args.navigate) res.navigateTo = navTarget(args.navigate === true ? '/' : args.navigate);
+    return res;
   }
 
   // ── watcher: report every auth-cookie change to the dock ─────────────
@@ -487,7 +548,7 @@
   const ACTIONS = {
     snapshot: actSnapshot,
     restore: actRestore,
-    clear: () => actClear(),
+    clear: (args) => actClear(args),
     login: (args) => startLogin(args && args.creds ? args.creds : args),
     fill: (args) => {
       if (!login) throw new Error('登录助手未运行');
@@ -511,13 +572,16 @@
       res = { ok: false, error: String((e && e.message) || e) };
     }
     send('account-result', Object.assign({ reqId }, res));
+    // restore / clear with `navigate`: leave right away (after the answer has
+    // been handed to the bridge), before the site's auth client can react.
+    if (res.ok && res.data && res.data.navigateTo) navigateTo(res.data.navigateTo);
     return res;
   }
 
   W.ArenaAccount = {
     call, snapshot, startLogin, stopLogin,
     // exposed for tests
-    parseCookieHeader, groupChunks, decodeSession, identity, sigOf, isAuthName, detectScope,
+    parseCookieHeader, groupChunks, decodeSession, identity, sigOf, isAuthName, detectScope, navTarget,
   };
 
   // ── boot the watcher on arena pages ──────────────────────────────────

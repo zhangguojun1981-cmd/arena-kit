@@ -17,6 +17,15 @@ export function supabaseSession({ email = 'alice@example.com', id = 'user-aaaa',
     user: { id, email, app_metadata: { provider }, user_metadata: { full_name: name, avatar_url: 'https://img/' + id, email } },
   };
 }
+/* The site's guest state: a Supabase anonymous user (is_anonymous claim, no
+ * email, empty app_metadata) — same cookie names as a real login. */
+export function anonymousSession({ id = 'anon-0001', exp = 1_800_000_000, refresh = 'rt-anon' } = {}) {
+  return {
+    access_token: jwt({ sub: id, exp, role: 'authenticated', is_anonymous: true, app_metadata: {}, user_metadata: {} }),
+    token_type: 'bearer', expires_in: 3600, expires_at: exp, refresh_token: refresh,
+    user: { id, aud: 'authenticated', role: 'authenticated', email: '', app_metadata: {}, user_metadata: {}, identities: [], is_anonymous: true },
+  };
+}
 /* Chunk like @supabase/ssr: `base64-` + base64url(json) split every N chars into name.0 / name.1 … */
 export function chunked(name, session, size = 120) {
   const value = 'base64-' + b64url(session);
@@ -70,7 +79,14 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
   const invokes = [];
   const timers = { intervals: [], timeouts: [] };
   const elements = [];
-  const location = { hostname, pathname, href: 'https://' + hostname + pathname, origin: 'https://' + hostname };
+  const navigations = []; // location.replace / assign / reload calls (restore / clear with `navigate`)
+  const location = {
+    hostname, pathname, href: 'https://' + hostname + pathname, origin: 'https://' + hostname,
+    replace(url) { navigations.push({ how: 'replace', url }); },
+    assign(url) { navigations.push({ how: 'assign', url }); },
+    reload() { navigations.push({ how: 'reload', url: this.href }); },
+  };
+  const sessionStorage = (() => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })();
 
   const doc = {
     readyState: 'complete',
@@ -123,6 +139,7 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
     atob: (s) => Buffer.from(s, 'base64').toString('binary'), TextDecoder,
     Uint8Array, Uint32Array, DataView, JSON, Math, Date, Object, Array, String, Number, Error, Map, Set, Promise, RegExp, URL,
     localStorage: (() => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) }; })(),
+    sessionStorage,
     setTimeout: (fn, ms) => { timers.timeouts.push({ fn, ms }); return timers.timeouts.length; },
     clearTimeout() {},
     setInterval: (fn, ms) => { timers.intervals.push({ fn, ms }); return timers.intervals.length; },
@@ -143,7 +160,7 @@ export function fakeDom({ hostname = 'arena.ai', pathname = '/', jar = [] } = {}
   const flushTimeouts = () => { const list = timers.timeouts.splice(0); for (const t of list) t.fn(); };
   const tickIntervals = () => { for (const t of timers.intervals) if (t.fn) t.fn(); };
   const lastEvent = (name) => [...events].reverse().find((e) => e.name === name) || null;
-  return { sandbox, doc, cookies, events, invokes, mk, clearElements, flushTimeouts, tickIntervals, lastEvent, location, api: sandbox.ArenaAccount };
+  return { sandbox, doc, cookies, events, invokes, mk, clearElements, flushTimeouts, tickIntervals, lastEvent, location, navigations, sessionStorage, api: sandbox.ArenaAccount };
 }
 
 export const settle = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };

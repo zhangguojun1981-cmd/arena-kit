@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { plain } from './helpers.mjs';
-import { supabaseSession, chunked, fakeDom, settle } from './account-fixture.mjs';
+import { supabaseSession, anonymousSession, chunked, fakeDom, settle } from './account-fixture.mjs';
 import { createRpc } from '../src/lib/rpc.js';
 import { createAccountFlow } from '../src/lib/account-flow.js';
 
@@ -20,15 +20,20 @@ const DOMAIN = '.arena.ai';
 const cookiesOf = (page) => [...page.cookies.values()].map((c) => ({ name: c.name, value: c.value, domain: c.domain }));
 const sessionJar = (opts, extra = []) => chunked('arena-auth-prod-v1', supabaseSession(opts)).map((c) => ({ ...c, domain: DOMAIN })).concat(extra);
 const setSiteCookies = (page, opts) => { for (const c of chunked('arena-auth-prod-v1', supabaseSession(opts))) page.doc.cookie = `${c.name}=${c.value}; Path=/; Domain=${DOMAIN}`; };
+/* What the site does on a logged-out page: sign the visitor in anonymously. */
+const setGuestCookies = (page, id = 'anon-' + Math.random().toString(36).slice(2, 8)) => { for (const c of chunked('arena-auth-prod-v1', anonymousSession({ id }))) page.doc.cookie = `${c.name}=${c.value}; Path=/; Domain=${DOMAIN}`; };
 const refreshTokenOf = (acc) => JSON.parse(Buffer.from(acc.cookies.map((c) => c.value).join('').slice('base64-'.length), 'base64url').toString()).refresh_token;
 
 function device(jar = []) {
-  return { jar, store: new Map(), rust: { login: null, invokes: [] }, reloads: 0 };
+  return { jar, store: new Map(), rust: { login: null, invokes: [] }, reloads: 0, navigations: [] };
 }
 /* One page load: page (account.js on the device jar) + dock side (rpc + flow). */
 function boot(dev, { hostname = 'arena.ai', pathname = '/' } = {}) {
   const page = fakeDom({ hostname, pathname, jar: dev.jar });
-  const log = { status: [], loginStatus: [], toast: [], needLogin: [], saves: 0 };
+  const log = { status: [], loginStatus: [], toast: [], needLogin: [], navigating: [], saves: 0 };
+  // the page leaving on its own (restore / clear with `navigate`) = a reload
+  // of the device onto the new URL; the dock's reload() dep is the fallback
+  page.location.replace = (url) => { dev.reloads++; dev.navigations.push(url); dev.jar = cookiesOf(page); page.clearElements(); };
   let flow = null;
   const rpc = createRpc({ send: (action, argsJson, reqId) => { page.api.call(action, argsJson, reqId); }, timeoutMs: 2000 });
   // page → dock bridge (Rust relays these as page events in the app)
@@ -50,7 +55,8 @@ function boot(dev, { hostname = 'arena.ai', pathname = '/' } = {}) {
     call: (action, args, opts) => rpc.call(action, args, opts),
     loadStore: async () => (dev.store.has('accounts') ? JSON.parse(dev.store.get('accounts')) : null),
     saveStore: async (st) => { log.saves++; dev.store.set('accounts', JSON.stringify(st)); },
-    reload: async () => { dev.reloads++; dev.jar = cookiesOf(page); page.clearElements(); },
+    reload: async () => { dev.reloads++; dev.navigations.push('reload:' + page.location.pathname); dev.jar = cookiesOf(page); page.clearElements(); },
+    navigating: (url, source) => log.navigating.push(source + ':' + url),
     invoke,
     status: (t) => log.status.push(t),
     loginStatus: (t) => log.loginStatus.push(t),
@@ -96,12 +102,14 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   let app = await start(dev);
   const aliceId = app.flow.accounts.activeId;
 
-  // ── 添加另一个账号: current session kept, page cleared, reload ──
+  // ── 添加另一个账号: current session kept, page cleared, page leaves for the root ──
   const add = await app.flow.add();
   assert.equal(add.ok, true);
+  assert.equal(add.via, 'page');
   assert.equal(plain(app.page.api.snapshot()).hasAuthCookie, false, 'page auth cookies cleared');
   assert.ok(app.page.cookies.has('|cf_clearance'), 'unrelated cookies kept');
   assert.equal(dev.reloads, 1);
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
   assert.equal(stored(dev).pending.type, 'add', 'the pending add survives the reload in the store');
   assert.equal(stored(dev).list.find((a) => a.id === aliceId).cookies.length > 0, true, 'Alice\'s session is still saved');
   assert.ok(dev.rust.invokes.some((i) => i.cmd === 'login_clear'));
@@ -112,6 +120,16 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   assert.match(app.log.status.at(-1), /请在页面中登录另一个账号/);
   assert.equal(app.flow.accounts.activeId, null, 'a logged-out page has no current account');
   assert.ok(app.flow.find(aliceId), 'Alice is still in the list');
+
+  // ── the site signs the visitor in anonymously (guest cookies appear): NOT an account ──
+  setGuestCookies(app.page, 'anon-1');
+  app.page.tickIntervals();
+  await settle();
+  assert.equal(app.flow.accounts.list.length, 1, 'guest session did not become a record');
+  assert.equal(app.flow.accounts.pending.type, 'add', 'still waiting for a real login');
+  assert.equal(app.flow.accounts.activeId, null);
+  assert.equal(app.flow.snap.anonymous, true);
+  assert.match(app.log.status.at(-1), /游客状态不会被记录/);
 
   // ── the user logs in as Bob (the site writes the cookies) → watcher → added ──
   setSiteCookies(app.page, { email: 'bob@example.com', id: 'ub', name: 'Bob', refresh: 'rt-b1' });
@@ -133,13 +151,15 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   assert.equal(refreshTokenOf(app.flow.find(bob.id)), 'rt-b2', 'rotation picked up by the watcher and persisted');
   assert.equal(refreshTokenOf(stored(dev).list.find((a) => a.id === bob.id)), 'rt-b2');
 
-  // ── one-click switch back to Alice: cookie swap + reload ──
+  // ── one-click switch back to Alice: cookie swap + the page leaves for the site root ──
   const sw = await app.flow.switchTo(aliceId);
-  assert.deepEqual(sw, { ok: true, mode: 'cookies' });
+  assert.deepEqual(sw, { ok: true, mode: 'cookies', via: 'page' });
   const pageNow = plain(app.page.api.snapshot());
   assert.equal(pageNow.email, 'alice@example.com', 'the page jar now holds Alice\'s session');
   assert.ok(cookiesOf(app.page).filter((c) => c.name.startsWith('arena-auth')).every((c) => c.domain === DOMAIN), 'restored with the site\'s Domain scope');
   assert.equal(dev.reloads, 2);
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/', 'lands on the site root, not on Bob\'s conversation');
+  assert.deepEqual(app.log.navigating, ['switch:/'], 'dock showed the loading state instead of reloading again');
   assert.equal(stored(dev).pending.type, 'switch');
   assert.equal(stored(dev).pending.id, aliceId);
   assert.equal(refreshTokenOf(stored(dev).list.find((a) => a.id === bob.id)), 'rt-b2', 'Bob (the account we left) was snapshotted before the swap');
@@ -161,6 +181,57 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   assert.equal(app.flow.accounts.activeId, bob.id);
   assert.equal(refreshTokenOf(app.flow.active()), 'rt-b2');
   assert.match(app.log.toast.at(-1), /已切换到 Bob/);
+});
+
+/* The race that used to lose a session: the site rotates the CURRENT
+ * account's refresh token between the dock's snapshot and the cookie swap.
+ * The page refuses the stale swap (expectSig), the dock saves the newer
+ * tokens, retries — and the account we left keeps its live refresh token. */
+test('switch: a token rotation between snapshot and restore is caught (expectSig) — the account being left is saved with its newest token', async () => {
+  const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice', refresh: 'rt-a1' }));
+  const app = await start(dev);
+  const aliceId = app.flow.accounts.activeId;
+  await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', cookies: chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' })), login: { email: '', password: '', totp: '', auto: true } }]) });
+  // rotate Alice's token the moment the first restore arrives (before it runs)
+  const realCall = app.page.api.call;
+  let restores = 0;
+  app.page.api.call = (action, argsJson, reqId) => {
+    if (action === 'restore' && ++restores === 1) setSiteCookies(app.page, { email: 'alice@example.com', id: 'ua', name: 'Alice', refresh: 'rt-a2' });
+    return realCall(action, argsJson, reqId);
+  };
+  const r = await app.flow.switchTo('bob');
+  assert.deepEqual(r, { ok: true, mode: 'cookies', via: 'page' });
+  assert.equal(restores, 2, 'first restore refused as stale, second went through');
+  assert.equal(refreshTokenOf(stored(dev).list.find((a) => a.id === aliceId)), 'rt-a2', 'Alice saved with the rotated token, not the snapshot\'s');
+  assert.equal(plain(app.page.api.snapshot()).email, 'bob@example.com');
+  assert.equal(stored(dev).pending.type, 'switch');
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
+});
+
+/* Guest sessions from older builds were saved as accounts (a user id, no
+ * email). They are dropped on load, and a page that falls back to the guest
+ * state after a switch is judged 'lost' (not 'other account'). */
+test('guest leftovers are purged from the store; a switch that lands in the guest state is reported as lost', async () => {
+  const dev = device(sessionJar({ email: 'alice@example.com', id: 'ua', name: 'Alice' }));
+  dev.store.set('accounts', JSON.stringify({ list: [
+    { id: 'g1', userId: 'anon-111', email: '', cookies: [{ name: 'arena-auth-prod-v1.0', value: 'base64-x' }], login: { email: '', password: '', totp: '', auto: true } },
+    { id: 'g2', userId: 'anon-222', cookies: [], login: {} },
+    { id: 'bob', userId: 'ub', email: 'bob@example.com', cookies: chunked('arena-auth-prod-v1', supabaseSession({ email: 'bob@example.com', id: 'ub', refresh: 'rt-b' })), login: { email: '', password: '', totp: '', auto: true } },
+  ], activeId: 'g1', pending: null }));
+  let app = await start(dev);
+  assert.deepEqual(app.flow.accounts.list.map((a) => a.id).filter((id) => id.startsWith('g')), [], 'guest records gone');
+  assert.equal(app.flow.accounts.list.length, 2, 'Bob + Alice (auto-recorded)');
+  // switch to Bob; the server rejects his token → the site falls back to a guest session
+  const sw = await app.flow.switchTo('bob');
+  assert.equal(sw.ok, true);
+  dev.jar = dev.jar.filter((c) => !c.name.startsWith('arena-auth')).concat(chunked('arena-auth-prod-v1', anonymousSession({ id: 'anon-333' })).map((c) => ({ ...c, domain: DOMAIN })));
+  app = await start(dev);
+  assert.equal(app.flow.accounts.pending, null);
+  assert.equal(app.flow.accounts.list.length, 2, 'no guest record created');
+  assert.equal(app.flow.accounts.activeId, null);
+  assert.ok(app.log.status.some((t) => /bob@example.com 的登录状态已失效（页面回到了游客状态）/.test(t)), app.log.status.join(' | '));
+  assert.equal(await app.flow.saveCurrent(), null);
+  assert.match(app.log.status.at(-1), /游客状态/);
 });
 
 test('switching to an account whose saved session is dead falls back to the login helper (Rust keeps the credentials for accounts.google.com)', async () => {
@@ -244,13 +315,15 @@ test('targets without a session: credentials → clear + reload into the helper;
   assert.equal(app.flow.accounts.pending, null);
   assert.equal(plain(app.page.api.snapshot()).email, 'alice@example.com');
   assert.equal(dev.reloads, 0);
-  // Dave: credentials only, page still logged in as Alice → login_set, clear, reload
+  // Dave: credentials only, page still logged in as Alice → login_set, clear, page leaves for the root
   const r = await app.flow.switchTo('dave');
   assert.deepEqual(r, { ok: true, mode: 'login' });
   assert.equal(dev.rust.login.email, 'dave@example.com');
   assert.equal(dev.rust.login.provider, 'email', 'no google marker → email flow');
   assert.equal(plain(app.page.api.snapshot()).hasAuthCookie, false);
   assert.equal(dev.reloads, 1);
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
+  assert.deepEqual(app.log.navigating, ['login:/']);
   assert.equal(stored(dev).pending.type, 'login');
   assert.equal(stored(dev).list.find((a) => a.id === app.flow.accounts.activeId).cookies.length > 0, true, 'Alice stays saved');
   // startLogin on an account without credentials asks for them

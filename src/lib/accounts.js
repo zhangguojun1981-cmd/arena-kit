@@ -10,10 +10,17 @@
  * every switch needs — the embedded dock on Android dies with the page).
  *
  * Snapshots come from injected/account.js (`account` page event or the
- * `snapshot` RPC): { loggedIn, userId, email, name, avatar, provider,
- * expiresAt, cookies, sig, at }. The active account's cookies are refreshed
- * on every snapshot — Supabase rotates refresh tokens, so an old copy would be
- * dead within the hour. */
+ * `snapshot` RPC): { loggedIn, anonymous, userId, email, name, avatar,
+ * provider, expiresAt, cookies, sig, at }. The active account's cookies are
+ * refreshed on every snapshot — Supabase rotates refresh tokens, so an old
+ * copy would be dead within the hour.
+ *
+ * Only a real login becomes a record: arena signs visitors in anonymously
+ * (Supabase anonymous users — a cookie, a user id, no email), and those guest
+ * sessions must never pile up in the list. A snapshot counts as logged in
+ * only when the page says so AND it carries an email AND it is not anonymous;
+ * records without any email / login email / label (guest leftovers from older
+ * builds) are dropped on load. */
 
 export const PENDING_TTL_MS = 5 * 60 * 1000;
 
@@ -58,8 +65,15 @@ export function normalizeAccount(a) {
       auto: login.auto !== false,
     },
   };
-  if (!acc.userId && !acc.email && !acc.login.email && !acc.label) return null;
+  // No email, no login email, no label → nothing a person could recognise or
+  // use; this is what an anonymous (guest) session left behind. Drop it.
+  if (!acc.email && !acc.login.email && !acc.label) return null;
   return acc;
+}
+
+/* A snapshot describes a real, saveable login (not the site's guest session). */
+export function isRealLogin(snap) {
+  return !!(snap && snap.loggedIn && !snap.anonymous && emailKey(snap.email) && Array.isArray(snap.cookies) && snap.cookies.length);
 }
 
 /* Display name: label → name → email → login email. */
@@ -109,11 +123,12 @@ export function findForSnapshot(state, snap) {
 }
 
 /* Merge a snapshot of the page's CURRENT session into the store. Returns
- * { state, account, created, changed }. A logged-out snapshot leaves the
- * records alone and only clears activeId (the page holds no session). */
+ * { state, account, created, changed }. A logged-out (or anonymous / guest)
+ * snapshot leaves the records alone and only clears activeId (the page holds
+ * no session worth keeping). */
 export function applySnapshot(state, snap, now = Date.now()) {
   const st = normalizeAccounts(state);
-  if (!snap || !snap.loggedIn || !Array.isArray(snap.cookies) || !snap.cookies.length) {
+  if (!isRealLogin(snap)) {
     const changed = st.activeId !== null;
     return { state: { ...st, activeId: null }, account: null, created: false, changed };
   }
@@ -205,16 +220,17 @@ export function resolvePending(state, snap, now = Date.now()) {
   const p = st.pending;
   if (!p) return { state: st, outcome: null };
   if (now - (Number(p.at) || 0) > PENDING_TTL_MS) return { state: { ...st, pending: null }, outcome: { status: 'expired', message: '上次的账号操作已超时' } };
-  const loggedIn = !!(snap && snap.loggedIn);
+  const loggedIn = isRealLogin(snap);
+  const guest = !loggedIn && !!(snap && snap.anonymous);
   const target = p.id ? st.list.find((a) => a.id === p.id) : null;
   const same = loggedIn && target && ((target.userId && target.userId === str(snap.userId)) || (!target.userId && target.email && target.email === emailKey(snap.email)) || (!target.userId && !target.email && emailKey(target.login.email) === emailKey(snap.email)));
   if (p.type === 'switch') {
     if (same) return { state: { ...st, pending: null }, outcome: { status: 'switched', account: target, message: '已切换到 ' + accountLabel(target) } };
     if (loggedIn) return { state: { ...st, pending: null }, outcome: { status: 'other', message: '页面登录的是另一个账号（' + (snap.email || snap.userId) + '）' } };
-    return { state: { ...st, pending: null }, outcome: { status: 'lost', account: target, message: (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效，需要重新登录' } };
+    return { state: { ...st, pending: null }, outcome: { status: 'lost', account: target, message: (target ? accountLabel(target) : '该账号') + ' 的登录状态已失效' + (guest ? '（页面回到了游客状态）' : '') + '，需要重新登录' } };
   }
   if (p.type === 'add') {
-    if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' } };
+    if (!loggedIn) return { state: st, outcome: { status: 'waiting', message: '请在页面中登录另一个账号；登录完成后会自动保存' + (guest ? '（游客状态不会被记录）' : '') } };
     return { state: { ...st, pending: null }, outcome: { status: 'added', message: '已保存账号 ' + (snap.email || snap.userId) } };
   }
   if (p.type === 'login') {

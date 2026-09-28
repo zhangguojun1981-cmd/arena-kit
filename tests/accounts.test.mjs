@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeAccounts, normalizeAccount, applySnapshot, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, loginStageText, sessionAgeText, PENDING_TTL_MS } from '../src/lib/accounts.js';
+import { normalizeAccounts, normalizeAccount, applySnapshot, isRealLogin, upsertLogin, removeAccount, planSwitch, setPending, resolvePending, credsFor, accountLabel, initialOf, hasSession, hasLogin, loginStageText, sessionAgeText, PENDING_TTL_MS } from '../src/lib/accounts.js';
 
 const snap = (over = {}) => ({
   loggedIn: true, userId: 'ua', email: 'Alice@Example.com', name: 'Alice', avatar: 'https://img/a', provider: 'google', expiresAt: 1_800_000_000_000,
@@ -19,6 +19,28 @@ test('normalizeAccounts tolerates junk and drops empty records', () => {
   assert.deepEqual(st.pending, { type: 'switch', id: 'a' });
   assert.equal(normalizeAccount({ login: { totp: 'X' } }), null, 'no identity, no email, no label → dropped');
   assert.ok(normalizeAccount({ label: '备用' }));
+  // guest leftovers (anonymous sessions saved by older builds): a user id, cookies, no email → dropped
+  assert.equal(normalizeAccount({ id: 'g', userId: 'anon-1', cookies: [{ name: 'arena-auth-prod-v1.0', value: 'base64-x' }] }), null);
+  assert.ok(normalizeAccount({ id: 'r', userId: 'ua', email: 'a@b.c' }), 'a real identity stays');
+  assert.ok(normalizeAccount({ id: 'm', userId: '', login: { email: 'me@b.c' } }), 'a manual record with a login email stays');
+});
+
+test('isRealLogin / applySnapshot ignore the site\'s guest session and email-less sessions', () => {
+  assert.equal(isRealLogin(snap()), true);
+  assert.equal(isRealLogin(snap({ anonymous: true, email: '', userId: 'anon-1' })), false);
+  assert.equal(isRealLogin(snap({ anonymous: true })), false, 'anonymous flag wins even with an email');
+  assert.equal(isRealLogin(snap({ email: '' })), false, 'no email → nothing to show or match by');
+  assert.equal(isRealLogin(snap({ loggedIn: false })), false);
+  assert.equal(isRealLogin(snap({ cookies: [] })), false);
+  const a = applySnapshot(null, snap(), 1000);
+  const g = applySnapshot(a.state, snap({ anonymous: true, email: '', userId: 'anon-1', sig: 'g' }), 2000);
+  assert.equal(g.created, false);
+  assert.equal(g.account, null);
+  assert.equal(g.state.list.length, 1, 'no guest record');
+  assert.equal(g.state.activeId, null, 'guest page → no current account');
+  const e = applySnapshot(a.state, snap({ email: '', userId: 'ux', sig: 'e' }), 3000);
+  assert.equal(e.created, false);
+  assert.equal(e.state.list.length, 1);
 });
 
 test('applySnapshot creates a record on first sight, refreshes the same identity in place (token rotation), and sets activeId', () => {
@@ -110,6 +132,10 @@ test('resolvePending interprets the post-reload snapshot for switch / add / logi
   r = resolvePending(st, { loggedIn: false }, 200);
   assert.equal(r.outcome.status, 'lost');
   assert.equal(r.outcome.account.id, a.account.id);
+  // …also when the site fell back to its guest session (not 'other')
+  r = resolvePending(st, snap({ anonymous: true, email: '', userId: 'anon-9' }), 200);
+  assert.equal(r.outcome.status, 'lost');
+  assert.match(r.outcome.message, /游客状态/);
   // someone else
   r = resolvePending(st, snap({ userId: 'uz', email: 'z@z.z' }), 200);
   assert.equal(r.outcome.status, 'other');
