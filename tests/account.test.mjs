@@ -69,7 +69,10 @@ test('chunks are joined by index (10 sorts after 9), legacy URL-encoded JSON and
   const junkDom = fakeDom({ jar: [{ name: 'arena-auth-prod-v1.0', value: 'base64-!!!' }] });
   const s = plain(junkDom.api.snapshot());
   assert.equal(s.loggedIn, false); assert.equal(s.hasAuthCookie, true);
-  assert.equal(api.isAuthName('arena-auth-prod-v1-code-verifier'), true);
+  // the PKCE verifier of an OAuth round trip is not part of a session
+  assert.equal(api.isAuthName('arena-auth-prod-v1-code-verifier'), false);
+  assert.equal(api.isAuthName('sb-abc-auth-token-code-verifier'), false);
+  assert.equal(api.isAuthName('arena-auth-prod-v1.1'), true);
   assert.equal(api.isAuthName('_ga'), false);
 });
 
@@ -365,62 +368,6 @@ test('login helper fills Google identifier → password → TOTP (code from __AK
   assert.equal(d.events.length, 0);
 });
 
-test('login helper on arena.ai: opens the modal, picks Google for google accounts, and finishes when the session cookie appears', async () => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
-  const loginBtn = d.mk('button', {}, 'Login');
-  const r = plain(await d.api.call('login', JSON.stringify({ creds: { accountId: 'acc1', email: 'alice@example.com', provider: 'google' } }), 'l1'));
-  assert.equal(r.ok, true);
-  d.flushTimeouts();
-  assert.equal(loginBtn.clicks, 1, 'opened the login modal');
-  assert.equal(d.lastEvent('login').payload.stage, 'arena-open');
-  // the modal renders
-  const google = d.mk('button', {}, 'Continue with Google');
-  d.mk('input', { type: 'email', placeholder: 'Your email' });
-  d.tickIntervals();
-  assert.equal(google.clicks, 1, 'google provider → Continue with Google');
-  assert.equal(d.lastEvent('login').payload.stage, 'arena-google');
-  // …OAuth round trip happened, the session cookie is back → done + login_clear
-  for (const c of chunked('arena-auth-prod-v1', supabaseSession({ email: 'alice@example.com', id: 'ua' }))) d.doc.cookie = `${c.name}=${c.value}; Path=/`;
-  d.tickIntervals();
-  assert.equal(d.lastEvent('login').payload.stage, 'done');
-  assert.deepEqual(d.invokes.map((i) => i.cmd), ['login_clear']);
-  assert.equal(plain(await d.api.call('status', '{}', 's')).data.running, false);
-});
-
-test('login helper on arena.ai: email flow fills the address, presses "Continue with email", then asks the user for the mailed code', async () => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
-  const emailIn = d.mk('input', { type: 'email', placeholder: 'Your email' });
-  const cont = d.mk('button', {}, 'Continue with email');
-  d.mk('button', {}, 'Continue with Google');
-  const r = plain(d.api.startLogin({ email: 'bob@example.com', password: 'secret', provider: 'email' }));
-  assert.equal(r.started, true);
-  d.flushTimeouts(); // step → fill
-  assert.equal(emailIn.value, 'bob@example.com');
-  d.flushTimeouts(); // submit
-  assert.equal(cont.clicks, 1);
-  assert.equal(d.doc.querySelectorAll('button')[1].clicks, 0, 'did not touch the Google button');
-  // code step
-  d.clearElements();
-  const otp = d.mk('input', { autocomplete: 'one-time-code', inputmode: 'numeric' });
-  d.tickIntervals();
-  assert.equal(d.lastEvent('login').payload.stage, 'need-code');
-  // dock relays the code typed by the user
-  const f = plain(await d.api.call('fill', JSON.stringify({ code: '123456' }), 'f'));
-  assert.equal(f.ok, true);
-  assert.equal(otp.value, '123456');
-  // password step
-  d.clearElements();
-  const pwd = d.mk('input', { type: 'password' });
-  const submit = d.mk('button', {}, 'Log in');
-  d.tickIntervals(); d.flushTimeouts();
-  assert.equal(pwd.value, 'secret');
-  assert.equal(submit.clicks, 1);
-  // stop
-  plain(await d.api.call('stop', '{}', 'x'));
-  assert.equal(d.lastEvent('login').payload.stage, 'stopped');
-  assert.throws(() => d.api.startLogin({}), /登录信息为空/);
-});
-
 /* Frozen clock for the helper's timers (Date is shared with the sandbox). */
 function withClock(start, fn) {
   const real = Date.now;
@@ -428,37 +375,183 @@ function withClock(start, fn) {
   Date.now = () => t;
   try { return fn((ms) => { t += ms; }); } finally { Date.now = real; }
 }
+const guestJar = () => chunked('arena-auth-prod-v1', anonymousSession());
+const userJar = (email, id) => chunked('arena-auth-prod-v1', supabaseSession({ email, id }));
+const GOOGLE_URL = (link) => `https://arena.ai/nextjs-api/sign-in/google?shouldLinkHistory=${link}&marketingConsent=false&returnTo=%2F`;
 
-test('login helper on arena.ai: opens the login dialog once (+1 retry after 12 s), never every 5 s', () => withClock(1_000_000, (advance) => {
+test('snapshot classifies the page: logged-in / guest / none / broken, and reads __arena_auth_error', () => {
+  assert.equal(plain(fakeDom({ jar: userJar('a@x.io', 'ua') }).api.snapshot()).state, 'logged-in');
+  assert.equal(plain(fakeDom({ jar: guestJar() }).api.snapshot()).state, 'guest');
+  assert.equal(plain(fakeDom().api.snapshot()).state, 'none');
+  assert.equal(plain(fakeDom({ jar: [{ name: 'arena-auth-prod-v1', value: 'base64-!!!' }] }).api.snapshot()).state, 'broken');
+  const err = Buffer.from(JSON.stringify({ message: 'no_user_data' })).toString('base64');
+  const s = plain(fakeDom({ jar: [...guestJar(), { name: '__arena_auth_error', value: 'base64-' + err }, { name: 'arena-auth-prod-v1-code-verifier', value: 'base64-xyz' }] }).api.snapshot());
+  assert.equal(s.authError, 'no_user_data');
+  assert.equal(s.state, 'guest');
+  assert.ok(!s.cookies.some((c) => /verifier|error/.test(c.name)), 'verifier / error cookies never saved with an account');
+});
+
+test('login helper, arena LOGGED OUT (guest) + Google account: navigates straight to /nextjs-api/sign-in/google — no dialog, no clicks', () => withClock(5_000_000, () => {
+  const session = new Map();
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar(), session });
+  const loginBtn = d.mk('button', {}, 'Log In');
+  const google = d.mk('button', {}, 'Continue with Google');
+  d.api.startLogin({ accountId: 'acc1', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
+  d.flushTimeouts(); d.tickIntervals(); d.tickIntervals();
+  assert.deepEqual(d.navigations, [{ how: 'assign', url: GOOGLE_URL(true) }], 'one full-page navigation (guest history linked)');
+  assert.equal(loginBtn.clicks + google.clicks, 0, 'the dialog is never touched');
+  assert.equal(d.lastEvent('login').payload.stage, 'arena-google');
+  assert.equal(JSON.parse(session.get('arenakit.login.try')).n, 1, 'round trip stamped');
+}));
+
+test('login helper, arena with NO session cookie yet: waits up to 6 s for the guest session, then goes without linking history', () => withClock(6_000_000, (advance) => {
   const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
-  const loginBtn = d.mk('button', {}, 'Login');
-  d.api.startLogin({ accountId: 'a', email: 'alice@example.com', provider: 'google', startedAt: Date.now() });
+  d.api.startLogin({ accountId: 'acc1', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
+  d.flushTimeouts(); d.tickIntervals();
+  assert.equal(d.navigations.length, 0);
+  assert.equal(d.lastEvent('login').payload.stage, 'arena-waiting');
+  advance(6500); d.tickIntervals();
+  assert.deepEqual(d.navigations, [{ how: 'assign', url: GOOGLE_URL(false) }]);
+}));
+
+test('login helper, back on arena after the Google round trip: logged in → done; error cookie / still logged out → reported once, never looped', () => withClock(7_000_000, () => {
+  const startedAt = Date.now();
+  const creds = { accountId: 'acc1', email: 'alice@gmail.com', provider: 'google', startedAt };
+  const tripped = () => new Map([['arenakit.login.try', JSON.stringify({ id: String(startedAt), n: 1, at: Date.now(), method: 'google' })]]);
+  // success: the callback wrote Alice's session
+  const ok = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('alice@gmail.com', 'ua'), session: tripped() });
+  ok.api.startLogin(creds); ok.flushTimeouts();
+  assert.equal(ok.lastEvent('login').payload.stage, 'done');
+  assert.deepEqual(ok.invokes.map((i) => i.cmd), ['login_clear']);
+  assert.equal(ok.navigations.length, 0);
+  // failure: __arena_auth_error from the callback
+  const err = Buffer.from(JSON.stringify({ message: 'no_user_data' })).toString('base64');
+  const bad = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: [...guestJar(), { name: '__arena_auth_error', value: 'base64-' + err }], session: tripped() });
+  bad.api.startLogin(creds); bad.flushTimeouts();
+  const e = bad.lastEvent('login').payload;
+  assert.equal(e.stage, 'error'); assert.match(e.error, /Arena 登录失败：no_user_data/);
+  assert.equal(bad.navigations.length, 0, 'no second attempt');
+  assert.deepEqual(bad.invokes.map((i) => i.cmd), ['login_clear'], 'Rust forgets the creds → no restart on the next page load');
+  // cancelled on Google (back button): still a guest, no error cookie
+  const back = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar(), session: tripped() });
+  back.api.startLogin(creds); back.flushTimeouts(); back.tickIntervals();
+  assert.match(back.lastEvent('login').payload.error, /仍未登录/);
+  assert.equal(back.navigations.length, 0);
+}));
+
+test('login helper, arena LOGGED IN: never touches the page — done for the wanted account, wrong-account for another', () => {
+  const same = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('Alice@Gmail.com', 'ua') });
+  const btn = same.mk('button', {}, 'Log In');
+  same.api.startLogin({ accountId: 'a', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
+  same.flushTimeouts();
+  assert.equal(same.lastEvent('login').payload.stage, 'done');
+  assert.equal(btn.clicks, 0); assert.equal(same.navigations.length, 0);
+  const other = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: userJar('bob@gmail.com', 'ub') });
+  other.api.startLogin({ accountId: 'a', email: 'alice@gmail.com', provider: 'google', startedAt: Date.now() });
+  other.flushTimeouts();
+  const p = other.lastEvent('login').payload;
+  assert.equal(p.stage, 'wrong-account'); assert.equal(p.email, 'bob@gmail.com');
+  assert.equal(other.navigations.length, 0, 'no sign-in on top of another logged-in account');
+});
+
+test('login helper, email + password account: POST /nextjs-api/sign-in/email, reload on success, error text on failure, dialog when the endpoint is gone', async () => {
+  const creds = { accountId: 'b', email: 'bob@example.com', password: 'secret', provider: 'email', startedAt: Date.now() };
+  const run = async (reply) => {
+    const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
+    const calls = [];
+    d.sandbox.fetch = async (url, init) => { calls.push({ url, init }); return reply; };
+    d.api.startLogin(creds); d.flushTimeouts();
+    await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+    return { d, calls };
+  };
+  const okRun = await run({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  assert.equal(okRun.calls[0].url, '/nextjs-api/sign-in/email');
+  assert.equal(okRun.calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(okRun.calls[0].init.body), { email: 'bob@example.com', password: 'secret', shouldLinkHistory: true });
+  assert.deepEqual(okRun.d.navigations.map((n) => n.url), ['https://arena.ai/'], 'reload into the new session');
+  const badRun = await run({ ok: false, status: 400, json: async () => ({ error: 'Invalid email or password' }) });
+  assert.match(badRun.d.lastEvent('login').payload.error, /Invalid email or password/);
+  assert.equal(badRun.d.navigations.length, 0);
+  const goneRun = await run({ ok: false, status: 404, json: async () => { throw new Error('html'); } });
+  assert.equal(goneRun.d.lastEvent('login').payload.stage, 'arena-dialog');
+  const emailIn = goneRun.d.mk('input', { type: 'email', name: 'email' });
+  goneRun.d.tickIntervals();
+  assert.equal(emailIn.value, 'bob@example.com', 'dialog fallback fills the address');
+});
+
+test('login helper, email account without password (mailed code): dialog once (+1 retry after 12 s), fill address, ask for the code', () => withClock(1_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
+  const loginBtn = d.mk('button', {}, 'Log In');
+  d.api.startLogin({ accountId: 'a', email: 'bob@example.com', provider: 'email', startedAt: Date.now() });
   d.flushTimeouts();
   assert.equal(loginBtn.clicks, 1);
   for (let i = 0; i < 10; i++) { advance(1000); d.tickIntervals(); }
-  assert.equal(loginBtn.clicks, 1, 'no re-click inside 12 s (used to toggle the dialog shut every 5 s)');
+  assert.equal(loginBtn.clicks, 1, 'no re-click inside 12 s');
   advance(3000); d.tickIntervals();
   assert.equal(loginBtn.clicks, 2, 'one retry when no dialog showed up');
   for (let i = 0; i < 30; i++) { advance(1000); d.tickIntervals(); }
   assert.equal(loginBtn.clicks, 2, 'and never again');
-  assert.equal(d.lastEvent('login').payload.stage, 'arena-waiting');
+  // the dialog renders: email → Continue with email → code
+  const emailIn = d.mk('input', { type: 'email', name: 'email' });
+  const cont = d.mk('button', {}, 'Continue with email');
+  d.tickIntervals(); d.flushTimeouts();
+  assert.equal(emailIn.value, 'bob@example.com');
+  assert.equal(cont.clicks, 1);
+  d.clearElements();
+  d.mk('input', { autocomplete: 'one-time-code', inputmode: 'numeric' });
+  d.tickIntervals();
+  assert.equal(d.lastEvent('login').payload.stage, 'need-code');
+  assert.equal(d.navigations.length, 0);
 }));
 
-test('login helper yields to the user: a real tap pauses all automatic clicks for 10 s (no double OAuth start)', () => withClock(2_000_000, (advance) => {
-  const d = fakeDom({ hostname: 'arena.ai', pathname: '/' });
-  const google = d.mk('button', {}, 'Continue with Google');
+test('login helper yields to the user: a real tap pauses it for 10 s (no double sign-in start)', () => withClock(2_000_000, (advance) => {
+  const d = fakeDom({ hostname: 'arena.ai', pathname: '/', jar: guestJar() });
   d.api.startLogin({ accountId: 'a', email: 'alice@example.com', provider: 'google', startedAt: Date.now() });
-  // the user taps (e.g. the Google button themselves) before the helper's first step
-  d.userEvent('pointerdown', { target: { closest: () => google } });
+  d.userEvent('pointerdown', { target: { closest: () => ({}) } });
   d.flushTimeouts(); d.tickIntervals();
-  assert.equal(google.clicks, 0, 'helper did not click on top of the user');
+  assert.equal(d.navigations.length, 0, 'helper did not start a second sign-in on top of the user');
   assert.equal(d.lastEvent('login').payload.stage, 'user-active');
-  assert.equal(d.api.userActive(), true);
+  // helper-made (untrusted) events never count as the user
   advance(10_500);
+  d.userEvent('pointerdown', { isTrusted: false, target: { closest: () => ({}) } });
   d.tickIntervals();
-  assert.equal(google.clicks, 1, 'resumes after the pause');
-  assert.equal(d.lastEvent('login').payload.stage, 'arena-google');
+  assert.equal(d.navigations.length, 1, 'resumes after the pause');
 }));
+
+test('Google side, signed in to Google: account chooser → the target row; not listed → "Use another account"; SMS / backup / phone prompt hand over', () => {
+  const creds = { accountId: 'a', email: 'alice@gmail.com', password: 'pw', provider: 'google' };
+  const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
+  d.mk('div', { 'data-identifier': 'bob@gmail.com' }, 'Bob');
+  const alice = d.mk('div', { 'data-identifier': 'Alice@gmail.com' }, 'Alice');
+  d.sandbox.__AK_LOGIN_APPLY__(creds); d.flushTimeouts(); d.tickIntervals();
+  assert.equal(alice.clicks, 1, 'target row picked once');
+  const d2 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
+  const bob = d2.mk('div', { 'data-identifier': 'bob@gmail.com' }, 'Bob');
+  const another = d2.mk('li', { role: 'link' }, 'Use another account');
+  d2.sandbox.__AK_LOGIN_APPLY__(creds); d2.flushTimeouts();
+  assert.equal(bob.clicks, 0, 'never picks someone else');
+  assert.equal(another.clicks, 1);
+  // SMS code: waits for the code from the dock, then fills #idvPin (not the TOTP)
+  const d3 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/ipp' });
+  const pin = d3.mk('input', { id: 'idvPin', name: 'Pin' });
+  d3.sandbox.__AK_LOGIN_APPLY__({ ...creds, totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' }); d3.flushTimeouts();
+  assert.equal(pin.value, '', 'an SMS pin never gets the TOTP code');
+  d3.api.call('fill', JSON.stringify({ code: '445566' }), 'f'); d3.flushTimeouts();
+  assert.equal(pin.value, '445566');
+  // backup-code page without a TOTP secret, and a phone prompt → the user
+  const d4 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/bc' });
+  d4.mk('input', { id: 'backupCodePinInput' });
+  let stage = '';
+  d4.sandbox.console = { debug: (_t, p) => { stage = p.stage; }, log() {}, warn() {}, error() {} };
+  d4.sandbox.__AK_LOGIN_APPLY__(creds); d4.flushTimeouts();
+  assert.equal(stage, 'need-backup');
+  // method chooser with data-challengetype: Authenticator (6) for a TOTP account
+  const d5 = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/challenge/selection' });
+  d5.mk('div', { 'data-challengetype': '9' }, 'Get a text message');
+  const auth = d5.mk('div', { 'data-challengetype': '6' }, 'Get a code');
+  d5.sandbox.__AK_LOGIN_APPLY__({ ...creds, totp: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' }); d5.flushTimeouts();
+  assert.equal(auth.clicks, 1);
+});
 
 test('Google sign-in rescue: same URL 25 s after a tap on an account row → 重试 / 返回 Arena bar; typing clears it', () => withClock(3_000_000, (advance) => {
   const d = fakeDom({ hostname: 'accounts.google.com', pathname: '/v3/signin/accountchooser' });
