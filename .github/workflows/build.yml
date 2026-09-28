@@ -1,8 +1,12 @@
 name: build
 
+# Tests run on every branch push; the dmg/apk pipeline (and the release)
+# only runs for a build-* tag push or a manual dispatch — releases are
+# tag-driven, not push-driven.
 on:
   push:
     branches: [main, "arena/**"]
+    tags: ["build-*"]
   workflow_dispatch:
 
 # The release job publishes the raw .dmg / .apk as GitHub Release assets
@@ -51,8 +55,10 @@ jobs:
   # ArenaKit_<version>_aarch64.dmg / ArenaKit_<version>_x64.dmg. The artifact
   # is only the hand-over to the release job below — download the .dmg from
   # the Release, not from here.
+  # Builds only for a tag push / manual dispatch; branch pushes run tests only.
   macos-dmg:
     needs: [rust-test, node-test]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -94,8 +100,10 @@ jobs:
   # release keystore). gen/android is not committed; `tauri android init`
   # regenerates it here. The dock is embedded in the page on mobile
   # (src/embed/dock-embedded.gen.js, checked above).
+  # Builds only for a tag push / manual dispatch (same gate as macos-dmg).
   android-apk:
     needs: [rust-test, node-test]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,11 +178,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Publish the raw files: one prerelease per build (tag build-<run number>),
-  # assets = the .dmg and the .apk themselves, no zip.
+  # Publish the raw files: one prerelease per build. Triggered by a manually
+  # pushed build-* tag (that tag becomes the release) or a manual dispatch
+  # (a build-<run number> tag is created for it).
   release:
     needs: [macos-dmg, android-apk]
-    if: always() && (needs.macos-dmg.result == 'success' || needs.android-apk.result == 'success')
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
+      (needs.macos-dmg.result == 'success' || needs.android-apk.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -193,18 +205,33 @@ jobs:
           APK_OK: ${{ needs.android-apk.result }}
         run: |
           ls -la dist
-          tag="build-${RUN}"
-          notes="自动构建 #${RUN} · 分支 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。macOS 有两个 dmg：Apple 芯片（M 系列）用 *_aarch64.dmg，Intel 芯片用 *_x64.dmg。Android 为 arm64 release 包，用仓库内固定的调试密钥签名（每次构建签名一致，可覆盖安装）；macOS dmg 未做 Apple 签名/公证，首次打开若提示已损坏请执行 xattr -cr /Applications/ArenaKit.app。"
+          # tag push → release on THAT tag; dispatch → mint build-<run>.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="build-${RUN}"
+          fi
+          # Title follows the tag (build-45 → "build #45"), not the run number.
+          if [[ "$tag" =~ ^build-([0-9]+)$ ]]; then
+            title="ArenaKit build #${BASH_REMATCH[1]}"
+          else
+            title="ArenaKit ${tag}"
+          fi
+          notes="自动构建 ${tag} · 触发 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。macOS 有两个 dmg：Apple 芯片（M 系列）用 *_aarch64.dmg，Intel 芯片用 *_x64.dmg。Android 为 arm64 release 包，用仓库内固定的调试密钥签名（每次构建签名一致，可覆盖安装）；macOS dmg 未做 Apple 签名/公证，首次打开若提示已损坏请执行 xattr -cr /Applications/ArenaKit.app。"
           gh release create "$tag" dist/* \
             --repo "$REPO" --target "$SHA" --prerelease \
-            --title "ArenaKit build #${RUN}" --notes "$notes"
+            --title "$title" --notes "$notes"
           url="https://github.com/${REPO}/releases/tag/${tag}"
           echo "release=$url" >> "$GITHUB_OUTPUT"
-          # Keep only the newest build-* prerelease (this one); every push makes one.
+          # Keep only the release just published: delete every other build-*
+          # prerelease (a hand-pushed tag can carry a lower number than an
+          # earlier dispatch build, so number-sorting is not enough).
           gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
             --jq '.[] | select(.isPrerelease and (.tagName|startswith("build-"))) | .tagName' \
-            | sort -t- -k2,2nr | tail -n +2 \
-            | while read -r old; do gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true; done
+            | while read -r old; do
+                [ -n "$old" ] && [ "$old" != "$tag" ] || continue
+                gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true
+              done
           {
             echo "## 构建产物（直接下载，不是 zip）"
             echo
