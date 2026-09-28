@@ -26,7 +26,7 @@ const isTimeout = (e) => /超时|timeout/i.test(errText(e));
 /* Where a switch / add lands: the site root. The URL we are on belongs to the
  * account we are leaving (its conversation) — the new account cannot open it,
  * and a failed load there is what used to end in a logged-out page. */
-export const HOME_PATH = '/';
+export const HOME_PATH = '/agent'; // 0.4.8: land on the Agent Mode composer
 /* After a switch was confirmed by the first snapshot, the site may still
  * reject the restored refresh token a few seconds later (its middleware /
  * auth client refreshes on load; a dead token family ends in a sign-out and

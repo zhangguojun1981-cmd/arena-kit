@@ -770,7 +770,7 @@ pub fn run() {
                 let _arena = window.add_child(
                     tauri::webview::WebviewBuilder::new(
                         "arena",
-                        WebviewUrl::External("https://arena.ai".parse().unwrap()),
+                        WebviewUrl::External("https://arena.ai/agent".parse().unwrap()),
                     )
                     .initialization_script(&init)
                     .user_agent(DESKTOP_USER_AGENT)
@@ -822,7 +822,7 @@ pub fn run() {
                 let _arena = tauri::WebviewWindowBuilder::new(
                     app,
                     "arena",
-                    WebviewUrl::External("https://arena.ai".parse().unwrap()),
+                    WebviewUrl::External("https://arena.ai/agent".parse().unwrap()),
                 )
                 .initialization_script(&init)
                 // Links to other sites open in the native link tab layer

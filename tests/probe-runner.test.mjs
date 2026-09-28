@@ -37,6 +37,9 @@ function harness({ modelsBySend = [], handlers = {}, modelDelayPolls = 0, stages
     sleep: () => Promise.resolve(),
     modelWaitMs: 10, modelPollMs: 1, roundPacingMs: 0,
   });
+  // every run needs a project (0.4.8); tests that do not care get a default
+  const start = ctl.start.bind(ctl);
+  ctl.start = (cfg = {}) => start({ repo: 'owner/repo', ...cfg });
   return { ctl, calls, log, states, rpc };
 }
 
@@ -54,7 +57,7 @@ test('probe loop: new chat → agent mode → send → await models → match �
   assert.equal(r.hits.length, 1);
   assert.deepEqual(r.hits[0], { target: 'opus5', model: 'claude-opus-5', sessionId: 'sess-2', round: 2 });
   const seq = h.calls.map((c) => c.action);
-  assert.deepEqual(seq, ['newChat', 'ensureAgentMode', 'send', 'newChat', 'ensureAgentMode', 'send', 'rename', 'collapseSidebar']);
+  assert.deepEqual(seq, ['newChat', 'ensureAgentMode', 'ensureProject', 'send', 'newChat', 'ensureAgentMode', 'ensureProject', 'send', 'rename', 'collapseSidebar']);
   const rename = h.calls.find((c) => c.action === 'rename');
   assert.deepEqual(rename.args, { sessionId: 'sess-2', title: 'claude-opus-5-001' });
   assert.ok(h.calls.filter((c) => c.action === 'send').every((c) => /^\d{1,3}[+\-*/×÷]\d{1,3}=$/.test(c.args.prompt)));
@@ -152,7 +155,7 @@ test('custom title builder and persisted suffix counters', async () => {
     onSuffixes: (c) => saved.push(c),
     buildTitle: (model, suffix) => `AK-${model}-${suffix}`,
   });
-  await ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, autoRename: true });
+  await ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, autoRename: true, repo: 'o/r' });
   assert.equal(h.calls.find((c) => c.action === 'rename').args.title, 'AK-claude-opus-5-042');
   assert.deepEqual(saved, [{ claudeopus5: 42 }]);
 });
@@ -168,7 +171,7 @@ test('a title prefix gets its own suffix counter per "<prefix><model>" name', as
     titlePrefix: () => '[探针] ',
     buildTitle: (model, suffix) => `[探针] ${model}-${suffix}`,
   });
-  await ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, autoRename: true });
+  await ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, autoRename: true, repo: 'o/r' });
   assert.equal(h.calls.find((c) => c.action === 'rename').args.title, '[探针] claude-opus-5-001');
   assert.deepEqual(saved, [{ claudeopus5: 41, 'p:[探针]|claudeopus5': 1 }]);
 });
@@ -279,7 +282,7 @@ test('cleanup and probe are mutually exclusive and stoppable', async () => {
   // probe running → cleanup refused
   let rel2;
   const ctl2 = createProbeController({ rpc: { call: () => new Promise((res) => { rel2 = res; }) }, modelForSession: () => null, onProgress: (l) => log.push(l), sleep: () => Promise.resolve() });
-  const p2 = ctl2.start({ targets: ['opus5'] });
+  const p2 = ctl2.start({ targets: ['opus5'], repo: 'o/r' });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(await ctl2.cleanup(), null);
   assert.ok(log.includes('探针运行中，请先停止再清理'));
@@ -310,4 +313,19 @@ test('draw mode without rename only records models; unidentified rounds are coun
   assert.deepEqual(r.drawn.map((d) => d.models), [['gpt-4o']]);
   assert.equal(r.summary, '抽卡结束 · 1/2 轮识别到模型 · gpt-4o×1');
   assert.ok(h.log.some((l) => l === '第 2 轮未识别模型，继续'));
+});
+
+test('probe refuses to run without a project; the project reaches ensureProject before every send', async () => {
+  let h = harness({ modelsBySend: [['claude-opus-5']] });
+  let r = await h.ctl.start({ targets: ['opus5'], repo: '' });
+  assert.equal(h.calls.filter((c) => c.action === 'send').length, 0);
+  assert.ok(h.log.some((l) => /必须指定项目/.test(l)), h.log.join('\n'));
+  h = harness({ modelsBySend: [['gpt-4o']], handlers: { ensureProject: async () => { throw new Error('未找到仓库选择器'); } } });
+  r = await h.ctl.start({ targets: ['opus5'], maxRounds: 2, repo: 'me/proj' });
+  assert.equal(h.calls.filter((c) => c.action === 'send').length, 0, 'project not confirmed → nothing sent');
+  h = harness({ modelsBySend: [['claude-opus-5']] });
+  r = await h.ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, repo: 'me/proj', branch: 'dev' });
+  const ep = h.calls.find((c) => c.action === 'ensureProject');
+  assert.deepEqual(ep.args, { repo: 'me/proj', branch: 'dev' });
+  assert.equal(r.hits.length, 1);
 });

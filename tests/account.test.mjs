@@ -377,7 +377,7 @@ function withClock(start, fn) {
 }
 const guestJar = () => chunked('arena-auth-prod-v1', anonymousSession());
 const userJar = (email, id) => chunked('arena-auth-prod-v1', supabaseSession({ email, id }));
-const GOOGLE_URL = (link) => `https://arena.ai/nextjs-api/sign-in/google?shouldLinkHistory=${link}&marketingConsent=false&returnTo=%2F`;
+const GOOGLE_URL = (link) => `https://arena.ai/nextjs-api/sign-in/google?shouldLinkHistory=${link}&marketingConsent=false&returnTo=%2Fagent`;
 
 test('snapshot classifies the page: logged-in / guest / none / broken, and reads __arena_auth_error', () => {
   assert.equal(plain(fakeDom({ jar: userJar('a@x.io', 'ua') }).api.snapshot()).state, 'logged-in');
@@ -468,7 +468,7 @@ test('login helper, email + password account: POST /nextjs-api/sign-in/email, re
   assert.equal(okRun.calls[0].url, '/nextjs-api/sign-in/email');
   assert.equal(okRun.calls[0].init.method, 'POST');
   assert.deepEqual(JSON.parse(okRun.calls[0].init.body), { email: 'bob@example.com', password: 'secret', shouldLinkHistory: true });
-  assert.deepEqual(okRun.d.navigations.map((n) => n.url), ['https://arena.ai/'], 'reload into the new session');
+  assert.deepEqual(okRun.d.navigations.map((n) => n.url), ['https://arena.ai/agent'], 'reload into the new session');
   const badRun = await run({ ok: false, status: 400, json: async () => ({ error: 'Invalid email or password' }) });
   assert.match(badRun.d.lastEvent('login').payload.error, /Invalid email or password/);
   assert.equal(badRun.d.navigations.length, 0);
@@ -569,7 +569,7 @@ test('Google sign-in rescue: same URL 25 s after a tap on an account row → 重
   assert.match(labels[0], /卡住/);
   // 返回 Arena → leaves for arena.ai
   bar.children[2].listeners.click[0]({ preventDefault() {}, stopPropagation() {} });
-  assert.equal(d.location.href, 'https://arena.ai/');
+  assert.equal(d.location.href, 'https://arena.ai/agent');
   // typing on the page = the user is busy → the timer and the bar go away
   d.location.href = 'https://accounts.google.com/v3/signin/accountchooser';
   d.userEvent('keydown', { key: 'a' });

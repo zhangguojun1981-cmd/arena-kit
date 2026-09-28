@@ -161,6 +161,12 @@ export function createProbeController({
     onProbeState(0, maxRounds, 0, true);
     try {
       if (!draw && !targets.length) throw new Error('请填写至少一个目标');
+      // 0.4.8: every probe / draw round runs in Agent Mode on a specified
+      // project (GitHub connector on + repo [+ branch] selected) — no project,
+      // no run; a project that cannot be confirmed stops the run before send.
+      const repo = String(cfg.repo || '').trim();
+      const branch = String(cfg.branch || '').trim();
+      if (!repo) throw new Error('探针必须指定项目：请先在探针页填写「项目」（GitHub 仓库 owner/name）');
       onProgress(draw
         ? `开始抽卡 · ${maxRounds} 轮 · 每轮新建对话并${cfg.autoRename ? '按模型名重命名' : '记录模型'}`
         : `开始探针 · 目标 ${targets.join('、')} · ${findAll ? '命中全部才停' : '命中即停'} · 最多 ${maxRounds} 轮`);
@@ -172,9 +178,11 @@ export function createProbeController({
         const prompt = randomPrompt();
         onProgress(`第 ${round} 轮 · 发送 "${prompt}" · ${pacingLabel}`);
 
-        // 1) fresh chat, 2) confirm Agent Mode, 3) send probe prompt
+        // 1) fresh chat, 2) confirm Agent Mode + project, 3) send probe prompt
         await call(tok, 'newChat');
         await call(tok, 'ensureAgentMode');
+        const proj = await call(tok, 'ensureProject', { repo, branch });
+        if (round === 1 || proj?.changed) onProgress(`Agent 模式 · 项目 ${proj?.repo || repo}${proj?.branch ? ' @ ' + proj.branch : ''}${proj?.changed ? '（已切换）' : ''}`);
         const sendData = await call(tok, 'send', { prompt });
         const sessionId = String(sendData?.session || '');
         if (!sessionId) { onProgress('未拿到会话 id，跳过本轮'); await wait(tok, roundPacingMs); continue; }

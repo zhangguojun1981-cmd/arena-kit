@@ -185,6 +185,9 @@ const DEFAULT_PREFS = {
   probeRounds: 5,
   probeFindAll: true,
   probeRename: true,
+  probeRepo: '',        // 0.4.8: project the probe must run on (GitHub owner/name)
+  probeBranch: '',
+  agentDefaults: true,  // app open / account switch → Agent Mode + GitHub on (+ project)
   cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
   quickText: '',            // session probe text ('' = random arithmetic)
   quickRename: false,       // rename the conversation after the session probe identifies its model
@@ -826,6 +829,9 @@ onPage('openDock', (p) => {
 onPage('nav', (n) => {
   if (!n || typeof n !== 'object') return;
   if (n.reason === 'init') applyPageFlags(); // fresh page load: injected scripts start with flags unset
+  // fresh page load on the /agent composer (app open, account switch, login
+  // landing) → Agent Mode + GitHub on (+ the probe project)
+  if (n.reason === 'init' && !n.sessionId && n.agentPath) scheduleAgentDefaults();
   const switched = n.sessionId !== state.nav.sessionId;
   // The page got its conversation id after the first token of a chat sent
   // from /agent (see onTrace token stage): same conversation, keep it.
@@ -878,6 +884,31 @@ onPage('nav', (n) => {
   renderPill(); // "新对话" / model label follows the page
 });
 
+// ── module: composer defaults (Agent Mode + GitHub connector) ───────────
+// 0.4.8. Runs once per page load when the page lands on a fresh /agent
+// composer: app start (the start URL is /agent) and after every account
+// switch / login (both navigate to /agent). Never sends anything; failures
+// only show up in the status line / probe log, e.g. GitHub not connected yet.
+let agentDefaultsGen = 0;
+function scheduleAgentDefaults(delayMs = 2500) {
+  if (state.prefs.agentDefaults === false || !state.rpc) return;
+  const gen = ++agentDefaultsGen;
+  setTimeout(async () => {
+    if (gen !== agentDefaultsGen) return;             // a newer page load took over
+    if (state.probe?.isRunning) return;                // the probe does it itself
+    if (state.nav.sessionId) return;                   // user already opened a chat
+    const args = { github: true, repo: state.prefs.probeRepo || '', branch: state.prefs.probeBranch || '' };
+    let r;
+    try { r = await state.rpc.call('applyDefaults', args, { timeout: 45_000 }); }
+    catch (e) { setStatus('默认模式设置失败：' + (e?.message || e)); return; }
+    if (!r || r.skipped) return;
+    const parts = [r.agent ? 'Agent 模式' : '', r.github ? 'GitHub 已开' : '', r.project ? '项目 ' + r.project : ''].filter(Boolean);
+    const line = (parts.length ? '已设默认：' + parts.join(' · ') : '默认模式未生效') + (r.errors?.length ? '（' + r.errors.join('；') + '）' : '');
+    setStatus(line.slice(0, 200));
+    probeLog(line);
+  }, delayMs);
+}
+
 // ── module: auto probe (Android ProbeController port) ───────────────────
 // The dock is the orchestrator; every page step is a probe.js RPC action and
 // model names come from the trace pipeline (state.sessions, keyed by session).
@@ -902,11 +933,13 @@ function probeConfigFromPanel() {
     maxRounds: rounds,
     findAll: q('ak-probe-findall').checked,
     autoRename: q('ak-probe-rename').checked,
+    repo: q('ak-probe-repo').value.trim(),
+    branch: q('ak-probe-branch').value.trim(),
   };
 }
 function persistProbePanel() {
   const cfg = probeConfigFromPanel();
-  return savePrefs({ probeTargets: q('ak-probe-targets').value, probeRounds: cfg.maxRounds, probeFindAll: cfg.findAll, probeRename: cfg.autoRename });
+  return savePrefs({ probeTargets: q('ak-probe-targets').value, probeRounds: cfg.maxRounds, probeFindAll: cfg.findAll, probeRename: cfg.autoRename, probeRepo: cfg.repo, probeBranch: cfg.branch, agentDefaults: q('ak-agent-defaults').checked });
 }
 function setProbeRunningUi(running, what = '探针') {
   root.querySelector('[data-action="probe-start"]').disabled = running;
@@ -923,6 +956,12 @@ async function startProbe(mode = 'probe') {
   await persistProbePanel();
   const cfg = { ...probeConfigFromPanel(), mode };
   if (mode !== 'draw' && !cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
+  if (!cfg.repo) {
+    showTab('probe');
+    probeLog('探针必须指定项目：请先填写「项目」（GitHub 仓库 owner/name）');
+    try { q('ak-probe-repo').focus(); } catch { }
+    return;
+  }
   q('ak-probe-log').textContent = '';
   setProbeRunningUi(true, mode === 'draw' ? '抽卡' : '探针');
   let result = null;
@@ -1010,7 +1049,10 @@ function wireProbe() {
   q('ak-probe-rounds').value = String(state.prefs.probeRounds || 5);
   q('ak-probe-findall').checked = state.prefs.probeFindAll !== false;
   q('ak-probe-rename').checked = state.prefs.probeRename !== false;
-  for (const id of ['ak-probe-targets', 'ak-probe-rounds', 'ak-probe-findall', 'ak-probe-rename']) q(id).addEventListener('change', persistProbePanel);
+  q('ak-probe-repo').value = state.prefs.probeRepo || '';
+  q('ak-probe-branch').value = state.prefs.probeBranch || '';
+  q('ak-agent-defaults').checked = state.prefs.agentDefaults !== false;
+  for (const id of ['ak-probe-targets', 'ak-probe-rounds', 'ak-probe-findall', 'ak-probe-rename', 'ak-probe-repo', 'ak-probe-branch', 'ak-agent-defaults']) q(id).addEventListener('change', persistProbePanel);
   setProbeRunningUi(false);
 }
 

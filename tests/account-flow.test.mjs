@@ -124,7 +124,7 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   assert.equal(plain(app.page.api.snapshot()).hasAuthCookie, false, 'page auth cookies cleared');
   assert.ok(app.page.cookies.has('|cf_clearance'), 'unrelated cookies kept');
   assert.equal(dev.reloads, 1);
-  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
   assert.equal(stored(dev).pending.type, 'add', 'the pending add survives the reload in the store');
   assert.equal(stored(dev).list.find((a) => a.id === aliceId).cookies.length > 0, true, 'Alice\'s session is still saved');
   assert.ok(dev.rust.invokes.some((i) => i.cmd === 'login_clear'));
@@ -173,8 +173,8 @@ test('journey: add a second account, watcher keeps it fresh across token rotatio
   assert.equal(pageNow.email, 'alice@example.com', 'the page jar now holds Alice\'s session');
   assert.ok(cookiesOf(app.page).filter((c) => c.name.startsWith('arena-auth')).every((c) => c.domain === DOMAIN), 'restored with the site\'s Domain scope');
   assert.equal(dev.reloads, 2);
-  assert.equal(dev.navigations.at(-1), 'https://arena.ai/', 'lands on the site root, not on Bob\'s conversation');
-  assert.deepEqual(app.log.navigating, ['switch:/'], 'dock showed the loading state instead of reloading again');
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent', 'lands on the Agent composer, not on Bob\'s conversation');
+  assert.deepEqual(app.log.navigating, ['switch:/agent'], 'dock showed the loading state instead of reloading again');
   assert.equal(stored(dev).pending.type, 'switch');
   assert.equal(stored(dev).pending.id, aliceId);
   assert.equal(refreshTokenOf(stored(dev).list.find((a) => a.id === bob.id)), 'rt-b2', 'Bob (the account we left) was snapshotted before the swap');
@@ -220,7 +220,7 @@ test('switch: a token rotation between snapshot and restore is caught (expectSig
   assert.equal(refreshTokenOf(stored(dev).list.find((a) => a.id === aliceId)), 'rt-a2', 'Alice saved with the rotated token, not the snapshot\'s');
   assert.equal(plain(app.page.api.snapshot()).email, 'bob@example.com');
   assert.equal(stored(dev).pending.type, 'switch');
-  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
 });
 
 /* Guest sessions from older builds were saved as accounts (a user id, no
@@ -303,7 +303,7 @@ test('switch race: the old page cannot write its session back after the swap, an
   await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.concat([{ id: 'bob', userId: 'ub', email: 'bob@example.com', name: 'Bob', provider: 'google', cookies: bobCookies, capturedAt: Date.now(), login: { email: '', password: '', totp: '', auto: true } }]) });
   const aliceJar = dev.jar.slice();
   assert.equal((await app.flow.switchTo('bob')).ok, true);
-  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
   // (a) a late token-refresh answer in the OLD page tries to write Alice back → dropped
   for (const c of aliceJar) app.page.doc.cookie = `${c.name}=${c.value}; Path=/; Domain=${DOMAIN}`;
   assert.equal(plain(app.page.api.snapshot()).email, 'bob@example.com', 'leaving page cannot write auth cookies');
@@ -413,8 +413,8 @@ test('targets without a session: credentials → clear + reload into the helper;
   assert.equal(dev.rust.login.provider, 'email', 'no google marker → email flow');
   assert.equal(plain(app.page.api.snapshot()).hasAuthCookie, false);
   assert.equal(dev.reloads, 1);
-  assert.equal(dev.navigations.at(-1), 'https://arena.ai/');
-  assert.deepEqual(app.log.navigating, ['login:/']);
+  assert.equal(dev.navigations.at(-1), 'https://arena.ai/agent');
+  assert.deepEqual(app.log.navigating, ['login:/agent']);
   assert.equal(stored(dev).pending.type, 'login');
   assert.equal(stored(dev).list.find((a) => a.id === app.flow.accounts.activeId).cookies.length > 0, true, 'Alice stays saved');
   // startLogin on an account without credentials asks for them

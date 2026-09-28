@@ -578,7 +578,7 @@
     };
     bar.appendChild(msg);
     if (reason !== 'popup') bar.appendChild(btn('重试', () => { actAt = 0; try { L.reload(); } catch (_) { /* ignore */ } }));
-    bar.appendChild(btn('返回 Arena', () => { try { L.href = 'https://arena.ai/'; } catch (_) { /* ignore */ } }));
+    bar.appendChild(btn('返回 Arena', () => { try { L.href = 'https://arena.ai/agent'; } catch (_) { /* ignore */ } }));
     D.documentElement.appendChild(bar);
     try { console.warn('[ArenaKit] sign-in rescue:', reason, String(L.href || '').split('?')[0]); } catch (_) { /* ignore */ }
     return bar;
@@ -748,7 +748,7 @@
   }
   function googleSignInUrl(linkHistory) {
     // same query the site's own button builds (registeredCountryCode is optional)
-    const qs = 'shouldLinkHistory=' + (linkHistory ? 'true' : 'false') + '&marketingConsent=false&returnTo=' + encodeURIComponent('/');
+    const qs = 'shouldLinkHistory=' + (linkHistory ? 'true' : 'false') + '&marketingConsent=false&returnTo=' + encodeURIComponent('/agent');
     return (L.origin || ('https://' + hostOf())) + '/nextjs-api/sign-in/google?' + qs;
   }
 
@@ -801,7 +801,7 @@
     if (body && body.error) { finish('error', { error: 'Arena：' + String(body.error).slice(0, 200) }); return; }
     if (res && res.ok) {
       writeTry(c, 'email');
-      navigateTo('/'); // the next document starts with the new session → done
+      navigateTo('/agent'); // the next document starts with the new session → done (Agent Mode composer)
       return;
     }
     // endpoint missing / changed → the site's own dialog
