@@ -17,9 +17,21 @@ function node({ sel = [], text = '', attrs = {}, parent = null, visible = true, 
   };
   return n;
 }
-function load(nodes, pathname = '/agent') {
+const REPOS = [
+  { id: 1, name: 'arena-kit-old', fullName: 'someone/arena-kit-old', ownerLogin: 'someone', defaultBranch: 'main' },
+  { id: 2, name: 'arena-kit', fullName: 'zhangguojun1981-cmd/arena-kit', ownerLogin: 'zhangguojun1981-cmd', defaultBranch: 'main' },
+  { id: 3, name: 'notes', fullName: 'zhangguojun1981-cmd/notes', ownerLogin: 'zhangguojun1981-cmd', defaultBranch: 'main' },
+];
+function load(nodes, pathname = '/agent', { connection = 'connected', repos = REPOS, fetches = [] } = {}) {
   const p = fakePage({ pathname });
   p.sandbox.__ARENAKIT__ = { send: () => {} };
+  p.sandbox.fetch = async (url) => {
+    fetches.push(url);
+    const json = (body, status = 200) => ({ ok: status < 300, status, json: async () => body });
+    if (url.startsWith('/api/coding/github/connection')) return connection === null ? json({}, 404) : json({ status: connection });
+    if (url.startsWith('/api/coding/github/repos')) return repos === null ? json({}, 401) : json({ repos, nextCursor: null, hasNextPage: false });
+    return json({}, 404);
+  };
   p.document.querySelectorAll = (sel) => {
     const parts = sel.split(',').map((s) => s.trim());
     return nodes().filter((n) => n.sel.some((s) => parts.includes(s)));
@@ -45,7 +57,7 @@ test('ensureProject: GitHub switch flipped on, repo chosen from the picker, veri
   assert.equal(sw.clicks, 1);
   assert.equal(optB.clicks, 1, 'full owner/name beats a look-alike');
   assert.equal(optA.clicks, undefined);
-  assert.deepEqual(r.data, { github: true, repo: 'zhangguojun1981-cmd/arena-kit', branch: null, changed: true });
+  assert.deepEqual(r.data, { github: true, repo: 'zhangguojun1981-cmd/arena-kit', name: 'arena-kit', branch: null, changed: true });
   // second run: nothing to do, no clicks
   const again = await call('ensureProject', { repo: 'zhangguojun1981-cmd/arena-kit' });
   assert.equal(again.ok, true);
@@ -68,7 +80,7 @@ test('ensureGithub: "Connect your GitHub" banner → clear error, no OAuth click
   const banner = { textContent: 'Connect your GitHub NEW Connect', parentElement: null };
   const wrap = { textContent: 'Connect', parentElement: banner };
   const connect = node({ sel: ['button'], text: 'Connect', parent: wrap });
-  const call = load(() => [MODE(), connect]);
+  const call = load(() => [MODE(), connect], '/agent', { connection: null });
   const r = await call('ensureGithub');
   assert.equal(r.ok, false);
   assert.match(r.error, /GitHub 尚未连接/);
@@ -86,4 +98,51 @@ test('ensureProject refuses without a repo', async () => {
   const r = await call('ensureProject', {});
   assert.equal(r.ok, false);
   assert.match(r.error, /未指定项目/);
+});
+
+test('fuzzy project names: exact > squashed > prefix > contains > subsequence', async () => {
+  const p = fakePage({ pathname: '/agent' });
+  p.sandbox.__ARENAKIT__ = { send: () => {} };
+  runInjected('injected/probe.js', p.sandbox);
+  const { pickRepo, fuzzyScore } = p.sandbox.ArenaProbe;
+  const name = (q) => pickRepo(q, REPOS)?.repo.fullName || null;
+  assert.equal(name('arena-kit'), 'zhangguojun1981-cmd/arena-kit', 'exact name beats the longer look-alike');
+  assert.equal(name('ARENAKIT'), 'zhangguojun1981-cmd/arena-kit', 'case / punctuation insensitive');
+  assert.equal(name('arena'), 'zhangguojun1981-cmd/arena-kit', 'prefix: the shorter name wins the tie');
+  assert.equal(name('kit-old'), 'someone/arena-kit-old');
+  assert.equal(name('note'), 'zhangguojun1981-cmd/notes');
+  assert.equal(name('ank'), 'zhangguojun1981-cmd/arena-kit', 'subsequence as last resort');
+  assert.equal(name('someone/arena-kit-old'), 'someone/arena-kit-old', 'owner/name still works');
+  assert.equal(name('xyz'), null);
+  assert.equal(fuzzyScore('', REPOS[0]), 0);
+});
+
+test('ensureProject with a short fuzzy name: resolved via the repo list, picked by exact name in the dropdown', async () => {
+  let label = 'Select a repository';
+  let open = false;
+  const picker = node({ sel: ['button[aria-haspopup]'], text: () => label, attrs: { 'aria-haspopup': 'listbox' }, onClick: () => { open = true; } });
+  const opt1 = node({ sel: ['[role="option"]'], text: 'someone/arena-kit-old', onClick: () => { label = 'arena-kit-old'; open = false; } });
+  const opt2 = node({ sel: ['[role="option"]'], text: 'zhangguojun1981-cmd/arena-kit', onClick: () => { label = 'arena-kit'; open = false; } });
+  const mode = MODE();
+  const fetches = [];
+  const call = load(() => [mode, picker, ...(open ? [opt1, opt2] : [])], '/agent', { fetches });
+  const r = await call('ensureProject', { repo: 'arenakit' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(opt2.clicks, 1);
+  assert.equal(opt1.clicks, undefined);
+  assert.equal(r.data.repo, 'zhangguojun1981-cmd/arena-kit');
+  assert.ok(fetches.some((u) => u.startsWith('/api/coding/github/connection')));
+  const again = await call('ensureProject', { repo: 'arena-kit' });
+  assert.equal(again.data.changed, false, 'already selected → no clicks');
+  assert.equal(picker.clicks, 1);
+});
+
+test('ensureProject: unknown project name lists what exists; GitHub disconnected is reported', async () => {
+  let call = load(() => [MODE()]);
+  let r = await call('ensureProject', { repo: 'zzz' });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /没有与「zzz」匹配的仓库（共 3 个：arena-kit-old、arena-kit、notes）/);
+  call = load(() => [MODE()], '/agent', { connection: 'disconnected' });
+  r = await call('ensureProject', { repo: 'arena-kit' });
+  assert.match(r.error, /GitHub 尚未连接（状态 disconnected）/);
 });

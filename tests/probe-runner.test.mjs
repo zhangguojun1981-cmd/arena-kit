@@ -57,7 +57,7 @@ test('probe loop: new chat → agent mode → send → await models → match �
   assert.equal(r.hits.length, 1);
   assert.deepEqual(r.hits[0], { target: 'opus5', model: 'claude-opus-5', sessionId: 'sess-2', round: 2 });
   const seq = h.calls.map((c) => c.action);
-  assert.deepEqual(seq, ['newChat', 'ensureAgentMode', 'ensureProject', 'send', 'newChat', 'ensureAgentMode', 'ensureProject', 'send', 'rename', 'collapseSidebar']);
+  assert.deepEqual(seq, ['newChat', 'ensureAgentMode', 'ensureProject', 'send', 'newChat', 'send', 'rename', 'collapseSidebar']);
   const rename = h.calls.find((c) => c.action === 'rename');
   assert.deepEqual(rename.args, { sessionId: 'sess-2', title: 'claude-opus-5-001' });
   assert.ok(h.calls.filter((c) => c.action === 'send').every((c) => /^\d{1,3}[+\-*/×÷]\d{1,3}=$/.test(c.args.prompt)));
@@ -315,17 +315,28 @@ test('draw mode without rename only records models; unidentified rounds are coun
   assert.ok(h.log.some((l) => l === '第 2 轮未识别模型，继续'));
 });
 
-test('probe refuses to run without a project; the project reaches ensureProject before every send', async () => {
-  let h = harness({ modelsBySend: [['claude-opus-5']] });
-  let r = await h.ctl.start({ targets: ['opus5'], repo: '' });
-  assert.equal(h.calls.filter((c) => c.action === 'send').length, 0);
-  assert.ok(h.log.some((l) => /必须指定项目/.test(l)), h.log.join('\n'));
-  h = harness({ modelsBySend: [['gpt-4o']], handlers: { ensureProject: async () => { throw new Error('未找到仓库选择器'); } } });
-  r = await h.ctl.start({ targets: ['opus5'], maxRounds: 2, repo: 'me/proj' });
-  assert.equal(h.calls.filter((c) => c.action === 'send').length, 0, 'project not confirmed → nothing sent');
-  h = harness({ modelsBySend: [['claude-opus-5']] });
-  r = await h.ctl.start({ targets: ['opus5'], maxRounds: 1, findAll: false, repo: 'me/proj', branch: 'dev' });
-  const ep = h.calls.find((c) => c.action === 'ensureProject');
-  assert.deepEqual(ep.args, { repo: 'me/proj', branch: 'dev' });
+test('project is optional; mode + project only in round 1; later rounds inherit', async () => {
+  let h = harness({ modelsBySend: [['gpt-4o'], ['gpt-4o'], ['claude-opus-5']] });
+  let r = await h.ctl.start({ targets: ['opus5'], maxRounds: 3, findAll: false, repo: '' });
   assert.equal(r.hits.length, 1);
+  assert.deepEqual(h.calls.map((c) => c.action).filter((a) => a !== 'rename' && a !== 'collapseSidebar'),
+    ['newChat', 'ensureAgentMode', 'send', 'newChat', 'send', 'newChat', 'send'], 'no project → no ensureProject; one mode check');
+  assert.ok(h.log.some((l) => /未指定项目 · 后续轮次沿用/.test(l)));
+  h = harness({ modelsBySend: [['gpt-4o']], handlers: { ensureProject: async () => { throw new Error('没有与「kit」匹配的仓库'); } } });
+  r = await h.ctl.start({ targets: ['opus5'], maxRounds: 2, repo: 'kit' });
+  assert.equal(h.calls.filter((c) => c.action === 'send').length, 0, 'project not confirmed → nothing sent');
+  h = harness({ modelsBySend: [['gpt-4o'], ['claude-opus-5']] });
+  r = await h.ctl.start({ targets: ['opus5'], maxRounds: 2, findAll: false, repo: 'arena', branch: 'dev' });
+  const eps = h.calls.filter((c) => c.action === 'ensureProject');
+  assert.equal(eps.length, 1, 'selected once');
+  assert.deepEqual(eps[0].args, { repo: 'arena', branch: 'dev' });
+});
+
+test('later round: mode lost → re-selected once and the send retried', async () => {
+  let sends = 0;
+  const h = harness({ modelsBySend: [['gpt-4o'], ['claude-opus-5']], handlers: {
+    send: async () => { sends++; if (sends === 2) throw new Error('模式已变化；未发送'); return { session: 'sess-' + sends }; },
+  } });
+  await h.ctl.start({ targets: ['opus5'], maxRounds: 2, findAll: false, repo: '' });
+  assert.deepEqual(h.calls.map((c) => c.action).slice(0, 7), ['newChat', 'ensureAgentMode', 'send', 'newChat', 'send', 'ensureAgentMode', 'send']);
 });

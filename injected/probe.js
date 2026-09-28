@@ -265,34 +265,108 @@
     return seen.join(' | ') || '（输入框附近未见 GitHub / 仓库相关控件）';
   }
 
+  /* GitHub "switch" = the account's GitHub connection
+   * (docs arena-agent-github-automation.md §2.3: GET /api/coding/github/connection
+   * → {status: disconnected|installed|connected}). A visible connector toggle
+   * that is off is still switched on; the OAuth "Connect" is never clicked
+   * (first authorisation must be done by hand on github.com). */
+  async function githubConnection() {
+    try {
+      const r = await fetch('/api/coding/github/connection', { credentials: 'same-origin', headers: { Accept: 'application/json' }, cache: 'no-store' });
+      if (!r.ok) return { status: '', http: r.status };
+      const j = await r.json();
+      return { status: String(j?.status || ''), http: r.status };
+    } catch { return { status: '', http: 0 }; }
+  }
   async function ensureGithub() {
     if (location.origin !== ARENA) throw Error('已离开 Arena');
-    let sw = null;
-    try { sw = await waitFor(() => githubToggle() || (connectBanner() ? 'banner' : null), '', 6000); } catch { }
-    if (sw === 'banner') throw Error('GitHub 尚未连接（输入框下方显示「Connect your GitHub」），请先手动点 Connect 授权一次');
-    if (!sw) throw Error('未找到 GitHub 开关 · 看到：' + composerDiag());
-    if (toggleState(sw) === true) return { github: true, changed: false };
-    sw.click();
-    await waitFor(() => { const e = githubToggle() || sw; return toggleState(e) === true; }, '已点击 GitHub 开关，但未确认打开 · 看到：' + composerDiag(), 5000);
-    return { github: true, changed: true };
+    let changed = false;
+    const sw = githubToggle();
+    if (sw && toggleState(sw) === false) {
+      sw.click();
+      changed = true;
+      await waitFor(() => { const e = githubToggle() || sw; return toggleState(e) === true; }, '已点击 GitHub 开关，但未确认打开 · 看到：' + composerDiag(), 5000);
+    }
+    const conn = await githubConnection();
+    if (conn.status === 'connected') return { github: true, changed };
+    if (conn.status === 'disconnected' || conn.status === 'installed' || connectBanner())
+      throw Error('GitHub 尚未连接（状态 ' + (conn.status || '横条 Connect your GitHub') + '），请先手动点 Connect 授权一次');
+    // endpoint unavailable: trust a toggle that is on
+    const now = githubToggle();
+    if (now && toggleState(now) === true) return { github: true, changed };
+    throw Error('无法确认 GitHub 连接（接口 HTTP ' + conn.http + '） · 看到：' + composerDiag());
   }
 
+  /* ---- project = GitHub repository, fuzzy by name ----
+   * The user types just a project name ("arena-kit", "arenakit", "kit"…);
+   * the repo list (GET /api/coding/github/repos, cursor paged) resolves it
+   * to one repository, which is then picked in the "Select a repository"
+   * dropdown by its exact name. */
   const norm = t => clean(t).toLowerCase().replace(/\s+/g, ' ');
-  const repoName = r => String(r || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
-  const repoMatches = (t, repo) => {
-    const full = norm(repoName(repo)), short = full.split('/').pop();
-    const s = norm(t);
-    if (!short) return false;
-    if (full.includes('/') && s.includes(full)) return 2;
-    return new RegExp('(^|[\\s/:·•|(\\[])' + short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[\\s)\\]·•|,])').test(s) ? 1 : false;
-  };
+  const squash = t => String(t || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
+  const repoQuery = r => String(r || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  function isSubsequence(q, s) { let i = 0; for (const ch of s) if (ch === q[i]) i++; return i === q.length; }
+  /* 0 = no match; higher = better. `name` / `fullName` as in the repos API. */
+  function fuzzyScore(query, repo) {
+    const q = repoQuery(query).toLowerCase();
+    if (!q) return 0;
+    const name = String(repo?.name || String(repo?.fullName || '').split('/').pop() || '').toLowerCase();
+    const full = String(repo?.fullName || name).toLowerCase();
+    if (q.includes('/')) {
+      if (full === q) return 100;
+      const [, qn] = q.split('/');
+      if (qn && name === qn) return 90;
+    }
+    if (name === q) return 100;
+    const qs = squash(q), ns = squash(name), fs = squash(full);
+    if (!qs) return 0;
+    if (ns === qs) return 95;
+    if (ns.startsWith(qs)) return 80;
+    if (ns.includes(qs)) return 70;
+    if (fs.includes(qs)) return 60;
+    if (qs.length >= 3 && isSubsequence(qs, ns)) return 40;
+    return 0;
+  }
+  function pickRepo(query, repos) {
+    let best = null, score = 0;
+    for (const r of repos || []) {
+      const sc = fuzzyScore(query, r);
+      if (sc > score || (sc === score && sc > 0 && best && String(r.name || '').length < String(best.name || '').length)) { best = r; score = sc; }
+    }
+    return best ? { repo: best, score } : null;
+  }
+  async function listRepos() {
+    const out = [];
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const url = '/api/coding/github/repos?limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+      let j;
+      try {
+        const r = await fetch(url, { credentials: 'same-origin', headers: { Accept: 'application/json' }, cache: 'no-store' });
+        if (!r.ok) break;
+        j = await r.json();
+      } catch { break; }
+      if (!Array.isArray(j?.repos)) break;
+      out.push(...j.repos.filter(x => x && (x.name || x.fullName)));
+      if (!j.hasNextPage || !j.nextCursor) break;
+      cursor = j.nextCursor;
+    }
+    return out;
+  }
   const OPTION_SEL = '[role="option"],[role="menuitem"],[role="menuitemradio"],[cmdk-item],[role="listbox"] li,[role="treeitem"]';
-  const pickers = () => [...document.querySelectorAll('button[role="combobox"],button[aria-haspopup],[role="combobox"]')]
-    .filter(e => visible(e) && outsideChrome(e) && e !== modeCombo());
-  function repoPicker(repo) {
+  const pickers = () => [...document.querySelectorAll('button[role="combobox"],button[aria-haspopup],[role="combobox"],[placeholder="Select a repository"]')]
+    .filter(e => visible(e) && outsideChrome(e) && e !== modeCombo() && (e.tagName || '').toUpperCase() !== 'INPUT');
+  /* text shows the chosen repo: "arena-kit", "owner/arena-kit", "arena-kit · main" */
+  const showsRepo = (el, target) => {
+    const t = norm(ownText(el));
+    const name = String(target?.name || '').toLowerCase(), full = String(target?.fullName || '').toLowerCase();
+    if (full && t.includes(full)) return true;
+    return !!name && new RegExp('(^|[\\s/:·•|(\\[])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[\\s)\\]·•|,])').test(t);
+  };
+  function repoPicker(target) {
     const list = pickers();
-    return list.find(e => repoMatches(ownText(e), repo))
-      || list.find(e => /repo|repository|仓库|项目|project/i.test(ownText(e) + ' ' + (e.getAttribute?.('data-testid') || '')))
+    return (target && list.find(e => showsRepo(e, target)))
+      || list.find(e => /select a repository|repositor|仓库|项目/i.test(ownText(e) + ' ' + (e.getAttribute?.('placeholder') || '')))
       || list.find(e => /^[\w.-]+\/[\w.-]+$/.test(text(e)))
       || null;
   }
@@ -300,8 +374,9 @@
     return pickers().find(e => /branch|分支/i.test(ownText(e) + ' ' + (e.getAttribute?.('data-testid') || ''))) || null;
   }
   function typeFilter(value) {
-    const box = [...document.querySelectorAll('[role="dialog"] input,[role="listbox"] input,[cmdk-input],[data-radix-popper-content-wrapper] input,input[role="combobox"]')]
-      .find(e => visible(e) && (e.tagName || '').toUpperCase() === 'INPUT');
+    const inputs = [...document.querySelectorAll('input[placeholder^="Search repositories"],input[placeholder^="Search branches"],[role="dialog"] input,[role="listbox"] input,[cmdk-input],[data-radix-popper-content-wrapper] input,input[role="combobox"]')]
+      .filter(e => visible(e) && (e.tagName || '').toUpperCase() === 'INPUT');
+    const box = inputs[0];
     if (!box) return false;
     try {
       const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value')?.set;
@@ -311,45 +386,66 @@
       return true;
     } catch { return false; }
   }
-  async function choose(opener, wanted, matchFn, what) {
+  async function choose(opener, filter, scoreFn, what) {
     opener.click();
     await waitFor(() => [...document.querySelectorAll(OPTION_SEL)].some(visible), `${what}列表未打开 · 看到：` + composerDiag(), 5000);
-    typeFilter(wanted);
+    typeFilter(filter);
     const opt = await waitFor(() => {
       const opts = [...document.querySelectorAll(OPTION_SEL)].filter(e => visible(e) && e.getAttribute('aria-disabled') !== 'true' && !e.hasAttribute('data-disabled'));
       let best = null, score = 0;
-      for (const o of opts) { const sc = matchFn(ownText(o)); if (sc && sc > score) { best = o; score = sc; } }
+      for (const o of opts) { const sc = scoreFn(ownText(o)); if (sc > score) { best = o; score = sc; } }
       return best;
-    }, `${what}列表里没有「${wanted}」`, 8000).catch((e) => {
+    }, `${what}列表里没有匹配「${filter}」的项`, 8000).catch((e) => {
       try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch { }
       throw e;
     });
+    const label = ownText(opt);
     opt.click();
+    return label;
   }
 
-  /* GitHub on + the requested repo (and branch, when given) selected. */
+  /* Agent composer: GitHub connected + the project (repo, fuzzy name) and
+   * optional branch selected. Idempotent: already selected → no clicks. */
   async function ensureProject(args) {
-    const repo = repoName(args?.repo);
+    const query = repoQuery(args?.repo);
     const branch = String(args?.branch || '').trim();
-    if (!repo) throw Error('未指定项目（仓库）');
+    if (!query) throw Error('未指定项目（仓库）');
     const gh = await ensureGithub();
-    let picker = await waitFor(() => repoPicker(repo), '未找到仓库选择器 · 看到：' + composerDiag(), 6000);
+    // resolve the fuzzy name against the account's repositories
+    const repos = await listRepos();
+    let target = null;
+    if (repos.length) {
+      const hit = pickRepo(query, repos);
+      if (!hit) throw Error(`没有与「${query}」匹配的仓库（共 ${repos.length} 个：${repos.slice(0, 6).map(r => r.name || r.fullName).join('、')}${repos.length > 6 ? '…' : ''}）`);
+      target = { name: hit.repo.name || String(hit.repo.fullName).split('/').pop(), fullName: hit.repo.fullName || hit.repo.name, defaultBranch: hit.repo.defaultBranch || '' };
+    }
+    let picker = await waitFor(() => repoPicker(target), '未找到仓库选择器（Select a repository） · 看到：' + composerDiag(), 6000);
     let changed = gh.changed;
-    if (!repoMatches(ownText(picker), repo)) {
-      await choose(picker, repo.split('/').pop(), t => repoMatches(t, repo), '仓库');
-      picker = await waitFor(() => { const p = repoPicker(repo); return p && repoMatches(ownText(p), repo) ? p : null; }, `未能确认已选中仓库「${repo}」 · 看到：` + composerDiag(), 6000);
+    if (!(target && showsRepo(picker, target))) {
+      // repo list unavailable → fuzzy against the dropdown's own option texts
+      const scoreFn = target
+        ? (t => {
+          const s = norm(t), name = target.name.toLowerCase();
+          if (s.includes(target.fullName.toLowerCase())) return 3;
+          return s.split(/[\s·•|]+/).some(w => w === name || w.endsWith('/' + name)) ? 2 : 0;
+        })
+        : (t => fuzzyScore(query, { name: norm(t).split(/[\s·•|]+/)[0].split('/').pop(), fullName: norm(t).split(/[\s·•|]+/)[0] }));
+      const label = await choose(picker, target ? target.name : query, scoreFn, '仓库');
+      if (!target) { const w = norm(label).split(/[\s·•|]+/)[0]; target = { name: w.split('/').pop(), fullName: w }; }
+      picker = await waitFor(() => { const p = repoPicker(target); return p && showsRepo(p, target) ? p : null; }, `未能确认已选中仓库「${target.fullName}」 · 看到：` + composerDiag(), 6000);
       changed = true;
     }
     if (branch) {
-      const bMatch = t => { const s = norm(t); const b = norm(branch); return s === b ? 2 : (s.split(/[\s·•|]+/).includes(b) ? 1 : false); };
+      const b = norm(branch);
+      const bScore = t => { const s = norm(t); return s === b ? 3 : (s.split(/[\s·•|]+/).includes(b) ? 2 : 0); };
       const bp = await waitFor(() => branchPicker(), '未找到分支选择器 · 看到：' + composerDiag(), 6000);
-      if (!bMatch(ownText(bp)) && !norm(ownText(bp)).includes(norm(branch))) {
-        await choose(bp, branch, bMatch, '分支');
-        await waitFor(() => { const p = branchPicker(); return p && norm(ownText(p)).includes(norm(branch)); }, `未能确认已选中分支「${branch}」`, 6000);
+      if (!bScore(ownText(bp)) && !norm(ownText(bp)).includes(b)) {
+        await choose(bp, branch, bScore, '分支');
+        await waitFor(() => { const p = branchPicker(); return p && norm(ownText(p)).includes(b); }, `未能确认已选中分支「${branch}」`, 6000);
         changed = true;
       }
     }
-    return { github: true, repo, branch: branch || null, changed };
+    return { github: true, repo: target.fullName, name: target.name, branch: branch || null, changed };
   }
 
   /* App open / after an account switch: Agent Mode + GitHub on (+ project).
@@ -567,5 +663,5 @@
     return res;
   }
 
-  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle: isOwnPrompt };
+  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle: isOwnPrompt, fuzzyScore, pickRepo };
 })();

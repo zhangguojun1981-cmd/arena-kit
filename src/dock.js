@@ -185,7 +185,7 @@ const DEFAULT_PREFS = {
   probeRounds: 5,
   probeFindAll: true,
   probeRename: true,
-  probeRepo: '',        // 0.4.8: project the probe must run on (GitHub owner/name)
+  probeRepo: '',        // optional project for the probe (repo name, fuzzy — 0.4.9)
   probeBranch: '',
   agentDefaults: true,  // app open / account switch → Agent Mode + GitHub on (+ project)
   cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
@@ -956,12 +956,6 @@ async function startProbe(mode = 'probe') {
   await persistProbePanel();
   const cfg = { ...probeConfigFromPanel(), mode };
   if (mode !== 'draw' && !cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
-  if (!cfg.repo) {
-    showTab('probe');
-    probeLog('探针必须指定项目：请先填写「项目」（GitHub 仓库 owner/name）');
-    try { q('ak-probe-repo').focus(); } catch { }
-    return;
-  }
   q('ak-probe-log').textContent = '';
   setProbeRunningUi(true, mode === 'draw' ? '抽卡' : '探针');
   let result = null;

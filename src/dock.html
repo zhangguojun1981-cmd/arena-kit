@@ -92,8 +92,8 @@
         <label class="ak-field"><span>目标模型（逗号分隔；别名 opus5 / fable5 / gpt6，或 /正则/）</span>
           <input id="ak-probe-targets" class="ak-input" type="text" placeholder="opus5, fable5, gpt6" autocomplete="off" />
         </label>
-        <label class="ak-field"><span>项目（必填 · GitHub 仓库 owner/name；探针每轮先确认 Agent 模式并选中该仓库才发送）</span>
-          <input id="ak-probe-repo" class="ak-input" type="text" placeholder="例如 zhangguojun1981-cmd/arena-kit" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        <label class="ak-field"><span>项目（可选 · 只填项目名，支持模糊匹配；第 1 轮新建对话后选 Agent 模式和该项目，后续轮次沿用）</span>
+          <input id="ak-probe-repo" class="ak-input" type="text" placeholder="例如 arena-kit（留空 = 不选项目）" autocomplete="off" autocapitalize="off" spellcheck="false" />
         </label>
         <label class="ak-field"><span>分支（可选，留空 = 仓库默认分支）</span>
           <input id="ak-probe-branch" class="ak-input" type="text" placeholder="main" autocomplete="off" autocapitalize="off" spellcheck="false" />
