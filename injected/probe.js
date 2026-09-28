@@ -207,14 +207,175 @@
     return { session: null };
   }
 
+  // ---- Agent Mode / GitHub connector / project (repo + branch) ----
+  // 0.4.8. Arena's composer controls are found by text / ARIA, never by
+  // generated class names: the mode selector ("Agent Mode ⌄", a combobox),
+  // the GitHub connector switch below the composer, and the repo / branch
+  // pickers that appear once the connector is on. All steps are idempotent
+  // (already right → no click) and never touch a draft.
+  const MODE_WORDS = /^\s*(agent|battle|direct|side[\s-]*by[\s-]*side|search|chat)(\s+(mode|chat))?\b|\bmode\s*$|模式/i;
+  function modeCombo() {
+    const combos = [...document.querySelectorAll('button[role="combobox"]')].filter(e => visible(e) && !e.closest?.('[data-sidebar]'));
+    return combos.find(e => MODE_WORDS.test(text(e))) || combos[0] || null;
+  }
+  const outsideChrome = e => !e.closest?.('[data-sidebar],nav,aside');
+  const ownText = e => clean(((e?.getAttribute?.('aria-label') || '') + ' ' + (e?.getAttribute?.('title') || '') + ' ' + (e?.textContent || '')).replace(/\s+/g, ' '));
+  /* Text that labels a control: its own text/ARIA, an aria-labelledby target,
+   * a <label for>, or a short enclosing row (switch next to "GitHub"). */
+  function labelText(e) {
+    let t = ownText(e);
+    const by = e.getAttribute?.('aria-labelledby');
+    if (by) for (const id of by.split(/\s+/)) { const l = document.getElementById(id); if (l) t += ' ' + text(l); }
+    if (e.id) { try { const l = document.querySelector(`label[for="${CSS.escape(e.id)}"]`); if (l) t += ' ' + text(l); } catch { } }
+    let row = e.parentElement;
+    for (let i = 0; row && i < 3; i++, row = row.parentElement) {
+      const rt = clean(row.textContent || '');
+      if (rt && rt.length <= 60) { t += ' ' + rt; break; }
+    }
+    return t;
+  }
+  function toggleState(e) {
+    const a = k => e.getAttribute?.(k);
+    if (a('aria-checked') === 'true' || a('aria-pressed') === 'true') return true;
+    if (a('aria-checked') === 'false' || a('aria-pressed') === 'false') return false;
+    if (typeof e.checked === 'boolean' && (e.tagName || '').toUpperCase() === 'INPUT') return e.checked;
+    const ds = a('data-state');
+    if (ds === 'checked' || ds === 'on' || ds === 'active') return true;
+    if (ds === 'unchecked' || ds === 'off' || ds === 'inactive') return false;
+    return null;
+  }
+  const TOGGLE_SEL = '[role="switch"],[role="checkbox"],[role="menuitemcheckbox"],button[aria-pressed],button[aria-checked],input[type="checkbox"],button[data-state="on"],button[data-state="off"],button[data-state="checked"],button[data-state="unchecked"]';
+  function githubToggle() {
+    const all = [...document.querySelectorAll(TOGGLE_SEL)].filter(e => visible(e) && outsideChrome(e) && /github/i.test(labelText(e)));
+    return all.find(e => toggleState(e) !== null) || null;
+  }
+  const connectBanner = () => [...document.querySelectorAll('button,a,[role="button"]')]
+    .find(e => visible(e) && /^connect$/i.test(text(e)) && /connect your github/i.test(clean(e.parentElement?.parentElement?.textContent || e.parentElement?.textContent || '')));
+  /* What we could see — reported to the dock log when a step fails. */
+  function composerDiag() {
+    const seen = [];
+    for (const e of document.querySelectorAll('button,[role="switch"],[role="combobox"],[role="checkbox"],input[type="checkbox"],a')) {
+      if (seen.length >= 8) break;
+      if (!visible(e) || !outsideChrome(e)) continue;
+      const t = ownText(e);
+      if (!/github|repo|branch|仓库|分支|项目|project/i.test(t + ' ' + (e.getAttribute?.('data-testid') || ''))) continue;
+      const attrs = ['role', 'aria-checked', 'aria-pressed', 'data-state', 'aria-haspopup'].map(k => e.getAttribute?.(k) ? `${k}=${e.getAttribute(k)}` : '').filter(Boolean).join(',');
+      seen.push(`${(e.tagName || '?').toLowerCase()}[${attrs}]"${t.slice(0, 32)}"`);
+    }
+    return seen.join(' | ') || '（输入框附近未见 GitHub / 仓库相关控件）';
+  }
+
+  async function ensureGithub() {
+    if (location.origin !== ARENA) throw Error('已离开 Arena');
+    let sw = null;
+    try { sw = await waitFor(() => githubToggle() || (connectBanner() ? 'banner' : null), '', 6000); } catch { }
+    if (sw === 'banner') throw Error('GitHub 尚未连接（输入框下方显示「Connect your GitHub」），请先手动点 Connect 授权一次');
+    if (!sw) throw Error('未找到 GitHub 开关 · 看到：' + composerDiag());
+    if (toggleState(sw) === true) return { github: true, changed: false };
+    sw.click();
+    await waitFor(() => { const e = githubToggle() || sw; return toggleState(e) === true; }, '已点击 GitHub 开关，但未确认打开 · 看到：' + composerDiag(), 5000);
+    return { github: true, changed: true };
+  }
+
+  const norm = t => clean(t).toLowerCase().replace(/\s+/g, ' ');
+  const repoName = r => String(r || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const repoMatches = (t, repo) => {
+    const full = norm(repoName(repo)), short = full.split('/').pop();
+    const s = norm(t);
+    if (!short) return false;
+    if (full.includes('/') && s.includes(full)) return 2;
+    return new RegExp('(^|[\\s/:·•|(\\[])' + short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[\\s)\\]·•|,])').test(s) ? 1 : false;
+  };
+  const OPTION_SEL = '[role="option"],[role="menuitem"],[role="menuitemradio"],[cmdk-item],[role="listbox"] li,[role="treeitem"]';
+  const pickers = () => [...document.querySelectorAll('button[role="combobox"],button[aria-haspopup],[role="combobox"]')]
+    .filter(e => visible(e) && outsideChrome(e) && e !== modeCombo());
+  function repoPicker(repo) {
+    const list = pickers();
+    return list.find(e => repoMatches(ownText(e), repo))
+      || list.find(e => /repo|repository|仓库|项目|project/i.test(ownText(e) + ' ' + (e.getAttribute?.('data-testid') || '')))
+      || list.find(e => /^[\w.-]+\/[\w.-]+$/.test(text(e)))
+      || null;
+  }
+  function branchPicker() {
+    return pickers().find(e => /branch|分支/i.test(ownText(e) + ' ' + (e.getAttribute?.('data-testid') || ''))) || null;
+  }
+  function typeFilter(value) {
+    const box = [...document.querySelectorAll('[role="dialog"] input,[role="listbox"] input,[cmdk-input],[data-radix-popper-content-wrapper] input,input[role="combobox"]')]
+      .find(e => visible(e) && (e.tagName || '').toUpperCase() === 'INPUT');
+    if (!box) return false;
+    try {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value')?.set;
+      box.focus();
+      if (setter) setter.call(box, value); else box.value = value;
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    } catch { return false; }
+  }
+  async function choose(opener, wanted, matchFn, what) {
+    opener.click();
+    await waitFor(() => [...document.querySelectorAll(OPTION_SEL)].some(visible), `${what}列表未打开 · 看到：` + composerDiag(), 5000);
+    typeFilter(wanted);
+    const opt = await waitFor(() => {
+      const opts = [...document.querySelectorAll(OPTION_SEL)].filter(e => visible(e) && e.getAttribute('aria-disabled') !== 'true' && !e.hasAttribute('data-disabled'));
+      let best = null, score = 0;
+      for (const o of opts) { const sc = matchFn(ownText(o)); if (sc && sc > score) { best = o; score = sc; } }
+      return best;
+    }, `${what}列表里没有「${wanted}」`, 8000).catch((e) => {
+      try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch { }
+      throw e;
+    });
+    opt.click();
+  }
+
+  /* GitHub on + the requested repo (and branch, when given) selected. */
+  async function ensureProject(args) {
+    const repo = repoName(args?.repo);
+    const branch = String(args?.branch || '').trim();
+    if (!repo) throw Error('未指定项目（仓库）');
+    const gh = await ensureGithub();
+    let picker = await waitFor(() => repoPicker(repo), '未找到仓库选择器 · 看到：' + composerDiag(), 6000);
+    let changed = gh.changed;
+    if (!repoMatches(ownText(picker), repo)) {
+      await choose(picker, repo.split('/').pop(), t => repoMatches(t, repo), '仓库');
+      picker = await waitFor(() => { const p = repoPicker(repo); return p && repoMatches(ownText(p), repo) ? p : null; }, `未能确认已选中仓库「${repo}」 · 看到：` + composerDiag(), 6000);
+      changed = true;
+    }
+    if (branch) {
+      const bMatch = t => { const s = norm(t); const b = norm(branch); return s === b ? 2 : (s.split(/[\s·•|]+/).includes(b) ? 1 : false); };
+      const bp = await waitFor(() => branchPicker(), '未找到分支选择器 · 看到：' + composerDiag(), 6000);
+      if (!bMatch(ownText(bp)) && !norm(ownText(bp)).includes(norm(branch))) {
+        await choose(bp, branch, bMatch, '分支');
+        await waitFor(() => { const p = branchPicker(); return p && norm(ownText(p)).includes(norm(branch)); }, `未能确认已选中分支「${branch}」`, 6000);
+        changed = true;
+      }
+    }
+    return { github: true, repo, branch: branch || null, changed };
+  }
+
+  /* App open / after an account switch: Agent Mode + GitHub on (+ project).
+   * Each part reports separately; nothing here ever sends a message. */
+  async function applyDefaults(args) {
+    const out = { agent: null, github: null, project: null, errors: [] };
+    if (location.origin !== ARENA) throw Error('已离开 Arena');
+    if (session()) return { skipped: 'conversation' }; // only a fresh composer
+    try { await ensureAgentMode(); out.agent = true; } catch (e) { out.agent = false; out.errors.push('Agent 模式：' + (e?.message || e)); }
+    if (args?.github !== false) {
+      try {
+        if (args?.repo) { const r = await ensureProject(args); out.github = true; out.project = r.repo; }
+        else { await ensureGithub(); out.github = true; }
+      } catch (e) { out.errors.push((args?.repo ? '项目：' : 'GitHub：') + (e?.message || e)); if (out.github === null) out.github = !!githubToggle() && toggleState(githubToggle()) === true; }
+    }
+    return out;
+  }
+
   async function ensureAgentMode() {
-    const combo = await waitFor(() => [...document.querySelectorAll('button[role="combobox"]')].find(visible), '未找到模式选择器');
+    const combo = await waitFor(() => modeCombo(), '未找到模式选择器');
     if (!isAgentLabel(combo.textContent)) {
       combo.click();
       const option = await waitFor(() => [...document.querySelectorAll('[role="option"]')].find(e => visible(e) && /agent\s*mode/i.test(e.textContent.trim()) && !e.hasAttribute('data-disabled') && e.getAttribute('aria-disabled') !== 'true'), '未找到 Agent Mode 选项');
       if (option.getAttribute('aria-selected') === 'true') combo.click(); else option.click();
     }
-    await waitFor(() => [...document.querySelectorAll('button[role="combobox"]')].some(e => visible(e) && isAgentLabel(e.textContent)), '未能确认 Agent Mode');
+    await waitFor(() => { const c = modeCombo(); return c && isAgentLabel(c.textContent); }, '未能确认 Agent Mode');
     // Arena sometimes restores the just-sent prompt as the new draft; clear only ours.
     clearOwnDraft(composer());
     return { ok: true };
@@ -385,7 +546,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;
