@@ -201,7 +201,7 @@
         <div id="ak-acct-current" class="ak-acct-current"><div class="ak-empty">尚未读取到登录状态（打开 Arena 页面后自动读取）</div></div>
         <div class="ak-btns">
           <button class="ak-btn ak-btn-sm ak-tonal" data-action="acct-save" title="把页面里当前账号的登录 Cookie 存入账号列表（切换时会自动保存，这里是手动补存）">保存当前登录</button>
-          <button class="ak-btn ak-btn-sm" data-action="acct-add" title="先保存当前账号，再清掉页面的登录 Cookie 并刷新，让你登录另一个账号；登录完成后自动加入列表">添加另一个账号</button>
+          <button class="ak-btn ak-btn-sm" data-action="acct-add" title="先保存当前账号，再打开 Google 登录并点「使用其他账号」，你输入新账号即可；登录完成后自动加入列表">添加另一个账号</button>
         </div>
         <div id="ak-acct-status" class="ak-sub"></div>
       </div>
@@ -219,15 +219,15 @@
           <button class="ak-btn ak-btn-sm" data-action="acct-edit-cancel">取消</button>
         </div>
       </div>
-      <div class="ak-group" id="ak-acct-helper">
-        <div class="ak-group-head"><span>重新登录</span></div>
-        <div id="ak-acct-login-status" class="ak-sub">未运行</div>
+      <div class="ak-group" id="ak-acct-helper" hidden>
+        <div class="ak-group-head"><span>自动登录进度</span></div>
+        <div id="ak-acct-login-status" class="ak-sub"></div>
         <div class="ak-btns">
-          <button class="ak-btn ak-btn-sm" data-action="acct-stop-login">停止</button>
+          <button class="ak-btn ak-btn-sm" id="ak-acct-stop" data-action="acct-stop-login" title="中止正在进行的自动登录（页面停在当前位置，可手动继续）">取消自动登录</button>
         </div>
-        <div class="ak-note">账号第一次需要你在页面上手工登录，登录后自动记录。登录状态失效的账号会显示「需登录」，点它的「登录」即自动完成：页面点登录 → 勾选同意 → Google 登录 → 在 Google 账号选择页选中该账号 → 确认页点「继续」→ 回到 Arena 已登录。Google 若要求输入密码或验证（该账号不在 Google 已登录列表里），请手动完成。</div>
-        <div class="ak-note">切换账号 = 用保存的登录 Cookie 替换页面里的 Cookie 后刷新；不会点「退出登录」，所以其他账号的登录状态不受影响。应用不保存任何密码。</div>
       </div>
+      <div class="ak-note">账号第一次由你在页面上手工登录，登录后自动记录。某个账号登录失效时，点它的「登录」自动完成：清除失效的登录状态 → 打开 Google 登录 → 在 Google 账号选择页选中该账号 → 确认页点「继续」→ 回到 Arena 已登录。「添加另一个账号」会直接打开 Google 登录并点「使用其他账号」，你在 Google 页面输入新账号即可，登录后自动加入列表。Google 要求输入密码或验证时请手动完成（不会代填）。</div>
+      <div class="ak-note">切换账号 = 用保存的登录 Cookie 替换页面里的 Cookie 后刷新；不会点「退出登录」，所以其他账号的登录状态不受影响。应用不保存任何密码。</div>
     </section>
 
     <!-- ── 更多: feature modules, prompt injection, settings ── -->

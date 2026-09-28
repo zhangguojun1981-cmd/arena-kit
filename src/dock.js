@@ -1386,7 +1386,16 @@ function wireRename() {
 const ACCOUNTS_KEY = 'accounts';
 const ACCT_EMPTY = '<div class="ak-empty">还没有保存的账号：登录 Arena 后会自动记录当前账号；再点「添加另一个账号」登录第二个。</div>';
 const acctStatus = (t) => { const el = q('ak-acct-status'); if (el) el.textContent = String(t ?? ''); };
-const acctLoginStatus = (t) => { const el = q('ak-acct-login-status'); if (el) el.textContent = String(t ?? ''); };
+/* 自动登录进度: shown only while (or right after) an automatic login runs;
+ * the 取消 button only while it is running. */
+let acctLoginHideTimer = 0;
+const acctLoginStatus = (t, running = !/已停止|已取消|无需|无法|完成|失败|超时|另一个账号|拒绝|没有|手动/.test(String(t ?? ''))) => {
+  const el = q('ak-acct-login-status'); if (el) el.textContent = String(t ?? '');
+  const box = q('ak-acct-helper'); if (box) box.hidden = !t;
+  const stop = q('ak-acct-stop'); if (stop) stop.hidden = !running;
+  clearTimeout(acctLoginHideTimer);
+  if (!running && box) acctLoginHideTimer = setTimeout(() => { box.hidden = true; }, 60_000);
+};
 function accountCall(action, args = {}, opts = { timeout: 8000 }) {
   if (!state.accountRpc) return Promise.reject(new Error('无 Tauri 运行时'));
   return state.accountRpc.call(action, args, opts);
@@ -1508,9 +1517,9 @@ onPage('account', (snap) => {
 onPage('login', (p) => {
   if (!p || typeof p !== 'object') return;
   const line = loginStageText(p.stage, p);
-  acctLoginStatus(line);
+  acctLoginStatus(line, !/^(done|error|wrong-account|timeout|stopped)$/.test(p.stage));
   // the page does the clicking → keep the sheet out of its way
-  if (/^arena-(open|agree|google)/.test(p.stage) && EMBED) EMBED.close();
+  if (/^arena-(google|add|retry)/.test(p.stage) && EMBED) EMBED.close();
   if (/^(done|error|wrong-account|timeout)$/.test(p.stage)) { acctStatus(line); setStatus(line); if (EMBED) flashPill(p.stage === 'done' ? '已登录' : '登录失败'); }
 });
 
