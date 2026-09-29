@@ -26,6 +26,7 @@ package com.ati.arenakit
  * page history → system.
  */
 
+import android.content.BroadcastReceiver
 import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
@@ -46,8 +47,11 @@ import org.json.JSONObject
 class MainActivity : TauriActivity() {
   private var pageView: WebView? = null
   private var linkTab: LinkTab? = null
+  private var debugReceiver: BroadcastReceiver? = null // test builds only, see DebugHooks
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Test builds only (manifest marker): must be set before the WebView exists.
+    if (DebugHooks.isEnabled(this)) DebugHooks.enableWebViewDebugging()
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
 
@@ -93,6 +97,7 @@ class MainActivity : TauriActivity() {
       webView.evaluateJavascript("window.__ARENAKIT_LINKS__&&window.__ARENAKIT_LINKS__.setOpen($open)", null)
     }
     installPageBridge(webView)
+    if (DebugHooks.isEnabled(this)) debugReceiver = DebugHooks.install(this, webView)
     // Registered after Wry's own callback (setWebView) → LIFO → ours runs first.
     onBackPressedDispatcher.addCallback(this, backCallback)
   }
@@ -177,6 +182,8 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    debugReceiver?.let { runCatching { unregisterReceiver(it) } }
+    debugReceiver = null
     linkTab?.release()
     linkTab = null
     pageView = null

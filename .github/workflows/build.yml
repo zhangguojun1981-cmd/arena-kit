@@ -8,6 +8,11 @@ on:
     branches: [main, "arena/**"]
     tags: ["build-*"]
   workflow_dispatch:
+    inputs:
+      android_debug:
+        description: "Android only: build a WebView-debuggable APK (published as the debug-android prerelease; no dmg, no build-<n> release)"
+        type: boolean
+        default: false
 
 # Least privilege: every job is read-only except `release`, which publishes the
 # raw .dmg / .apk as GitHub Release assets (Actions artifacts are always
@@ -59,7 +64,7 @@ jobs:
   # Builds only for a tag push / manual dispatch; branch pushes run tests only.
   macos-dmg:
     needs: [rust-test, node-test]
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name == 'workflow_dispatch' && !inputs.android_debug) || startsWith(github.ref, 'refs/tags/')
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -127,6 +132,8 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
       - name: Android init + build
+        env:
+          AK_DEBUG: ${{ inputs.android_debug }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/26.1.10909125"
           export ANDROID_NDK_HOME="$NDK_HOME"
@@ -134,6 +141,11 @@ jobs:
           cargo tauri android init --ci --skip-targets-install
           # The generated manifest allows adb/cloud backup of app data (saved logins).
           node scripts/patch-android-manifest.mjs src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          # Debug variant: MainActivity enables WebView remote debugging and the
+          # DEBUG_EVAL broadcast only when this marker is present (never in build-<n>).
+          if [ "$AK_DEBUG" = "true" ]; then
+            node scripts/patch-android-manifest.mjs --debug src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          fi
           # Overlay our Android sources onto the generated project (MainActivity
           # with status-bar/IME inset handling, adaptive launcher icon, …).
           # gen/android itself is not committed; src-tauri/android/ is.
@@ -161,18 +173,21 @@ jobs:
       # over the previous one. Not a Play Store key — swap in your own via
       # secrets when publishing for real.
       - name: Align + sign + collect
+        env:
+          AK_DEBUG: ${{ inputs.android_debug }}
         run: |
           mkdir -p out
           version=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          suffix=""; [ "$AK_DEBUG" = "true" ] && suffix="-debug"
           tools="$ANDROID_HOME/build-tools/35.0.0"
           apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' ! -name '*debug*' | head -n 1)
           test -n "$apk" && echo "unsigned: $apk"
           "$tools/zipalign" -p -f 4 "$apk" out/aligned.apk
           "$tools/apksigner" sign --ks .github/android/debug.keystore --ks-type PKCS12 \
             --ks-pass pass:android --ks-key-alias arenakitdebug --key-pass pass:android \
-            --out "out/ArenaKit_${version}_android-arm64.apk" out/aligned.apk
+            --out "out/ArenaKit_${version}_android-arm64${suffix}.apk" out/aligned.apk
           rm -f out/aligned.apk
-          "$tools/apksigner" verify --print-certs "out/ArenaKit_${version}_android-arm64.apk"
+          "$tools/apksigner" verify --print-certs "out/ArenaKit_${version}_android-arm64${suffix}.apk"
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
@@ -208,16 +223,23 @@ jobs:
           REF: ${{ github.ref_name }}
           DMG_OK: ${{ needs.macos-dmg.result }}
           APK_OK: ${{ needs.android-apk.result }}
+          DEBUG_BUILD: ${{ inputs.android_debug }}
         run: |
           ls -la dist
           # tag push → release on THAT tag; dispatch → mint build-<run>.
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          if [ "$DEBUG_BUILD" = "true" ]; then
+            # Debuggable test APK: its own rolling prerelease, never touches build-<n>.
+            tag="debug-android"
+            gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="$GITHUB_REF_NAME"
           else
             tag="build-${RUN}"
           fi
           # Title follows the tag (build-45 → "build #45"), not the run number.
-          if [[ "$tag" =~ ^build-([0-9]+)$ ]]; then
+          if [ "$DEBUG_BUILD" = "true" ]; then
+            title="ArenaKit Android debug (WebView debuggable, test only)"
+          elif [[ "$tag" =~ ^build-([0-9]+)$ ]]; then
             title="ArenaKit build #${BASH_REMATCH[1]}"
           else
             title="ArenaKit ${tag}"
@@ -231,12 +253,15 @@ jobs:
           # Keep only the release just published: delete every other build-*
           # prerelease (a hand-pushed tag can carry a lower number than an
           # earlier dispatch build, so number-sorting is not enough).
-          gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
-            --jq '.[] | select(.isPrerelease and (.tagName|startswith("build-"))) | .tagName' \
-            | while read -r old; do
-                [ -n "$old" ] && [ "$old" != "$tag" ] || continue
-                gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true
-              done
+          # (skipped for the debug build: it must not remove the real builds)
+          if [ "$DEBUG_BUILD" != "true" ]; then
+            gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease and (.tagName|startswith("build-"))) | .tagName' \
+              | while read -r old; do
+                  [ -n "$old" ] && [ "$old" != "$tag" ] || continue
+                  gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true
+                done
+          fi
           {
             echo "## 构建产物（直接下载，不是 zip）"
             echo

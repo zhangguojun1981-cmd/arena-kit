@@ -91,3 +91,18 @@ test('adaptive launcher icon overlay is complete (API 26+ uses it instead of the
   assert.ok(png.length > 20_000, 'icon.png is a real rendering (the placeholder was 2.5 KB)');
   assert.equal(readFileSync(resolve(root, 'src-tauri/icons/icon.icns')).subarray(0, 4).toString(), 'icns');
 });
+
+test('debug hooks stay dormant unless the manifest marker is present (never in build-<n>)', () => {
+  const dir = `src-tauri/android/app/src/main/java/${pkgPath}`;
+  const main = readFileSync(resolve(root, `${dir}/MainActivity.kt`), 'utf8');
+  const hooks = readFileSync(resolve(root, `${dir}/DebugHooks.kt`), 'utf8');
+  assert.match(main, /if \(DebugHooks\.isEnabled\(this\)\) DebugHooks\.enableWebViewDebugging\(\)/);
+  assert.match(main, /if \(DebugHooks\.isEnabled\(this\)\) debugReceiver = DebugHooks\.install\(this, webView\)/);
+  assert.equal((main.match(/DebugHooks\./g) || []).length, 4, 'every use is behind the marker check (or is the check itself)');
+  assert.match(hooks, /getBoolean\("arenakit\.debug", false\)/);
+  assert.equal((hooks.match(/setWebContentsDebuggingEnabled/g) || []).length, 1);
+  assert.equal((hooks.match(/ContextCompat\.registerReceiver/g) || []).length, 1);
+  // the manifest marker is only ever added by the --debug patch, which CI runs only for android_debug
+  const yml = readFileSync(resolve(root, '.github/workflows/build.yml'), 'utf8');
+  assert.match(yml, /if \[ "\$AK_DEBUG" = "true" \]; then\n\s+node scripts\/patch-android-manifest\.mjs --debug/);
+});
