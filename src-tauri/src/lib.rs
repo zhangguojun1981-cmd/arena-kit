@@ -745,12 +745,27 @@ fn proxy_client() -> &'static reqwest::Client {
 #[tauri::command]
 async fn proxy_get(url: String) -> Result<Value, String> {
     let target = proxy_target(&url)?;
-    let resp = proxy_client().get(target).send().await.map_err(|e| e.to_string())?;
+    let resp = proxy_client().get(target).send().await.map_err(net_err)?;
     if !resp.status().is_success() {
         return Err(format!("proxy_get: HTTP {}", resp.status().as_u16()));
     }
     let text = read_capped(resp).await?;
     Ok(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+}
+
+/// A request failure with its whole cause chain. reqwest's own `Display` stops at
+/// "error sending request for url (…)", which hides whether DNS, connect, TLS or a
+/// timeout failed — the part that matters when a VPN / proxy app is in the way.
+fn net_err(e: reqwest::Error) -> String {
+    use std::error::Error;
+    let mut msg = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
 }
 
 /// The response body as text, refusing anything over `PROXY_MAX_BYTES`.
@@ -835,7 +850,7 @@ async fn gist_request(
         }
         req = req.header("Content-Type", "application/json").body(text);
     }
-    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let resp = req.send().await.map_err(net_err)?;
     let status = resp.status().as_u16();
     let text = read_capped(resp).await?;
     Ok(json!({ "status": status, "body": text }))
