@@ -6,11 +6,11 @@ name: build
 on:
   push:
     branches: [main, "arena/**"]
-    tags: ["build-*"]
+    tags: ["build-*", "debug-*"]
   workflow_dispatch:
     inputs:
       android_debug:
-        description: "Android only: build a WebView-debuggable APK (published as the debug-android prerelease; no dmg, no build-<n> release)"
+        description: "Android only: WebView-debuggable APK (prerelease debug-android; no dmg, no build-<n> release). Pushing a debug-* tag does the same."
         type: boolean
         default: false
 
@@ -64,7 +64,7 @@ jobs:
   # Builds only for a tag push / manual dispatch; branch pushes run tests only.
   macos-dmg:
     needs: [rust-test, node-test]
-    if: (github.event_name == 'workflow_dispatch' && !inputs.android_debug) || startsWith(github.ref, 'refs/tags/')
+    if: (github.event_name == 'workflow_dispatch' && !inputs.android_debug) || startsWith(github.ref, 'refs/tags/build-')
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -133,7 +133,7 @@ jobs:
         run: cargo install tauri-cli --version "^2" --locked
       - name: Android init + build
         env:
-          AK_DEBUG: ${{ inputs.android_debug }}
+          AK_DEBUG: ${{ inputs.android_debug || startsWith(github.ref, 'refs/tags/debug-') }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/26.1.10909125"
           export ANDROID_NDK_HOME="$NDK_HOME"
@@ -174,7 +174,7 @@ jobs:
       # secrets when publishing for real.
       - name: Align + sign + collect
         env:
-          AK_DEBUG: ${{ inputs.android_debug }}
+          AK_DEBUG: ${{ inputs.android_debug || startsWith(github.ref, 'refs/tags/debug-') }}
         run: |
           mkdir -p out
           version=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
@@ -223,14 +223,19 @@ jobs:
           REF: ${{ github.ref_name }}
           DMG_OK: ${{ needs.macos-dmg.result }}
           APK_OK: ${{ needs.android-apk.result }}
-          DEBUG_BUILD: ${{ inputs.android_debug }}
+          DEBUG_BUILD: ${{ inputs.android_debug || startsWith(github.ref, 'refs/tags/debug-') }}
         run: |
           ls -la dist
           # tag push → release on THAT tag; dispatch → mint build-<run>.
           if [ "$DEBUG_BUILD" = "true" ]; then
             # Debuggable test APK: its own rolling prerelease, never touches build-<n>.
-            tag="debug-android"
-            gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+            # (a pushed debug-* tag becomes the release tag; a dispatch reuses debug-android)
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              tag="$GITHUB_REF_NAME"
+            else
+              tag="debug-android"
+              gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+            fi
           elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="$GITHUB_REF_NAME"
           else

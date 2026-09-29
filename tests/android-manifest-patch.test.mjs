@@ -46,6 +46,8 @@ test('the debug build never leaves the real-build path: own tag, no pruning, no 
   const { readFileSync } = await import('node:fs');
   const yml = readFileSync(new URL('../.github/workflows/build.yml', import.meta.url), 'utf8');
   assert.match(yml, /tag="debug-android"/);
+  assert.match(yml, /tags: \["build-\*", "debug-\*"\]/);
+  assert.match(yml, /macos-dmg:[\s\S]*?startsWith\(github\.ref, 'refs\/tags\/build-'\)/, 'a debug-* tag must not build dmgs');
   assert.match(yml, /if \[ "\$DEBUG_BUILD" != "true" \]; then\n\s+gh release list/);
   assert.match(yml, /macos-dmg:[\s\S]*?!inputs\.android_debug/);
 });
