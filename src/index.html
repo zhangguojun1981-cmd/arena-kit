@@ -2,22 +2,13 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ArenaKit HUD</title>
-  <link rel="stylesheet" href="hud.css" />
+  <meta http-equiv="refresh" content="0; url=dock.html" />
+  <title>ArenaKit</title>
 </head>
 <body>
-  <!-- ArenaKit HUD overlay. In dev the main window loads arena.ai directly;
-       this file is the bundled frontendDist entry used for the overlay build.
-       M1+: HUD is injected as an overlay DOM into the arena.ai webview. -->
-  <div id="arenakit-hud" hidden>
-    <div class="ak-ball" id="ak-ball">AK</div>
-    <div class="ak-card" id="ak-card">
-      <div class="ak-row"><span class="ak-label">服务端模型</span><span id="ak-model">—</span></div>
-      <div class="ak-row"><span class="ak-label">额度</span><span id="ak-credit">—</span></div>
-      <div class="ak-bar"><div id="ak-bar-fill"></div></div>
-    </div>
-  </div>
-  <script type="module" src="hud.js"></script>
+  <!-- The bundled frontend's real entry is dock.html (the native side dock,
+       loaded by lib.rs as the "dock" child webview). This file only exists so
+       frontendDist has an index. -->
+  <a href="dock.html">ArenaKit Dock</a>
 </body>
 </html>

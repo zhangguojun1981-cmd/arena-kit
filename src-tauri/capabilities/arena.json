@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "arena-page",
+  "description": "Scripts injected into the REMOTE arena.ai page (injected/*.js via bridge.js). The dock is its own webview on macOS (WebviewUrl::App dock.html) and embedded inside the page on Android (dock-embedded.gen.js). Deliberately narrow: hand over run tokens, relay page events to the dock, allowlisted proxy GETs and the Rust event stream the embedded dock subscribes to (arenakit://trace, arenakit://page). No window/webview APIs and no arena_command (the page must never eval into itself via Rust).",
+  "windows": [
+    "main"
+  ],
+  "webviews": [
+    "arena"
+  ],
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://arena.ai/*"
+    ]
+  },
+  "permissions": [
+    "core:event:allow-unlisten",
+    "core:event:allow-listen",
+    "allow-on-token",
+    "allow-page-event",
+    "allow-proxy-get",
+    "allow-gist-request",
+    "allow-gist-token-set",
+    "allow-gist-token-status",
+    "allow-open-tab",
+    "allow-login-set",
+    "allow-login-clear"
+  ]
+}

@@ -1,0 +1,12 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gist-token-status"
+description = "Enables the gist_token_status command without any pre-configured scope."
+commands.allow = ["gist_token_status"]
+
+[[permission]]
+identifier = "deny-gist-token-status"
+description = "Denies the gist_token_status command without any pre-configured scope."
+commands.deny = ["gist_token_status"]
+

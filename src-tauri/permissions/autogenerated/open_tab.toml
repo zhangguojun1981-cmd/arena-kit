@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-tab"
+description = "Enables the open_tab command without any pre-configured scope."
+commands.allow = ["open_tab"]
+
+[[permission]]
+identifier = "deny-open-tab"
+description = "Denies the open_tab command without any pre-configured scope."
+commands.deny = ["open_tab"]

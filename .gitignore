@@ -10,11 +10,17 @@ dist
 # Tauri signing / secrets
 *.keystore
 *.jks
+# Throwaway CI debug signing key (password "android"); NOT a store key.
+!.github/android/debug.keystore
 .env
 .env.*
 
 # OS
 .DS_Store
+
+# Python bytecode (make-icons.py writes none, but defensively keep these out)
+__pycache__/
+*.pyc
 
 # Upstream source snapshots are NOT vendored here (see vendor/UPSTREAM.md)
 /vendor/upstream-src

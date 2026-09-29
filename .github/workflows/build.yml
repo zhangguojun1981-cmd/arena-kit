@@ -1,63 +1,276 @@
 name: build
 
+# Tests run on every branch push; the dmg/apk pipeline (and the release)
+# only runs for a build-* tag push or a manual dispatch — releases are
+# tag-driven, not push-driven.
 on:
   push:
-    branches: [main]
+    branches: [main, "arena/**"]
+    tags: ["build-*", "debug-*"]
   workflow_dispatch:
+    inputs:
+      android_debug:
+        description: "Android only: WebView-debuggable APK (prerelease debug-android; no dmg, no build-<n> release). Pushing a debug-* tag does the same."
+        type: boolean
+        default: false
+
+# Least privilege: every job is read-only except `release`, which publishes the
+# raw .dmg / .apk as GitHub Release assets (Actions artifacts are always
+# wrapped in a zip on download) and asks for `contents: write` itself.
+permissions:
+  contents: read
 
 jobs:
-  # Rust core unit tests (trace/pulse logic) — fast gate, runs everywhere.
+  # Pure-JS logic (src/lib) + injected page scripts — zero-dependency node:test.
+  node-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Syntax check (injected bundle + dock)
+        run: node scripts/check-syntax.mjs
+      - name: Embedded dock bundle is up to date (Android)
+        run: node scripts/bundle-dock.mjs --check
+      - name: node --test
+        run: node --test 'tests/**/*.test.mjs'
+
+  # Rust core unit tests (trace/usage/store logic) — fast gate, runs everywhere.
   rust-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # tauri (and thus this crate) links against webkit2gtk on Linux even for
+      # `cargo test --lib`; install the headers the build scripts look for.
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libssl-dev pkg-config libxdo-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
       - name: Cargo test (core logic)
         working-directory: src-tauri
         run: cargo test --lib
 
-  # macOS .dmg — real bundle artifact.
+  # macOS .dmg — one per CPU architecture: Apple Silicon (aarch64) and Intel
+  # (x86_64, cross-compiled on the same arm64 runner). Tauri names the files
+  # ArenaKit_<version>_aarch64.dmg / ArenaKit_<version>_x64.dmg. The artifact
+  # is only the hand-over to the release job below — download the .dmg from
+  # the Release, not from here.
+  # Builds only for a tag push / manual dispatch; branch pushes run tests only.
   macos-dmg:
-    needs: rust-test
+    needs: [rust-test, node-test]
+    if: (github.event_name == 'workflow_dispatch' && !inputs.android_debug) || startsWith(github.ref, 'refs/tags/build-')
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: apple-silicon
+          - target: x86_64-apple-darwin
+            arch: intel
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
-      - name: Build dmg
-        run: cargo tauri build
+      - name: Build dmg (${{ matrix.target }})
+        run: cargo tauri build --target ${{ matrix.target }}
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg out/
+          ls -la out
+          # Sanity: the binary inside the .app is built for the requested CPU.
+          app=$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -name '*.app' -maxdepth 1 | head -n 1)
+          lipo -archs "$app/Contents/MacOS/"* || file "$app/Contents/MacOS/"*
       - uses: actions/upload-artifact@v4
         with:
-          name: arenakit-macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          name: transfer-dmg-${{ matrix.arch }}
+          path: out/*.dmg
+          if-no-files-found: error
+          retention-days: 1
 
-  # Android .apk — mirrors arena-trace-android's signing approach
-  # (keystore in secrets; unsigned debug apk when secrets absent).
+  # Android .apk — debug-signed arm64 apk (installable on a device without a
+  # release keystore). gen/android is not committed; `tauri android init`
+  # regenerates it here. The dock is embedded in the page on mobile
+  # (src/embed/dock-embedded.gen.js, checked above).
+  # Builds only for a tag push / manual dispatch (same gate as macos-dmg).
   android-apk:
-    needs: rust-test
+    needs: [rust-test, node-test]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - name: Install NDK
-        run: sdkmanager "ndk;26.1.10909125"
+      # setup-android v3 tried to install the removed legacy "tools" package and
+      # failed; v4 takes an explicit package list (NDK included).
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
       - name: Android init + build
         env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+          AK_DEBUG: ${{ inputs.android_debug || startsWith(github.ref, 'refs/tags/debug-') }}
         run: |
-          cargo tauri android init || true
-          cargo tauri android build --apk
+          export NDK_HOME="$ANDROID_HOME/ndk/26.1.10909125"
+          export ANDROID_NDK_HOME="$NDK_HOME"
+          echo "NDK_HOME=$NDK_HOME"
+          cargo tauri android init --ci --skip-targets-install
+          # The generated manifest allows adb/cloud backup of app data (saved logins).
+          node scripts/patch-android-manifest.mjs src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          # Debug variant: MainActivity enables WebView remote debugging and the
+          # DEBUG_EVAL broadcast only when this marker is present (never in build-<n>).
+          if [ "$AK_DEBUG" = "true" ]; then
+            node scripts/patch-android-manifest.mjs --debug src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          fi
+          # Overlay our Android sources onto the generated project (MainActivity
+          # with status-bar/IME inset handling, adaptive launcher icon, …).
+          # gen/android itself is not committed; src-tauri/android/ is.
+          gen_main=$(find src-tauri/gen/android/app/src/main/java -name MainActivity.kt | head -n 1)
+          echo "generated MainActivity: $gen_main"
+          test -n "$gen_main"
+          grep -q "^package com.ati.arenakit$" "$gen_main" || { echo "unexpected package in $gen_main"; head -n 3 "$gen_main"; exit 1; }
+          rm -f "$gen_main"
+          cp -Rv src-tauri/android/. src-tauri/gen/android/
+          # The overlay needs androidx.webkit (WebViewCompat message listener for
+          # the link-tab bridge) and appcompat (PopupMenu). Recent Tauri templates
+          # already declare both; add them when an older template does not.
+          gradle=src-tauri/gen/android/app/build.gradle.kts
+          for dep in "androidx.webkit:webkit:1.14.0" "androidx.appcompat:appcompat:1.7.1"; do
+            name=${dep%:*}
+            grep -q "$name" "$gradle" || { echo "adding $dep"; printf '\ndependencies {\n    implementation("%s")\n}\n' "$dep" >> "$gradle"; }
+          done
+          grep -n "implementation(\|kotlin" "$gradle" src-tauri/gen/android/build.gradle.kts || true
+          cargo tauri icon src-tauri/icons/icon.png || true
+          # Release profile (optimised + stripped; the --debug build shipped an
+          # unstripped ~190 MB .so). Gradle leaves it unsigned; we sign below.
+          cargo tauri android build --apk --target aarch64
+      # Sign with the committed throwaway debug key (.github/android/debug.keystore,
+      # password "android"), so every build has the SAME signature and installs
+      # over the previous one. Not a Play Store key — swap in your own via
+      # secrets when publishing for real.
+      - name: Align + sign + collect
+        env:
+          AK_DEBUG: ${{ inputs.android_debug || startsWith(github.ref, 'refs/tags/debug-') }}
+        run: |
+          mkdir -p out
+          version=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          suffix=""; [ "$AK_DEBUG" = "true" ] && suffix="-debug"
+          tools="$ANDROID_HOME/build-tools/35.0.0"
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' ! -name '*debug*' | head -n 1)
+          test -n "$apk" && echo "unsigned: $apk"
+          "$tools/zipalign" -p -f 4 "$apk" out/aligned.apk
+          "$tools/apksigner" sign --ks .github/android/debug.keystore --ks-type PKCS12 \
+            --ks-pass pass:android --ks-key-alias arenakitdebug --key-pass pass:android \
+            --out "out/ArenaKit_${version}_android-arm64${suffix}.apk" out/aligned.apk
+          rm -f out/aligned.apk
+          "$tools/apksigner" verify --print-certs "out/ArenaKit_${version}_android-arm64${suffix}.apk"
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
-          name: arenakit-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: transfer-apk
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publish the raw files: one prerelease per build. Triggered by a manually
+  # pushed build-* tag (that tag becomes the release) or a manual dispatch
+  # (a build-<run number> tag is created for it).
+  release:
+    needs: [macos-dmg, android-apk]
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
+      (needs.macos-dmg.result == 'success' || needs.android-apk.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: transfer-*
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN: ${{ github.run_number }}
+          REF: ${{ github.ref_name }}
+          DMG_OK: ${{ needs.macos-dmg.result }}
+          APK_OK: ${{ needs.android-apk.result }}
+          DEBUG_BUILD: ${{ inputs.android_debug || startsWith(github.ref, 'refs/tags/debug-') }}
+        run: |
+          ls -la dist
+          # tag push → release on THAT tag; dispatch → mint build-<run>.
+          if [ "$DEBUG_BUILD" = "true" ]; then
+            # Debuggable test APK: its own rolling prerelease, never touches build-<n>.
+            # (a pushed debug-* tag becomes the release tag; a dispatch reuses debug-android)
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              tag="$GITHUB_REF_NAME"
+            else
+              tag="debug-android"
+              gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+            fi
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="build-${RUN}"
+          fi
+          # Title follows the tag (build-45 → "build #45"), not the run number.
+          if [ "$DEBUG_BUILD" = "true" ]; then
+            title="ArenaKit Android debug (WebView debuggable, test only)"
+          elif [[ "$tag" =~ ^build-([0-9]+)$ ]]; then
+            title="ArenaKit build #${BASH_REMATCH[1]}"
+          else
+            title="ArenaKit ${tag}"
+          fi
+          notes="自动构建 ${tag} · 触发 ${REF} · 提交 ${SHA}"$'\n\n'"macOS dmg: ${DMG_OK} · Android apk: ${APK_OK}"$'\n\n'"下载下方的 .dmg / .apk 文件即可（非 zip）。macOS 有两个 dmg：Apple 芯片（M 系列）用 *_aarch64.dmg，Intel 芯片用 *_x64.dmg。Android 为 arm64 release 包，用仓库内固定的调试密钥签名（每次构建签名一致，可覆盖安装）；macOS dmg 未做 Apple 签名/公证，首次打开若提示已损坏请执行 xattr -cr /Applications/ArenaKit.app。"
+          gh release create "$tag" dist/* \
+            --repo "$REPO" --target "$SHA" --prerelease \
+            --title "$title" --notes "$notes"
+          url="https://github.com/${REPO}/releases/tag/${tag}"
+          echo "release=$url" >> "$GITHUB_OUTPUT"
+          # Keep only the release just published: delete every other build-*
+          # prerelease (a hand-pushed tag can carry a lower number than an
+          # earlier dispatch build, so number-sorting is not enough).
+          # (skipped for the debug build: it must not remove the real builds)
+          if [ "$DEBUG_BUILD" != "true" ]; then
+            gh release list --repo "$REPO" --limit 200 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease and (.tagName|startswith("build-"))) | .tagName' \
+              | while read -r old; do
+                  [ -n "$old" ] && [ "$old" != "$tag" ] || continue
+                  gh release delete "$old" --repo "$REPO" --yes --cleanup-tag || true
+                done
+          fi
+          {
+            echo "## 构建产物（直接下载，不是 zip）"
+            echo
+            echo "Release: ${url}"
+            echo
+            for f in dist/*; do echo "- https://github.com/${REPO}/releases/download/${tag}/$(basename "$f")"; done
+          } >> "$GITHUB_STEP_SUMMARY"

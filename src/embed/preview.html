@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ArenaKit — 安卓内嵌面板预览（开发用）</title>
+  <style>
+    body { margin: 0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; background: #fff; color: #1a1c22; }
+    .page { max-width: 720px; margin: 0 auto; padding: 20px 18px 140px; }
+    .bubble { border: 1px solid #e5e7eb; border-radius: 14px; padding: 12px 14px; margin: 12px 0; background: #f9fafb; }
+    .me { background: #eef2ff; border-color: #c7d2fe; }
+    .toolbar { position: fixed; left: 12px; bottom: 12px; display: flex; gap: 6px; flex-wrap: wrap; max-width: 60vw; }
+    .toolbar button { font: 12px/1 inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; }
+    .hint { color: #6b7280; font-size: 12px; }
+    @media (prefers-color-scheme: dark) { body { background: #111318; color: #e5e7eb; } .bubble { background: #1b1e26; border-color: #2a2e39; } .me { background: #1e2340; border-color: #33407a; } .toolbar button { background: #1b1e26; color: #e5e7eb; border-color: #2a2e39; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h2>arena.ai 页面替身</h2>
+    <p class="hint">这不是 Arena。这一页只用来在桌面浏览器里看安卓内嵌 UI：状态胶囊（额度环 + 模型 / 任务进度 + ⟳）、单击打开底部面板、长按快捷菜单、拖动后自动贴边、页面底部上拉刷新。下方按钮往 dock 灌假事件。</p>
+    <div class="bubble me">985×128=</div>
+    <div class="bubble">985 × 128 = 126,080</div>
+    <div class="bubble me">再来一题：473×82=</div>
+    <div class="bubble">473 × 82 = 38,786</div>
+  </div>
+  <div class="toolbar">
+    <button data-demo="pulse72">额度 72%</button>
+    <button data-demo="pulse15">额度 15%</button>
+    <button data-demo="pulse6">额度 6%</button>
+    <button data-demo="token">第 N 轮：截获令牌</button>
+    <button data-demo="model">识别模型 claude-opus-4-1</button>
+    <button data-demo="routed">切换模型 → gpt-5</button>
+    <button data-demo="anomaly">回复异常</button>
+    <button data-demo="reset">新对话</button>
+    <button data-demo="probe">探针进行中</button>
+    <button data-demo="flash">已发送 ✓</button>
+  </div>
+  <script>
+    // Minimal Tauri stand-in so the embedded bundle boots in "runtime" mode
+    // and the demo buttons can feed it events; nothing here touches Rust.
+    (function () {
+      const listeners = {};
+      const store = {};
+      window.__TAURI__ = {
+        core: {
+          invoke: async (cmd, args) => {
+            if (cmd === 'store_get') { const v = localStorage.getItem('ak.' + args.key); return v === null ? null : JSON.parse(v); }
+            if (cmd === 'store_set') { if (args.value === null) localStorage.removeItem('ak.' + args.key); else localStorage.setItem('ak.' + args.key, JSON.stringify(args.value)); return null; }
+            if (cmd === 'store_keys') { const out = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('ak.' + (args.prefix || ''))) out.push(k.slice(3)); } return out.sort(); }
+            if (cmd === 'page_event') { const l = listeners['arenakit://page']; if (l) l({ payload: { name: args.name, payload: args.payload } }); return null; }
+            return null;
+          },
+        },
+        event: { listen: async (name, cb) => { listeners[name] = cb; return () => { delete listeners[name]; }; } },
+      };
+      window.__ARENAKIT_PREVIEW_EMIT__ = (name, payload) => { const l = listeners[name]; if (l) l({ payload }); };
+      window.__ARENAKIT__ = {
+        navState: () => ({ sessionId: 'preview-session-0001', path: '/agent/preview-session-0001', title: '预览对话', agentPath: true }),
+        dispatch: (n, p) => { if (n === 'pulse-refresh') window.__ARENAKIT_PREVIEW_EMIT__('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 72, refreshedAt: Date.now() - 3600e3, at: Date.now() } }); return 1; },
+        send: (n, p) => { const l = listeners['arenakit://page']; if (l) l({ payload: { name: n, payload: p } }); },
+      };
+      window.ArenaProbe = { call: (action, argsJson, reqId) => {
+        // answer the RPCs the quick actions use so the flows can be watched
+        const args = JSON.parse(argsJson || '{}');
+        const ok = (r) => setTimeout(() => window.__ARENAKIT__.send('probe-result', { reqId, ok: true, result: r }), 300);
+        if (action === 'precheck') return ok({ session: 'preview-session-0001', agentMode: true, hasDraft: false, path: location.pathname });
+        if (action === 'sidebarList') return ok({ items: [] });
+        ok({});
+      } };
+    })();
+  </script>
+  <script src="dock-embedded.gen.js"></script>
+  <script>
+    (function () {
+      const emit = window.__ARENAKIT_PREVIEW_EMIT__;
+      let turn = 0;
+      const sid = 'preview-session-0001';
+      const demos = {
+        pulse72: () => emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 72, refreshedAt: Date.now() - 3600e3, at: Date.now() } }),
+        pulse15: () => emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 15, refreshedAt: Date.now() - 3600e3, at: Date.now() } }),
+        pulse6: () => emit('arenakit://page', { name: 'pulse', payload: { ok: true, percent: 6, refreshedAt: Date.now() - 3600e3, at: Date.now() } }),
+        token: () => { turn += 1; emit('arenakit://trace', { stage: 'token', sessionId: sid, runId: 'run_preview_' + turn, status: '已截获运行令牌' }); },
+        model: () => { if (!turn) demos.token(); emit('arenakit://trace', { stage: 'model', sessionId: sid, runId: 'run_preview_' + turn, complete: true, models: [{ model: 'claude-opus-4-1', provider: 'anthropic' }], spans: [{ spanId: 'a', model: 'claude-opus-4-1', usage: { totalTokens: 1234 }, costUsd: 0.0123, ended: true }] }); },
+        routed: () => { demos.token(); emit('arenakit://trace', { stage: 'model', sessionId: sid, runId: 'run_preview_' + turn, complete: true, models: [{ model: 'gpt-5', provider: 'openai' }], spans: [{ spanId: 'b', model: 'gpt-5', usage: { totalTokens: 890 }, costUsd: 0.004, ended: true }] }); },
+        anomaly: () => emit('arenakit://page', { name: 'reply-monitor', payload: { sessionId: sid, runId: 'run_preview_' + turn, frames: 3, textChars: 0, errorFrames: 0, ended: 'done', durationMs: 1200, at: Date.now(), turn } }),
+        reset: () => { turn = 0; emit('arenakit://page', { name: 'nav', payload: { sessionId: null, path: '/agent', title: '', agentPath: true, reason: 'demo' } }); },
+        probe: () => { const e = window.__ARENAKIT_EMBED__; let r = 0; const t = setInterval(() => { r += 1; e.setPill({ label: `探针 ${r}/5 · 命中 ${Math.floor(r / 3)}`, tone: 'active', busy: r < 5 }); if (r >= 5) { clearInterval(t); setTimeout(() => e.setPill({ label: '探针结束 · 命中 1', tone: 'active', busy: false }), 400); } }, 900); },
+        flash: () => { const e = window.__ARENAKIT_EMBED__; e.setPill({ label: '已发送 ✓', tone: 'active' }); setTimeout(() => e.setPill({ label: 'claude-opus-4-1', tone: 'normal' }), 2500); },
+      };
+      document.querySelectorAll('[data-demo]').forEach((b) => b.addEventListener('click', () => demos[b.dataset.demo]()));
+      setTimeout(demos.pulse72, 600);
+    })();
+  </script>
+</body>
+</html>

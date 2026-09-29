@@ -1,77 +1,99 @@
 /* ArenaKit injected/unlock.js
  * Source: theraker526/Arena-AI-Model-Unlocker-Extension (opus-restorer, research use)
  * MAIN world, document_start. Rewrites Next.js __next_f data to reveal hidden models.
- * PORT NOTE: boot.js set window._ac from ArenaKit front-end config before this runs.
+ * PORT NOTE: the extension's boot.js (extension storage → window._ac) is replaced
+ * by the ArenaKit boot below; the dock's switches reach it via __AK_UNLOCK_SET__.
  */
-// ---- boot.js (settings loader) ----
+// ---- ArenaKit boot (replaces the extension's boot.js) ----
+// The extension kept its settings in extension storage and handed them to
+// the MAIN-world interceptor through window._ac. Here both halves run in the
+// MAIN world at document_start, so the settings live in localStorage "_at"
+// ({e: enabled, o: Opus, h: hidden/blind-test models}) and the dock writes
+// them through window.__AK_UNLOCK_SET__(kind, on) (更多 → 解锁 Opus 全系 /
+// 解锁隐藏 / 盲测模型). The rewrite below runs while the page data streams
+// in, so a change applies on the next page load — the dock reloads.
 (function(){
-var d={e:true,o:true,h:false};
-try{var s=localStorage.getItem("_at");if(s)d=Object.assign(d,JSON.parse(s));}catch(x){}
-var t=document.createElement("script");
-t.textContent="window._ac="+JSON.stringify(d)+";";
-(document.documentElement||document).prepend(t);
-t.remove();
-if(chrome.storage&&chrome.storage.sync){
-chrome.storage.sync.get(d,function(r){localStorage.setItem("_at",JSON.stringify(r));});
-chrome.storage.onChanged.addListener(function(c,a){if(a==="sync"){try{var cur=JSON.parse(localStorage.getItem("_at")||"{}");for(var k in c)cur[k]=c[k].newValue;localStorage.setItem("_at",JSON.stringify(cur));}catch(x){}}});
-}
-chrome.runtime&&chrome.runtime.onMessage&&chrome.runtime.onMessage.addListener(function(m,s,r){
-if(m.t==="g"){try{var s=localStorage.getItem("_at");r(s?JSON.parse(s):d);}catch(x){r(d);}return true;}
-if(m.t==="s"){try{var cur=JSON.parse(localStorage.getItem("_at")||"{}");Object.assign(cur,m.d);localStorage.setItem("_at",JSON.stringify(cur));if(chrome.storage&&chrome.storage.sync)chrome.storage.sync.set(cur);}catch(x){}r({ok:1});return true;}
-});
+var d={e:true,o:false,h:false};
+try{var s=localStorage.getItem("_at");if(s)d=Object.assign(d,JSON.parse(s)||{});}catch(x){}
+window._ac=d;
+window.__AK_UNLOCK_SET__=function(kind,on){
+var cur={};try{cur=JSON.parse(localStorage.getItem("_at")||"{}")||{};}catch(x){cur={};}
+var k=kind==="opus"?"o":kind==="hidden"?"h":kind==="enabled"?"e":"";
+if(!k)return{ok:false};
+var before=cur[k];cur[k]=!!on;
+try{localStorage.setItem("_at",JSON.stringify(cur));}catch(x){return{ok:false};}
+return{ok:true,changed:before!==cur[k],settings:cur};
+};
+window.__AK_UNLOCK_GET__=function(){try{return JSON.parse(localStorage.getItem("_at")||"null")||d;}catch(x){return d;}};
 })();
-// ---- main.js (data interceptor) ----
+// ---- main.js (data interceptor) — ArenaKit safe rewrite ----
+// The extension's interceptor, made safe for the React Server Component
+// stream Next.js hydrates from (0.4.4 activated it for the first time and
+// taps on the page stopped working):
+//   * every edit keeps the byte length: RSC text rows are length-prefixed, a
+//     shorter string corrupts the parse → React never hydrates → no click
+//     handlers. false → "true " and "disable-opus" → "$undefined" + spaces
+//     (JSON whitespace, all ASCII);
+//   * router fetches are rewritten as a stream (no buffering) and only for
+//     text/x-component; the replacement Response keeps url / redirected /
+//     type (Next's router reads them); chat streams (text/plain,
+//     text/event-stream) are never touched;
+//   * any error → the original data, untouched.
 (function(){
-var c=window._ac||{e:true,o:true,h:false};
-if(!c.e)return;
-var np=Array.prototype.push;
+var c=window._ac||{e:true,o:false,h:false};
+delete window._ac;
+if(!c.e||(!c.o&&!c.h))return;
+function keep(orig,repl){var pad=orig.length-repl.length;return pad<0?orig:repl+" ".repeat(pad);}
 function p(s){
-if(typeof s!=="string"||s.length<80)return s;
+if(typeof s!=="string"||s.length<40)return s;
+try{
 var m=s;
 if(c.o){
-m=m.replace(/\\?"disable-opus\\?"\s*:\s*\\?"disable-opus\\?"/g,'"disable-opus":"$undefined"');
-m=m.replace(/\\"disable-opus\\"\s*:\s*\\"disable-opus\\"/g,'\\"disable-opus\\":\\"$undefined\\"');
-m=m.replace(/("(?:publicName|name)":\s*"[^"]*opus[^"]*"[\s\S]{0,500}?"userSelectable":\s*)false/gi,"$1true");
-m=m.replace(/(\\?"(?:publicName|name)\\?":\s*\\?"[^"]*opus[^"]*\\?"[\s\S]{0,500}?\\?"userSelectable\\?":\s*)false/gi,"$1true");
+m=m.replace(/(\\?)"disable-opus\1"(\s*):(\s*)\1"disable-opus\1"/g,function(all,b,s1,s2){return keep(all,b+'"disable-opus'+b+'"'+s1+':'+s2+b+'"$undefined'+b+'"');});
+m=m.replace(/(\\?"(?:publicName|name)\\?":\s*\\?"[^"\\]*opus[^"\\]*\\?"[\s\S]{0,500}?\\?"userSelectable\\?":\s*)false/gi,function(all,pre){return pre+"true ";});
 }
 if(c.h){
-m=m.replace(/"userSelectable"\s*:\s*false/g,'"userSelectable":true');
-m=m.replace(/\\"userSelectable\\":\s*false/g,'\\"userSelectable\\":true');
+m=m.replace(/(\\?"userSelectable\\?":\s*)false/g,function(all,pre){return pre+"true ";});
 }
-return m;
+return m.length===s.length?m:s;
+}catch(e){return s;}
 }
+var np=Array.prototype.push;
 function pp(){
 var a=arguments;
-for(var i=0;i<a.length;i++){
-if(Array.isArray(a[i])){
-for(var j=0;j<a[i].length;j++){
-if(j>0)a[i][j]=p(a[i][j]);
-}}}
+for(var i=0;i<a.length;i++){if(Array.isArray(a[i])){for(var j=1;j<a[i].length;j++)a[i][j]=p(a[i][j]);}}
 return np.apply(this,a);
 }
+function patch(v){if(Array.isArray(v)){for(var i=0;i<v.length;i++){if(Array.isArray(v[i])){for(var j=1;j<v[i].length;j++)v[i][j]=p(v[i][j]);}}if(v.push===np)v.push=pp;}}
 try{
 var f=self.__next_f;
 Object.defineProperty(self,"__next_f",{configurable:true,enumerable:true,
 get:function(){return f;},
-set:function(v){f=v;if(Array.isArray(v)){for(var i=0;i<v.length;i++){if(Array.isArray(v[i])){for(var j=1;j<v[i].length;j++)v[i][j]=p(v[i][j]);}}v.push=pp;}}
+set:function(v){f=v;patch(v);}
 });
-if(f&&Array.isArray(f)){for(var i=0;i<f.length;i++){if(Array.isArray(f[i])){for(var j=1;j<f[i].length;j++)f[i][j]=p(f[i][j]);}}f.push=pp;}
-else if(!f){f=[];f.push=pp;}
-}catch(e){
-var t=setInterval(function(){if(self.__next_f&&self.__next_f.push!==pp){for(var i=0;i<self.__next_f.length;i++){if(Array.isArray(self.__next_f[i])){for(var j=1;j<self.__next_f[i].length;j++)self.__next_f[i][j]=p(self.__next_f[i][j]);}}self.__next_f.push=pp;clearInterval(t);}},2);
-setTimeout(function(){clearInterval(t);},10000);
-}
+if(Array.isArray(f))patch(f);
+}catch(e){}
 var of=self.fetch;
+if(typeof of!=="function")return;
+function rewriteStream(r){
+if(!r||!r.ok||!r.body||typeof TransformStream!=="function"||typeof TextDecoder!=="function"||typeof TextEncoder!=="function")return r;
+var dec=new TextDecoder(),enc=new TextEncoder();
+var ts=new TransformStream({
+transform:function(chunk,ctl){ctl.enqueue(enc.encode(p(dec.decode(chunk,{stream:true}))));},
+flush:function(ctl){var t=dec.decode();if(t)ctl.enqueue(enc.encode(p(t)));}
+});
+var out=new Response(r.body.pipeThrough(ts),{status:r.status,statusText:r.statusText,headers:r.headers});
+try{Object.defineProperty(out,"url",{value:r.url});Object.defineProperty(out,"redirected",{value:r.redirected});Object.defineProperty(out,"type",{value:r.type});}catch(e){return r;}
+return out;
+}
 self.fetch=function(){var a=arguments;return of.apply(this,a).then(function(r){
 try{
-var u=typeof a[0]==="string"?a[0]:a[0]&&a[0].url||"";
-if(!u.startsWith("/")&&!u.includes("arena.ai"))return r;
-var ct=r.headers.get("content-type")||"";
-if(ct.includes("text/x-component")||ct.includes("text/plain")||u.includes("_rsc")){
-var cl=r.clone();return cl.text().then(function(t){
-if(t.includes("disable-opus")||t.includes("initialModels")||t.includes("userSelectable")){
-var pt=p(t);return new Response(pt,{status:r.status,statusText:r.statusText,headers:r.headers});}
-return r;});}
-}catch(e){}return r;});};
-delete window._ac;
+var u=typeof a[0]==="string"?a[0]:(a[0]&&a[0].url)||"";
+u=String(u);
+if(!(u.charAt(0)==="/"&&u.charAt(1)!=="/")&&!/^https:\/\/([\w-]+\.)*(lm)?arena\.ai\//.test(u))return r;
+var ct=(r.headers&&r.headers.get("content-type"))||"";
+if(ct.indexOf("text/x-component")===-1)return r;
+return rewriteStream(r);
+}catch(e){return r;}
+});};
 })();

@@ -1,93 +1,358 @@
+/* ArenaKit panel stylesheet — shared by the desktop dock webview and the
+ * embedded Android bottom sheet (scripts/bundle-dock.mjs retargets :root → :host).
+ *
+ * Palette + components follow arena-trace-android v0.6.x (Material 3, flat):
+ *   brand #2F6BFF / #9DB8FF, surfaces #FFFFFF·#F4F5F8·#E9EBF0 (dark #16181D·
+ *   #1F2228·#2A2E36), on-surface #15171C / #E6E8ED, muted #5F6673 / #9BA2AF,
+ *   outline #D8DBE2 / #353A45, ok #1E8E3E / #6DD58C, warn #B26A00 / #FFB951,
+ *   danger #D93025 / #FF8A80. Filled / tonal / outlined buttons, switches,
+ *   a segmented tab bar. Three theme modes: auto (system), light, dark. */
 :root {
-  --ak-bg: #1b1c20;
-  --ak-card: #26272d;
-  --ak-line: #34363d;
-  --ak-fg: #e8e8ea;
-  --ak-sub: #9aa0aa;
-  --ak-accent: #6366f1;
+  --ak-brand: #9DB8FF;
+  --ak-on-brand: #0B1A45;
+  --ak-brand-container: #233F8C;
+  --ak-on-brand-container: #DCE5FF;
+  --ak-surface: #16181D;
+  --ak-surface-low: #1F2228;
+  --ak-surface-high: #2A2E36;
+  --ak-on-surface: #E6E8ED;
+  --ak-muted: #9BA2AF;
+  --ak-outline: #353A45;
+  --ak-ok: #6DD58C;
+  --ak-warn: #FFB951;
+  --ak-warn-soft: rgba(255, 185, 81, .16);
+  --ak-danger: #FF8A80;
+  --ak-danger-soft: rgba(255, 138, 128, .16);
+  --ak-scrim: rgba(0, 0, 0, .5);
+  --ak-pill-bg: rgba(30, 33, 40, .97);
+  --ak-pill-stroke: rgba(255, 255, 255, .16);
+  /* legacy aliases used across the rules below */
+  --ak-bg: var(--ak-surface);
+  --ak-card: var(--ak-surface-low);
+  --ak-line: var(--ak-outline);
+  --ak-fg: var(--ak-on-surface);
+  --ak-sub: var(--ak-muted);
+  --ak-hint: var(--ak-muted);
+  --ak-accent: var(--ak-brand);
+  --ak-model: var(--ak-on-surface);
+  --ak-routed: var(--ak-warn);
+  --ak-link: var(--ak-brand);
+  --ak-bad: var(--ak-danger);
+  --ak-badge-bg: var(--ak-surface-high);
+  --ak-badge-fg: var(--ak-on-surface);
+  --ak-badge-warn-bg: var(--ak-warn-soft);
+  --ak-badge-warn-fg: var(--ak-warn);
+  --ak-badge-err-bg: var(--ak-danger-soft);
+  --ak-badge-err-fg: var(--ak-danger);
+  --ak-shadow: 0 8px 28px rgba(0, 0, 0, .55);
+  color-scheme: dark;
 }
+:root[data-theme="light"] {
+  --ak-brand: #2F6BFF;
+  --ak-on-brand: #FFFFFF;
+  --ak-brand-container: #DCE5FF;
+  --ak-on-brand-container: #0B2A7A;
+  --ak-surface: #FFFFFF;
+  --ak-surface-low: #F4F5F8;
+  --ak-surface-high: #E9EBF0;
+  --ak-on-surface: #15171C;
+  --ak-muted: #5F6673;
+  --ak-outline: #D8DBE2;
+  --ak-ok: #1E8E3E;
+  --ak-warn: #B26A00;
+  --ak-warn-soft: rgba(178, 106, 0, .12);
+  --ak-danger: #D93025;
+  --ak-danger-soft: rgba(217, 48, 37, .12);
+  --ak-scrim: rgba(0, 0, 0, .32);
+  --ak-pill-bg: rgba(255, 255, 255, .97);
+  --ak-pill-stroke: rgba(0, 0, 0, .12);
+  --ak-shadow: 0 8px 28px rgba(0, 0, 0, .22);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ak-brand: #2F6BFF;
+    --ak-on-brand: #FFFFFF;
+    --ak-brand-container: #DCE5FF;
+    --ak-on-brand-container: #0B2A7A;
+    --ak-surface: #FFFFFF;
+    --ak-surface-low: #F4F5F8;
+    --ak-surface-high: #E9EBF0;
+    --ak-on-surface: #15171C;
+    --ak-muted: #5F6673;
+    --ak-outline: #D8DBE2;
+    --ak-ok: #1E8E3E;
+    --ak-warn: #B26A00;
+    --ak-warn-soft: rgba(178, 106, 0, .12);
+    --ak-danger: #D93025;
+    --ak-danger-soft: rgba(217, 48, 37, .12);
+    --ak-scrim: rgba(0, 0, 0, .32);
+    --ak-pill-bg: rgba(255, 255, 255, .97);
+    --ak-pill-stroke: rgba(0, 0, 0, .12);
+    --ak-shadow: 0 8px 28px rgba(0, 0, 0, .22);
+    color-scheme: light;
+  }
+}
+
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
   height: 100%;
   background: var(--ak-bg);
   color: var(--ak-fg);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Noto Sans CJK SC", sans-serif;
   overflow-y: auto;
 }
-.ak-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--ak-line);
-  position: sticky;
-  top: 0;
-  background: var(--ak-bg);
-}
-.ak-logo {
-  width: 26px; height: 26px;
-  border-radius: 7px;
-  background: var(--ak-accent);
-  color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 12px;
-}
-.ak-title { font-weight: 600; }
+button, input, select, textarea { font-family: inherit; }
 
-.ak-mod { border-bottom: 1px solid var(--ak-line); }
+/* ── header (reference panel_sheet header: model · headline | quota · reset | ⟳) ── */
+.ak-head { padding: 8px 16px 10px; }
+/* desktop dock: the header stays visible while the modules scroll */
+:root:not([data-embed="true"]) .ak-head { position: sticky; top: 0; z-index: 2; background: var(--ak-bg); border-bottom: 1px solid var(--ak-outline); }
+.ak-head-row { display: flex; align-items: center; gap: 10px; }
+.ak-logo {
+  flex: none; width: 28px; height: 28px; border-radius: 8px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.ak-logo svg { width: 28px; height: 28px; display: block; }
+.ak-head-main { flex: 1; min-width: 0; }
+.ak-hud-model {
+  font-size: 18px; font-weight: 500; color: var(--ak-model);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25;
+}
+.ak-hud-model[data-routed="true"] { color: var(--ak-routed); }
+.ak-hud-model[data-known="false"] { color: var(--ak-sub); }
+.ak-hud-status { margin-top: 2px; font-size: 12px; color: var(--ak-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ak-head-quota { flex: none; text-align: right; min-width: 56px; }
+.ak-hud-reset { margin-top: 2px; font-size: 11px; color: var(--ak-sub); white-space: nowrap; }
+.ak-hud-reset.ak-warn { color: var(--ak-warn); }
+.ak-head-tools { display: flex; align-items: center; gap: 4px; flex: none; }
+.ak-head-tools .ak-icon-btn svg { width: 20px; height: 20px; fill: currentColor; }
+.ak-head-tools .ak-icon-btn[data-loading="true"] svg { animation: ak-spin 1s linear infinite; }
+@keyframes ak-spin { to { transform: rotate(360deg); } }
+
+/* quota bar: 4 dp, colour by health (reference panel_quota) */
+.ak-bar-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ak-bar-row .ak-bar { flex: 1; margin-top: 0; }
+.ak-bar-pct { flex: none; min-width: 3.2em; text-align: right; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ak-brand); }
+.ak-bar-pct[data-band="warning"] { color: var(--ak-warn); }
+.ak-bar-pct[data-band="danger"] { color: var(--ak-danger); }
+.ak-bar-pct[data-band="unknown"] { color: var(--ak-sub); font-weight: 500; }
+.ak-bar { height: 4px; border-radius: 2px; background: var(--ak-surface-high); overflow: hidden; margin-top: 10px; }
+#ak-bar-fill { height: 100%; width: 0; transition: width 0.4s; background: var(--ak-brand); border-radius: 2px; }
+#ak-bar-fill[data-band="warning"] { background: var(--ak-warn); }
+#ak-bar-fill[data-band="danger"] { background: var(--ak-danger); }
+
+/* ── activity row + log (reference panel_activity / panel_log) ── */
+.ak-activity {
+  display: flex; align-items: center; gap: 8px; padding: 6px 16px; cursor: pointer;
+  font-size: 12px; color: var(--ak-sub); user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+}
+.ak-activity-line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ak-activity .ak-chev { transition: transform .15s; }
+.ak-activity[aria-expanded="true"] .ak-chev { transform: rotate(180deg); }
+.ak-activity-log { margin: 0 16px 8px; max-height: 150px; }
+
+/* ── segmented tabs (reference MaterialButtonToggleGroup, 36 dp, 13 sp) ── */
+.ak-tabs { display: flex; margin: 4px 16px 0; border: 1px solid var(--ak-outline); border-radius: 18px; overflow: hidden; }
+.ak-tabs button {
+  flex: 1; height: 34px; border: 0; background: transparent; color: var(--ak-sub); font-size: 13px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; padding: 0;
+}
+.ak-tabs button + button { border-left: 1px solid var(--ak-outline); }
+.ak-tabs button[aria-selected="true"] { background: var(--ak-brand-container); color: var(--ak-on-brand-container); }
+.ak-pages { display: block; padding-bottom: 8px; }
+.ak-page { display: none; padding: 4px 0 8px; }
+.ak-page[data-active="true"] { display: block; }
+.ak-group { padding: 8px 16px; }
+.ak-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ak-on-surface); margin: 4px 0 6px; }
+.ak-group-note { font-weight: 400; font-size: 12px; color: var(--ak-sub); text-align: right; }
+.ak-divider { border: 0; border-top: 1px solid var(--ak-outline); margin: 4px 16px; }
+.ak-note { font-size: 11px; color: var(--ak-sub); margin: 6px 0; }
+.ak-empty { color: var(--ak-sub); font-size: 12px; padding: 8px 0; }
+.ak-about { padding: 12px 16px 4px; font-size: 11px; color: var(--ak-sub); text-align: center; }
+
+/* ── collapsible sections (usage / monitor / history) ── */
+.ak-mod { border-top: 1px solid var(--ak-outline); margin: 4px 16px 0; }
 .ak-mod-head {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 14px;
+  padding: 10px 0;
   cursor: pointer;
   font-weight: 600;
+  font-size: 13px;
   user-select: none;
+  -webkit-user-select: none;
 }
-.ak-chev { color: var(--ak-sub); transition: transform 0.15s; }
+.ak-chev { color: var(--ak-sub); transition: transform 0.15s; font-weight: 400; }
 .ak-mod[data-open="true"] .ak-chev { transform: rotate(0deg); }
 .ak-mod:not([data-open="true"]) .ak-chev { transform: rotate(-90deg); }
-.ak-mod-body { padding: 0 14px 12px; }
+.ak-mod-body { padding: 0 0 12px; }
 .ak-mod:not([data-open="true"]) .ak-mod-body { display: none; }
 
 .ak-big { font-size: 16px; font-weight: 600; }
 .ak-sub { color: var(--ak-sub); font-size: 12px; }
-.ak-row { display: flex; justify-content: space-between; align-items: baseline; }
+.ak-hint { color: var(--ak-hint); font-size: 11px; }
+.ak-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 
-.ak-bar {
-  height: 6px; border-radius: 3px; background: #333;
-  overflow: hidden; margin-top: 8px;
-}
-#ak-bar-fill {
-  height: 100%; width: 0; transition: width 0.4s; background: #22c55e;
-}
-#ak-bar-fill[data-band="warning"] { background: #eab308; }
-#ak-bar-fill[data-band="danger"] { background: #ef4444; }
-
+/* ── buttons: outlined (default) / filled / tonal (Material 3) ── */
 .ak-btn {
   display: block; width: 100%;
-  margin: 6px 0; padding: 8px 10px;
-  border: 1px solid var(--ak-line); border-radius: 8px;
-  background: var(--ak-card); color: var(--ak-fg);
-  cursor: pointer; font-size: 13px; text-align: left;
+  margin: 6px 0; padding: 8px 14px;
+  border: 1px solid var(--ak-outline); border-radius: 20px;
+  background: transparent; color: var(--ak-brand);
+  cursor: pointer; font-size: 13px; font-weight: 500; text-align: center;
+  -webkit-tap-highlight-color: transparent;
 }
-.ak-btn:hover { border-color: var(--ak-accent); }
-.ak-btn-sm { width: auto; padding: 6px 12px; }
+.ak-btn:hover { background: color-mix(in srgb, var(--ak-brand) 8%, transparent); }
+.ak-btn:active { background: color-mix(in srgb, var(--ak-brand) 16%, transparent); }
+.ak-btn.ak-filled { background: var(--ak-brand); color: var(--ak-on-brand); border-color: var(--ak-brand); }
+.ak-btn.ak-filled:hover { filter: brightness(1.05); }
+.ak-btn.ak-tonal { background: var(--ak-brand-container); color: var(--ak-on-brand-container); border-color: transparent; }
+.ak-btn-sm { width: auto; padding: 7px 14px; }
+.ak-btn-wide { width: 100%; margin-top: 6px; text-align: center; }
+.ak-btn[hidden] { display: none; }
+.ak-btn[disabled] { opacity: .45; cursor: default; }
+.ak-btn.ak-danger { color: var(--ak-danger); }
+.ak-icon-btn {
+  background: none; border: 0; color: var(--ak-sub); cursor: pointer;
+  width: 34px; height: 34px; border-radius: 17px; font-size: 16px; line-height: 1; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.ak-icon-btn:hover { background: var(--ak-surface-low); color: var(--ak-fg); }
+.ak-icon-btn.ak-tonal { background: var(--ak-brand-container); color: var(--ak-on-brand-container); }
+.ak-nav { display: flex; gap: 6px; margin-top: 4px; }
+.ak-nav .ak-btn { flex: 1; margin: 0; text-align: center; padding: 7px 0; }
 
+/* ── switches (Material 3 style, CSS only) ── */
 .ak-switch {
-  display: flex; align-items: center; gap: 8px;
-  margin: 8px 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 0; padding: 9px 0; cursor: pointer; font-size: 13px; color: var(--ak-on-surface);
+  -webkit-tap-highlight-color: transparent;
 }
-.ak-switch input { accent-color: var(--ak-accent); }
+.ak-switch-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ak-switch-text small { font-size: 11px; color: var(--ak-sub); }
+.ak-switch input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; pointer-events: none; }
+.ak-switch-track {
+  flex: none; position: relative; width: 44px; height: 24px; border-radius: 12px;
+  background: var(--ak-surface-high); border: 1px solid var(--ak-outline); transition: background .15s, border-color .15s;
+}
+.ak-switch-track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 8px;
+  background: var(--ak-muted); transition: transform .15s, background .15s;
+}
+.ak-switch input:checked + .ak-switch-track { background: var(--ak-brand); border-color: var(--ak-brand); }
+.ak-switch input:checked + .ak-switch-track::after { transform: translateX(20px); background: var(--ak-on-brand); }
+.ak-switch input:focus-visible + .ak-switch-track { outline: 2px solid var(--ak-brand); outline-offset: 2px; }
+/* switches without the track element (legacy markup) keep a native box */
+.ak-switch input:not(:has(+ .ak-switch-track)) { position: static; opacity: 1; width: 16px; height: 16px; accent-color: var(--ak-brand); pointer-events: auto; }
+
+/* ── stepper (reference 最多轮数 − / +) ── */
+.ak-stepper-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
+.ak-stepper { display: flex; align-items: center; gap: 2px; }
+.ak-stepper .ak-icon-btn { width: 32px; height: 32px; font-size: 18px; border: 1px solid var(--ak-outline); }
+.ak-stepper-num { width: 56px; margin: 0 4px; text-align: center; padding: 6px 4px; -moz-appearance: textfield; }
+.ak-stepper-num::-webkit-outer-spin-button, .ak-stepper-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 .ak-textarea {
   width: 100%; min-height: 70px; margin: 6px 0;
-  padding: 8px; border-radius: 8px;
-  border: 1px solid var(--ak-line);
-  background: var(--ak-card); color: var(--ak-fg);
-  font: 12px/1.4 monospace; resize: vertical;
+  padding: 8px 10px; border-radius: 12px;
+  border: 1px solid var(--ak-outline);
+  background: var(--ak-surface-low); color: var(--ak-fg);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical;
 }
-.ak-foot {
-  padding: 8px 14px; color: var(--ak-sub); font-size: 12px;
-  border-top: 1px solid var(--ak-line);
-  position: sticky; bottom: 0; background: var(--ak-bg);
+.ak-textarea:focus { outline: none; border-color: var(--ak-brand); }
+
+.ak-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.ak-kv { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 12px; }
+.ak-kv .ak-k { color: var(--ak-sub); white-space: nowrap; }
+.ak-kv .ak-v { text-align: right; word-break: break-word; }
+.ak-calls { margin-top: 6px; line-height: 1.5; }
+.ak-calls .ak-call { display: flex; justify-content: space-between; gap: 6px; border-top: 1px dashed var(--ak-outline); padding: 3px 0; }
+.ak-calls .ak-call .ak-flag { color: var(--ak-warn); }
+.ak-calls .ak-call .ak-err { color: var(--ak-danger); }
+.ak-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ak-btns .ak-btn { margin: 0; }
+.ak-input {
+  width: 100%; margin: 4px 0; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--ak-outline); background: var(--ak-surface-low); color: var(--ak-fg); font-size: 13px;
 }
+.ak-input:focus { outline: none; border-color: var(--ak-brand); }
+.ak-list { max-height: 320px; overflow-y: auto; }
+
+/* ── 账号 tab ── */
+.ak-acct-list { max-height: none; }
+.ak-acct { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--ak-outline); }
+.ak-acct:first-child { border-top: 0; }
+.ak-acct-avatar {
+  flex: none; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--ak-brand-container) center/cover no-repeat; color: var(--ak-on-brand-container); font-weight: 600; font-size: 15px; overflow: hidden;
+}
+.ak-acct[data-active="true"] .ak-acct-avatar { box-shadow: 0 0 0 2px var(--ak-brand); }
+.ak-acct-main { flex: 1; min-width: 0; }
+.ak-acct-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+.ak-acct-sub { font-size: 11px; color: var(--ak-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ak-acct-actions { flex: none; display: flex; align-items: center; gap: 2px; }
+.ak-acct-actions .ak-btn { margin: 0; padding: 6px 12px; }
+.ak-acct-actions .ak-icon-btn { width: 30px; height: 30px; font-size: 15px; }
+.ak-badge { display: inline-block; padding: 1px 7px; border-radius: 99px; font-size: 10px; font-weight: 600; background: var(--ak-badge-bg); color: var(--ak-badge-fg); vertical-align: middle; }
+.ak-badge.ak-badge-brand { background: var(--ak-brand-container); color: var(--ak-on-brand-container); }
+.ak-badge.ak-badge-warn { background: var(--ak-badge-warn-bg); color: var(--ak-badge-warn-fg); }
+.ak-acct-current { padding: 6px 0; }
+.ak-item { border-top: 1px solid var(--ak-outline); padding: 6px 0; font-size: 12px; }
+.ak-item .ak-item-title { font-weight: 600; word-break: break-word; }
+.ak-item .ak-item-title.ak-current { color: var(--ak-brand); }
+.ak-item .ak-item-models { color: var(--ak-fg); word-break: break-word; display: block; }
+.ak-item .ak-item-models.ak-sub { color: var(--ak-sub); }
+.ak-item .ak-item-actions { display: flex; gap: 10px; margin-top: 4px; }
+.ak-link { background: none; border: none; color: var(--ak-link); cursor: pointer; padding: 0; font-size: 12px; }
+.ak-link:hover { text-decoration: underline; }
+.ak-link[hidden] { display: none; }
+.ak-danger { color: var(--ak-danger); }
+
+/* ── turn rows (reference item_turn: R-number 44 dp mono · model 14 sp · tag · ✓ / spinner) ── */
+.ak-turns { margin-top: 2px; font-size: 13px; }
+.ak-turn { display: flex; gap: 8px; align-items: center; min-height: 40px; padding: 4px 0; border-top: 1px solid var(--ak-outline); }
+.ak-turn:first-child { border-top: 0; }
+.ak-turn .ak-turn-n { color: var(--ak-sub); width: 44px; flex: none; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.ak-turn .ak-turn-m { flex: 1; min-width: 0; word-break: break-word; font-size: 14px; }
+.ak-turn .ak-turn-m.ak-routed { color: var(--ak-routed); }
+.ak-turn .ak-turn-s { color: var(--ak-sub); white-space: nowrap; font-size: 11px; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+.ak-turn .ak-turn-ok { flex: none; width: 18px; height: 18px; color: var(--ak-ok); }
+.ak-turn .ak-turn-ok svg { width: 18px; height: 18px; fill: currentColor; }
+.ak-turn .ak-turn-spin { flex: none; width: 16px; height: 16px; border-radius: 8px; border: 2px solid var(--ak-surface-high); border-top-color: var(--ak-brand); animation: ak-spin 1s linear infinite; }
+.ak-turn .ak-turn-fail { flex: none; width: 18px; height: 18px; color: var(--ak-danger); }
+.ak-badge { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 11px; line-height: 15px; margin-left: 6px; background: var(--ak-badge-bg); color: var(--ak-badge-fg); vertical-align: 1px; }
+.ak-badge.ak-badge-warn { background: var(--ak-badge-warn-bg); color: var(--ak-badge-warn-fg); }
+.ak-badge.ak-badge-err { background: var(--ak-badge-err-bg); color: var(--ak-badge-err-fg); }
+
+/* labelled input (rename prefix, probe targets …) */
+.ak-field { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 6px; }
+.ak-field > span { font-size: 11px; color: var(--ak-sub); }
+
+/* probe module */
+.ak-inline { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-end; margin-bottom: 6px; }
+.ak-field-sm { width: 88px; margin: 0; }
+.ak-log { margin: 6px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; background: var(--ak-surface-low); border: 1px solid var(--ak-outline); border-radius: 10px; color: var(--ak-sub); }
+.ak-sub.ak-warn { color: var(--ak-warn); }
+
+/* usage view: run picker / evidence fold (extension popup parity) */
+.ak-fold { margin-top: 6px; font-size: 12px; }
+.ak-fold summary { cursor: pointer; color: var(--ak-sub); user-select: none; }
+.ak-fold[open] summary { color: var(--ak-fg); }
+.ak-ev { border-left: 2px solid var(--ak-outline); padding: 2px 0 2px 8px; margin: 6px 0; font-size: 11px; }
+.ak-ev .ak-ev-title { font-weight: 600; margin-bottom: 2px; }
+.ak-ev .ak-path { color: var(--ak-sub); font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.ak-ev .ak-legacy { color: var(--ak-warn); }
+.ak-call .ak-span { color: var(--ak-sub); font-family: ui-monospace, Menlo, monospace; font-size: 10px; }
+.ak-call .ak-copy { margin-left: 4px; }
+select.ak-input { appearance: auto; }
+
+/* settings: segmented choice (theme) */
+.ak-seg { display: flex; border: 1px solid var(--ak-outline); border-radius: 18px; overflow: hidden; margin: 6px 0; }
+.ak-seg button { flex: 1; border: 0; background: transparent; color: var(--ak-sub); padding: 8px 0; font-size: 12px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.ak-seg button + button { border-left: 1px solid var(--ak-outline); }
+.ak-seg button[aria-pressed="true"] { background: var(--ak-brand-container); color: var(--ak-on-brand-container); font-weight: 600; }
+
+/* embedded-only bits are hidden in the desktop dock (dock.js sets data-embed) */
+:root:not([data-embed="true"]) .ak-embed-only, :root:not([data-embed="true"]) #ak-pill-refresh-row { display: none; }

@@ -1,6 +1,7 @@
 /* ArenaKit injected/plus.js
  * Source: chen-dahan/Arena.ai-Plus content.js (GPLv3 — see vendor/UPSTREAM.md GPL note)
- * document_idle. PORT NOTE: OpenRouter price fetch -> invoke('proxy_get').
+ * document_idle. Runs as `(function (chrome) {…})(window.__AK_CHROME__)` (see gm-shim.js).
+ * OpenRouter price fetch goes through the native proxy via GM_xmlhttpRequest/proxy_get.
  */
 /*
  * Arena.ai Plus - Adds pricing and other useful data to Arena.ai's leaderboard tables.
@@ -12,8 +13,19 @@
  * (at your option) any later version.
  */
 
-(function () {
+(function (chrome) {
   'use strict';
+
+  // ArenaKit: 更多 → 排行榜性价比列. The switch is persisted here (the module
+  // runs before the dock exists); the columns are built while the leaderboard
+  // renders, so a change applies on the next page load — the dock reloads.
+  const AK_PLUS_KEY = 'arenakit.plus.on';
+  window.__AK_PLUS_SET__ = (on) => {
+    let before = null;
+    try { before = localStorage.getItem(AK_PLUS_KEY); localStorage.setItem(AK_PLUS_KEY, on ? '1' : '0'); } catch (e) { return { ok: false }; }
+    return { ok: true, changed: (before === '0') === !!on };
+  };
+  try { if (localStorage.getItem(AK_PLUS_KEY) === '0') return; } catch (e) { /* storage blocked: run */ }
 
   // ============================================
   // Configuration
@@ -40,6 +52,102 @@
   let currentColumnVisibility = { ...CONFIG.DEFAULT_COLUMN_VISIBILITY };
   let battleNotificationEnabled = false;
 
+  // OpenRouter data is third-party: never interpolate it into innerHTML raw.
+  const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+  }
+
+  /** Coalesce bursts of DOM mutations into at most one call per animation frame. */
+  function rafDebounce(fn) {
+    let pending = false;
+    return () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        fn();
+      });
+    };
+  }
+
+  // One shared OpenRouter request for pricing + context (previously fetched twice).
+  // Prefers the native proxy (no CORS/CSP limits) and falls back to page fetch.
+  let openRouterRequest = null;
+  function fetchOpenRouterModels() {
+    if (!openRouterRequest) {
+      openRouterRequest = loadOpenRouterModels().catch((error) => {
+        openRouterRequest = null; // allow a retry on the next init
+        throw error;
+      });
+    }
+    return openRouterRequest;
+  }
+
+  async function loadOpenRouterModels() {
+    const proxyGet = window.__ARENAKIT__ && window.__ARENAKIT__.proxyGet;
+    if (proxyGet) {
+      try {
+        const data = await proxyGet(CONFIG.OPENROUTER_URL);
+        if (data && typeof data === 'object') return data;
+      } catch { /* fall through to page fetch */ }
+    }
+    const response = await fetch(CONFIG.OPENROUTER_URL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+
+  // Column header tooltips (keys match ColumnInjector's showHeaderInfo calls).
+  const COLUMN_TOOLTIPS = {
+    pricing: {
+      title: 'Pricing',
+      description: 'Cost per token unit for input and output tokens, taken from OpenRouter. Hover a value for the breakdown.'
+    },
+    bfb: {
+      title: 'Bang for Buck',
+      description: 'Value score: (Elo &minus; 1000) &divide; ln(1 + average of input and output price), '
+        + 'decayed by 0.88 per rank position. Higher is better; free models show N/A.'
+    },
+    age: {
+      title: 'Model Age',
+      description: 'Time since the model was released, according to OpenRouter.'
+    },
+    ctx: {
+      title: 'Context',
+      description: 'Maximum context window (in tokens) supported by the model, according to OpenRouter.'
+    },
+    mod: {
+      title: 'Modalities',
+      description: 'Input (top row) and output (bottom row) data types the model supports: text, image, audio, video.'
+    }
+  };
+
+  const PLUS_STYLE = `
+    .lmarena-price-tooltip { position: fixed; z-index: 2147483000; max-width: 320px; padding: 10px 12px;
+      border-radius: 8px; background: rgba(20,20,24,.96); color: #eee; font: 12px/1.45 system-ui, sans-serif;
+      box-shadow: 0 4px 16px rgba(0,0,0,.4); opacity: 0; pointer-events: none; transition: opacity .12s; }
+    .lmarena-price-tooltip--visible { opacity: 1; }
+    .lmarena-price-tooltip__header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-weight: 600; }
+    .lmarena-price-tooltip__header-brand { display: inline-flex; align-items: center; gap: 4px; font-weight: 400; opacity: .7; }
+    .lmarena-price-tooltip__header-icon { width: 14px; height: 14px; }
+    .lmarena-price-tooltip__explanation, .lmarena-price-tooltip__source { color: #9aa0aa; margin: 4px 0; }
+    .lmarena-price-tooltip__row { display: flex; justify-content: space-between; gap: 16px; }
+    .lmarena-price-tooltip__label { color: #9aa0aa; }
+    .lmarena-price-cell--loading, .lmarena-bfb-cell--loading, .lmarena-age-cell--loading,
+    .lmarena-ctx-cell--loading, .lmarena-mod-cell--loading { opacity: .4; }
+    .lmarena-price-cell--na, .lmarena-bfb-cell--na, .lmarena-age-cell--na,
+    .lmarena-ctx-cell--na, .lmarena-mod-cell--na { opacity: .5; }
+    .lmarena-sort-button { display: inline-flex; align-items: center; gap: 4px; background: none; border: 0;
+      color: inherit; font: inherit; cursor: pointer; }
+    .lmarena-sort-icon { width: 14px; height: 14px; opacity: .4; }
+    .lmarena-sort-icon--active { opacity: 1; }
+    .lmarena-mod-container { display: flex; flex-direction: column; gap: 2px; }
+    .lmarena-mod-row { display: flex; gap: 3px; }
+    .lmarena-mod-icon { width: 16px; height: 16px; }
+    .lmarena-mod-enabled { opacity: 1; }
+    .lmarena-mod-disabled { opacity: .2; }
+  `;
+
   // Labs view detection
   function isLabsView() {
     return new URLSearchParams(window.location.search).get('rankBy') === 'labs';
@@ -56,14 +164,6 @@
   // ============================================
   // Token Unit Helpers
   // ============================================
-  function getTokenUnitLabel(unit) {
-    switch (unit) {
-      case 1000000: return '1M';
-      case 100000: return '100K';
-      default: return '1M';
-    }
-  }
-
   function convertCostToUnit(costPer1M, targetUnit) {
     return costPer1M * (targetUnit / 1000000);
   }
@@ -123,7 +223,8 @@
       ]);
       currentTokenUnit = result[CONFIG.TOKEN_UNIT_KEY] || CONFIG.DEFAULT_TOKEN_UNIT;
       currentColumnVisibility = result[CONFIG.COLUMN_VISIBILITY_KEY] || { ...CONFIG.DEFAULT_COLUMN_VISIBILITY };
-      battleNotificationEnabled = result[CONFIG.BATTLE_NOTIFICATION_KEY] ?? true;
+      // Off by default: a desktop WebView should not prompt for notification permission unasked.
+      battleNotificationEnabled = result[CONFIG.BATTLE_NOTIFICATION_KEY] ?? false;
     } catch (error) {
       console.warn('[LMArena Plus] Failed to load preferences:', error);
       currentTokenUnit = CONFIG.DEFAULT_TOKEN_UNIT;
@@ -206,9 +307,7 @@
     }
 
     _startObserving() {
-      this.observer = new MutationObserver(() => {
-        this._checkForCompletion();
-      });
+      this.observer = new MutationObserver(rafDebounce(() => this._checkForCompletion()));
 
       this.observer.observe(document.body, {
         childList: true,
@@ -505,12 +604,8 @@
 
     async _fetchContextData() {
       try {
-        const response = await fetch(CONFIG.OPENROUTER_URL, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const data = await response.json();
+        const data = await fetchOpenRouterModels();
         this._buildContextMap(data);
-
       } catch (error) {
         console.error('[LMArena Plus] Failed to fetch context data from OpenRouter:', error);
       }
@@ -566,12 +661,8 @@
 
     async _fetchPricing() {
       try {
-        const response = await fetch(CONFIG.OPENROUTER_URL, { cache: 'no-store' });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const data = await response.json();
+        const data = await fetchOpenRouterModels();
         this._buildPricingMap(data);
-
       } catch (error) {
         console.error('[LMArena Plus] Failed to fetch pricing from OpenRouter:', error);
       }
@@ -653,7 +744,7 @@
 
       this._showTooltipContent(element, `
         <div class="lmarena-price-tooltip__header">
-          <span class="lmarena-price-tooltip__header-title">${sourceModelName}</span>
+          <span class="lmarena-price-tooltip__header-title">${escapeHtml(sourceModelName)}</span>
           <span class="lmarena-price-tooltip__header-brand">
             <span class="lmarena-price-tooltip__header-brand-text"><em>Arena</em>.ai Plus</span>
             <img src="${this.iconUrl}" class="lmarena-price-tooltip__header-icon" alt="">
@@ -703,11 +794,11 @@
         <div class="lmarena-price-tooltip__breakdown">
           <div class="lmarena-price-tooltip__row">
             <span class="lmarena-price-tooltip__label">Input:</span>
-            <span class="lmarena-price-tooltip__value">${formatRow(inputMods)}</span>
+            <span class="lmarena-price-tooltip__value">${escapeHtml(formatRow(inputMods))}</span>
           </div>
           <div class="lmarena-price-tooltip__row">
             <span class="lmarena-price-tooltip__label">Output:</span>
-            <span class="lmarena-price-tooltip__value">${formatRow(outputMods)}</span>
+            <span class="lmarena-price-tooltip__value">${escapeHtml(formatRow(outputMods))}</span>
           </div>
         </div>
         <div class="lmarena-price-tooltip__source">Source: OpenRouter</div>
@@ -827,7 +918,7 @@
       }
 
       // Reset all buttons to default
-      for (const [type, btn] of this.headerButtons) {
+      for (const btn of this.headerButtons.values()) {
         this._updateButtonIcon(btn, 'default');
       }
 
@@ -850,7 +941,7 @@
       if (this.currentColumn) {
         this.currentColumn = null;
         this.currentDirection = null;
-        for (const [type, btn] of this.headerButtons) {
+        for (const btn of this.headerButtons.values()) {
           // Only update buttons that are still connected to DOM
           if (btn && btn.isConnected) {
             this._updateButtonIcon(btn, 'default');
@@ -1028,8 +1119,6 @@
       if (!nativeTh) return;
 
       const nativeClasses = Array.from(nativeTh.classList);
-      const nativeButton = nativeTh.querySelector('button');
-      const nativeButtonClasses = nativeButton ? Array.from(nativeButton.classList) : [];
 
       headerRow.querySelectorAll(
         '.lmarena-bfb-header, .lmarena-age-header, .lmarena-mod-header'
@@ -1160,7 +1249,7 @@
       }
 
       // For each table, find top 3 and add medals
-      for (const [table, cells] of tableGroups) {
+      for (const cells of tableGroups.values()) {
         // Sort by BfB value descending
         cells.sort((a, b) => b.value - a.value);
 
@@ -1258,7 +1347,6 @@
       // Create sortable button with dynamic label
       const button = document.createElement('button');
       button.className = 'lmarena-sort-button';
-      const unitLabel = getTokenUnitLabel(currentTokenUnit);
       button.innerHTML = `Pricing <span class="lmarena-sort-icon-container">${SORT_ICONS.default}</span>`;
       button.addEventListener('click', () => this.sortManager.toggleSort('pricing'));
 
@@ -1648,7 +1736,6 @@
 
     _updateCellContent(cell, modelName) {
       const pricing = this.pricingService.getPricing(modelName);
-      const unitLabel = getTokenUnitLabel(currentTokenUnit);
       const row = cell.closest('tr');
 
       if (pricing) {
@@ -1924,7 +2011,7 @@
   }
 
   function startEditColumnsPanelObserver() {
-    const observer = new MutationObserver(() => {
+    const observer = new MutationObserver(rafDebounce(() => {
       // Look for Arena's Edit Columns panel container
       const panels = document.querySelectorAll('.flex.flex-col.gap-1\\.5.p-3');
       for (const panel of panels) {
@@ -1932,7 +2019,7 @@
           injectPlusColumnsIntoPanel(panel);
         }
       }
-    });
+    }));
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
@@ -1942,6 +2029,7 @@
   let pricingService, contextService, tooltipManager, loadingManager, sortManager, columnInjector, tableObserver, notificationManager;
 
   async function init() {
+    GM_addStyle(PLUS_STYLE);
     await loadPreferences();
 
     pricingService = new PricingService();
@@ -1982,15 +2070,12 @@
       notificationManager.start();
     }
 
-    // Listen for preference changes from popup
-    chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
-      if (message.type === 'BATTLE_NOTIFICATION_CHANGED') {
-        battleNotificationEnabled = message.value;
-        if (notificationManager) {
-          notificationManager.setEnabled(battleNotificationEnabled);
-        }
-      }
-    });
+    // Dock hook: window.__AK_PLUS_SET__(on) shows / hides all Plus columns.
+    window.__AK_PLUS_SET__ = (on) => {
+      for (const column of PLUS_COLUMNS) currentColumnVisibility[column.key] = !!on;
+      applyColumnVisibility();
+      chrome.storage.sync.set({ [CONFIG.COLUMN_VISIBILITY_KEY]: { ...currentColumnVisibility } });
+    };
 
     // Start watching for Arena's Edit Columns panel
     startEditColumnsPanelObserver();
@@ -2001,4 +2086,4 @@
   } else {
     init();
   }
-})();
+})(window.__AK_CHROME__);
