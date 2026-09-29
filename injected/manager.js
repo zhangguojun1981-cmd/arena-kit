@@ -1815,12 +1815,6 @@
 
     const IMAGE_TYPE_ORDER = { universal: 0, t2i: 1, i2i: 2 };
 
-    const VIEW_MODES = {
-        grid: { icon: '⊞', label: 'grid' },
-        compact: { icon: '⊟', label: 'compact' },
-        list: { icon: '☰', label: 'list' }
-    };
-
     // ==================== 3. 模式检测器 ====================
     class ModeDetector {
         static detect() {
@@ -1877,7 +1871,8 @@
             if (this.data.settings.autoSyncMode === undefined) this.data.settings.autoSyncMode = 'change'; // 'change' | 'interval'
             if (this.data.settings.autoSyncInterval === undefined) this.data.settings.autoSyncInterval = 5; // 分钟
             if (this.data.settings.lockFabPosition === undefined) this.data.settings.lockFabPosition = false;
-            if (!this.data.settings.adminToken) this.data.settings.adminToken = '';
+            // The admin (GitHub push) token is session-only: never kept in storage. Drop one saved by older builds.
+            delete this.data.settings.adminToken;
             if (!this.data.settings.lastRecommendedDate) this.data.settings.lastRecommendedDate = '';
             if (!this.data.settings.fabPosition) this.data.settings.fabPosition = { right: 12, top: null, bottom: null };
             if (!this.data.modelOrder) this.data.modelOrder = { text: [], search: [], image: [], code: [], video: [] };
@@ -2125,6 +2120,21 @@
             this.save();
         }
 
+        /**
+         * A rule pattern from the remote config ("/re/flags" or a bare source)
+         * → RegExp, or null when it is unsafe: too long, has a backreference,
+         * or repeats a group that itself repeats (catastrophic backtracking).
+         * These run against every model name on every scan.
+         */
+        compileRemotePattern(p) {
+            const m = p.match(/^\/(.*)\/([gimuy]*)$/s);
+            const source = m ? m[1] : p;
+            const flags = m ? m[2] : '';
+            if (source.length > 200 || /\\[1-9]|\\k</.test(source)) return null;
+            if (/\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*[+*{]/.test(source)) return null;
+            try { return new RegExp(source, flags); } catch (e) { return null; }
+        }
+
         async loadRemoteConfig() {
             try {
                 const res = await new Promise((resolve, reject) => {
@@ -2138,16 +2148,11 @@
                 });
                 if (res.status >= 200 && res.status < 300) {
                     const remoteConfig = JSON.parse(res.responseText);
-                    if (remoteConfig.COMPANY_RULES) {
+                    if (Array.isArray(remoteConfig.COMPANY_RULES) && remoteConfig.COMPANY_RULES.length <= 500) {
                         COMPANY_RULES = remoteConfig.COMPANY_RULES.map(r => ({
-                            patterns: r.patterns.map(p => {
-                                if (typeof p === 'string') {
-                                    const match = p.match(/^\/(.*?)\/([gimuy]*)$/);
-                                    if (match) return new RegExp(match[1], match[2]);
-                                    return new RegExp(p);
-                                }
-                                return p;
-                            }),
+                            patterns: (Array.isArray(r.patterns) ? r.patterns.slice(0, 20) : [])
+                                .map(p => (typeof p === 'string' ? this.compileRemotePattern(p) : p))
+                                .filter(Boolean),
                             company: r.company,
                             icon: r.icon
                         }));
@@ -4429,9 +4434,37 @@
             GM_setValue(LOGO_CACHE_KEY, JSON.stringify(this.logoCache));
         }
 
+        /**
+         * svgHtml is scraped from the page DOM or read from the remote
+         * recommended config, then rendered with innerHTML: keep only a plain
+         * <svg> tree (no scripts, event handlers, javascript: links or embedded
+         * documents). Results are cached — lists re-render often.
+         */
+        sanitizeSvg(html) {
+            if (!this._svgCache) this._svgCache = new Map();
+            if (this._svgCache.has(html)) return this._svgCache.get(html);
+            let out = '';
+            try {
+                const doc = new DOMParser().parseFromString(String(html), 'text/html');
+                const svg = doc.body.querySelector('svg');
+                if (svg) {
+                    svg.querySelectorAll('script,foreignObject,iframe,object,embed').forEach((n) => n.remove());
+                    for (const el of [svg, ...svg.querySelectorAll('*')]) {
+                        for (const attr of Array.from(el.attributes)) {
+                            if (/^on/i.test(attr.name) || /^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name);
+                        }
+                    }
+                    out = svg.outerHTML;
+                }
+            } catch (e) { out = ''; }
+            this._svgCache.set(html, out);
+            return out;
+        }
+
         getOrgLogoHtml(company, fallbackIcon = '❔', svgHtml = '') {
-            if (svgHtml) {
-                return `<span class="lmm-dynamic-svg">${svgHtml}</span>`;
+            const safeSvg = svgHtml ? this.sanitizeSvg(svgHtml) : '';
+            if (safeSvg) {
+                return `<span class="lmm-dynamic-svg">${safeSvg}</span>`;
             }
             const rule = COMPANY_RULES.find(r => r.company === company);
             if (rule) {
@@ -4794,8 +4827,7 @@
                 this.scanner.toast(this.t('tokenRequired'), 'warning');
                 return;
             }
-            this.dm.data.settings.adminToken = token;
-            this.dm.save();
+            this.adminTokenInMemory = token; // session-only, see DataManager.load
 
             try {
                 // 获取当前文件 SHA（如果存在）
@@ -5440,7 +5472,7 @@
             this.settingsModal.querySelector('#lmm-rec-remote-date').textContent = this.remoteDate || '-';
             const adminSection = this.settingsModal.querySelector('#lmm-admin-section');
             if (adminSection) adminSection.style.display = this.adminMode ? '' : 'none';
-            this.settingsModal.querySelector('#lmm-admin-token').value = this.dm.data.settings.adminToken || '';
+            this.settingsModal.querySelector('#lmm-admin-token').value = this.adminTokenInMemory || '';
             this.settingsModalOverlay.classList.add('open');
             this.settingsModal.classList.add('open');
         }

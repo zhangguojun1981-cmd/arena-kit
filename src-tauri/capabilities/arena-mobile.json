@@ -1,0 +1,34 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "arena-page-mobile",
+  "description": "Mobile only. There is a single webview per window on Android/iOS, so the dock (src/embed/dock-embedded.gen.js) runs INSIDE the remote arena.ai page and must be able to subscribe to the Rust events the desktop dock webview receives (arenakit://trace, arenakit://page). The page commands are repeated here (also granted by arena-page.json through the webview label) so the mobile grant is self-contained. Still no arena_command.",
+  "platforms": [
+    "android",
+    "iOS"
+  ],
+  "windows": [
+    "arena"
+  ],
+  "webviews": [
+    "arena"
+  ],
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://arena.ai/*"
+    ]
+  },
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-on-token",
+    "allow-page-event",
+    "allow-proxy-get",
+    "allow-store-get",
+    "allow-store-set",
+    "allow-store-keys",
+    "allow-open-tab",
+    "allow-login-set",
+    "allow-login-clear"
+  ]
+}
