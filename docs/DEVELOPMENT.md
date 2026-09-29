@@ -258,3 +258,17 @@ node scripts/bundle-dock.mjs          # 重新生成安卓内嵌 dock 包(src/em
 ```
 
 CI(`.github/workflows/build.yml`):`node-test`(含 bundler `--check`)→ `rust-test` → `macos-dmg`(矩阵:`aarch64-apple-darwin` + `x86_64-apple-darwin`,同一台 arm64 runner 交叉编译 Intel 包,产物 `*_aarch64.dmg` / `*_x64.dmg`)/ `android-apk` → `release`(把 `.dmg` / `.apk` 原文件作为预发布的附件发布,只保留最新一个 `build-*`,需 `permissions: contents: write`)。**触发规则(0.5.0 起)**:`main` 与 `arena/**` 分支推送**只跑测试**(不出包);**推送 `build-*` tag 才出包**,release 直接用该 tag(标题 `ArenaKit build #<tag号>`);`gh workflow run build.yml --ref <branch>` 手动触发同样出包(自建 `build-<run>` tag)。出包前先改 `tauri.conf.json` / `Cargo.toml` / `package.json` 的版本号。
+
+## 安卓调试版(仅测试用)
+
+推送 `debug-<n>` tag(或 dispatch 时勾选 `android_debug`)只构建安卓 APK,发布为预发布 `debug-<n>` / `debug-android`,**不生成 dmg,也不会清理 `build-*` 发布**。它和正式版的唯一差别是清单里多了 `<meta-data android:name="arenakit.debug" android:value="true"/>`(`scripts/patch-android-manifest.mjs --debug`),`DebugHooks.kt` 只在有这个标记时启用:
+
+- WebView 远程调试(`@webview_devtools_remote_<pid>` / chrome://inspect)。
+- `DEBUG_EVAL` 广播:在页面里执行一个 JS 表达式(Promise 会被 await),结果写到 logcat(tag `ArenaKitDebug`)和 `<外部文件目录>/debug-<id>.json`:
+
+```
+am broadcast -a com.ati.arenakit.DEBUG_EVAL -p com.ati.arenakit --es id t1 --es js64 $(printf '%s' '(async()=>document.title)()' | base64 -w0)
+logcat -d -s ArenaKitDebug | grep '\[t1\]'
+```
+
+表达式经 `evaluateJavascript` 内联执行,不受页面 CSP 限制。调试版与正式版同签名,可互相覆盖安装。
