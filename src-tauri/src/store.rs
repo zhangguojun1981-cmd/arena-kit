@@ -10,6 +10,13 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+/// Keys that hold credentials (saved login sessions, API tokens). Commands
+/// reachable from the arena.ai page must not read, write or list them without
+/// the launch token — see `store_access_ok` in lib.rs.
+pub fn is_protected(key: &str) -> bool {
+    key == "accounts" || key.starts_with("secret.")
+}
+
 pub struct Store {
     path: PathBuf,
     data: Mutex<Map<String, Value>>,
@@ -128,6 +135,15 @@ mod tests {
         assert_eq!(again.get("prefs")["renamePrefix"], "AK-");
         assert_eq!(again.get("missing"), Value::Null);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn credential_keys_are_protected() {
+        assert!(is_protected("accounts"));
+        assert!(is_protected("secret.gistToken"));
+        assert!(!is_protected("prefs"));
+        assert!(!is_protected("history.a"));
+        assert!(!is_protected("accountsX"));
     }
 
     #[test]

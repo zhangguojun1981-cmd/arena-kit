@@ -113,7 +113,7 @@ fn guarded_arena(out: &mut String, name: &str, src: &str) {
 /// in the MAIN world before page load. UI scripts are deferred to
 /// DOMContentLoaded so they see a ready DOM. `embedded_dock` (mobile) is
 /// appended last in the deferred block, after every page hook it drives.
-fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
+fn build_init_script(embedded_dock: Option<&str>, platform: &str, guard: &str) -> String {
     let mut s = String::new();
     // Lets the (embedded) dock tell desktop from Android: settings rows,
     // keyboard shortcuts, touch-only hints.
@@ -141,7 +141,12 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str) -> String {
     guarded(&mut s, "manager", MANAGER_JS);
     guarded(&mut s, "plus", PLUS_JS);
     if let Some(dock) = embedded_dock {
-        guarded(&mut s, "dock-embedded", dock);
+        // The launch token exists only as this closure's argument: page scripts
+        // cannot read it, and the embedded dock (mobile: it runs INSIDE the
+        // arena page, so the webview label cannot tell it from the page) sends
+        // it along with every credential-store call. See `store_access_ok`.
+        let wrapped = format!("(function(__AK_GUARD__){{\n{}\n}})({});", dock, json!(guard));
+        guarded(&mut s, "dock-embedded", &wrapped);
     }
     s.push_str("};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',run);}else{run();}})();\n");
     s
@@ -587,19 +592,95 @@ fn page_event(app: tauri::AppHandle, name: String, payload: Value) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn store_get(store: tauri::State<'_, store::Store>, key: String) -> Value {
-    store.get(&key)
+/// Per-launch random token for the credential keys of the store.
+///
+/// Desktop: the dock is its own webview (label `dock`) and the arena page has
+/// no store permission at all. Mobile: the dock is embedded in the arena page,
+/// so label checks cannot separate it from page scripts (analytics, an XSS);
+/// it is handed this token through the closure of its init script instead.
+pub struct DockGuard(pub String);
+
+impl DockGuard {
+    fn new() -> DockGuard {
+        DockGuard(random_token())
+    }
+}
+
+/// 32 random bytes as hex: the OS RNG where there is one (macOS, Android,
+/// Linux), else a time / address / counter mix hashed with `RandomState`.
+fn random_token() -> String {
+    use std::io::Read;
+    let mut buf = [0u8; 32];
+    let filled = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .is_ok();
+    if !filled {
+        use std::hash::{BuildHasher, Hasher};
+        let addr = &buf as *const _ as usize;
+        for chunk in buf.chunks_mut(8) {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u128(now_millis() as u128);
+            h.write_usize(addr);
+            chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
+        }
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// May this caller touch `key`? Ordinary keys: always (that is what the store
+/// is for). Credential keys (`store::is_protected`): the native dock webview,
+/// or a caller presenting the launch token.
+fn store_access_ok(key: &str, webview_label: &str, given: Option<&str>, expected: &str) -> bool {
+    if !store::is_protected(key) || webview_label == "dock" {
+        return true;
+    }
+    !expected.is_empty() && given == Some(expected)
 }
 
 #[tauri::command]
-fn store_set(store: tauri::State<'_, store::Store>, key: String, value: Value) -> Result<(), String> {
+fn store_get(
+    webview: tauri::Webview,
+    store: tauri::State<'_, store::Store>,
+    guard: tauri::State<'_, DockGuard>,
+    key: String,
+    guard_token: Option<String>,
+) -> Result<Value, String> {
+    if !store_access_ok(&key, webview.label(), guard_token.as_deref(), &guard.0) {
+        return Err("无权访问该键".into());
+    }
+    Ok(store.get(&key))
+}
+
+#[tauri::command]
+fn store_set(
+    webview: tauri::Webview,
+    store: tauri::State<'_, store::Store>,
+    guard: tauri::State<'_, DockGuard>,
+    key: String,
+    value: Value,
+    guard_token: Option<String>,
+) -> Result<(), String> {
+    if !store_access_ok(&key, webview.label(), guard_token.as_deref(), &guard.0) {
+        return Err("无权访问该键".into());
+    }
     store.set(&key, value)
 }
 
+/// Credential keys are left out of the listing unless the caller may see them.
 #[tauri::command]
-fn store_keys(store: tauri::State<'_, store::Store>, prefix: String) -> Vec<String> {
-    store.keys(&prefix)
+fn store_keys(
+    webview: tauri::Webview,
+    store: tauri::State<'_, store::Store>,
+    guard: tauri::State<'_, DockGuard>,
+    prefix: String,
+    guard_token: Option<String>,
+) -> Vec<String> {
+    let trusted = store_access_ok("accounts", webview.label(), guard_token.as_deref(), &guard.0);
+    store
+        .keys(&prefix)
+        .into_iter()
+        .filter(|k| trusted || !store::is_protected(k))
+        .collect()
 }
 
 /// Hosts (and their subdomains) `proxy_get` may fetch: what the injected
@@ -644,6 +725,8 @@ fn proxy_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
+            // api.github.com rejects requests that carry no User-Agent.
+            .user_agent(concat!("ArenaKit/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() <= PROXY_MAX_REDIRECTS && proxy_target(attempt.url().as_str()).is_ok() {
                     attempt.follow()
@@ -662,23 +745,102 @@ fn proxy_client() -> &'static reqwest::Client {
 #[tauri::command]
 async fn proxy_get(url: String) -> Result<Value, String> {
     let target = proxy_target(&url)?;
-    let mut resp = proxy_client().get(target).send().await.map_err(|e| e.to_string())?;
+    let resp = proxy_client().get(target).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("proxy_get: HTTP {}", resp.status().as_u16()));
     }
+    let text = read_capped(resp).await?;
+    Ok(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+}
+
+/// The response body as text, refusing anything over `PROXY_MAX_BYTES`.
+async fn read_capped(mut resp: reqwest::Response) -> Result<String, String> {
     if resp.content_length().is_some_and(|n| n > PROXY_MAX_BYTES as u64) {
-        return Err("proxy_get: 响应过大".into());
+        return Err("响应过大".into());
     }
     let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         if body.len() + chunk.len() > PROXY_MAX_BYTES {
-            return Err("proxy_get: 响应过大".into());
+            return Err("响应过大".into());
         }
         body.extend_from_slice(&chunk);
     }
-    let text = String::from_utf8_lossy(&body).into_owned();
-    Ok(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+    Ok(String::from_utf8_lossy(&body).into_owned())
 }
+
+// ── GitHub Gist sync (Arena Manager's cloud backup) ──────────────────────
+// The token is kept in the credential store (`secret.gistToken`) and used
+// here: page scripts can set or clear it and ask for a Gist request, but can
+// never read it back, and can only reach api.github.com/gists.
+const GIST_TOKEN_KEY: &str = "secret.gistToken";
+const GIST_MAX_BODY: usize = 2 * 1024 * 1024;
+
+/// `https://api.github.com/gists[/<id>]` for an allowed method / id pair:
+/// creating (POST) takes no id, reading (GET) and updating (PATCH) need one.
+fn gist_url(method: &str, gist_id: Option<&str>) -> Result<String, String> {
+    let id = gist_id.map(str::trim).filter(|i| !i.is_empty());
+    if let Some(i) = id {
+        if i.len() > 64 || !i.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err("Gist ID 无效".into());
+        }
+    }
+    match (method, id) {
+        ("POST", None) => Ok("https://api.github.com/gists".to_string()),
+        ("GET", Some(i)) | ("PATCH", Some(i)) => Ok(format!("https://api.github.com/gists/{i}")),
+        _ => Err("不支持的 Gist 请求".into()),
+    }
+}
+
+#[tauri::command]
+fn gist_token_set(store: tauri::State<'_, store::Store>, token: String) -> Result<(), String> {
+    let t = token.trim();
+    if t.len() > 512 {
+        return Err("Token 过长".into());
+    }
+    store.set(GIST_TOKEN_KEY, if t.is_empty() { Value::Null } else { Value::String(t.to_string()) })
+}
+
+#[tauri::command]
+fn gist_token_status(store: tauri::State<'_, store::Store>) -> bool {
+    store.get(GIST_TOKEN_KEY).as_str().is_some_and(|t| !t.is_empty())
+}
+
+/// → `{status, body}` (any HTTP status: the caller maps 401 / 404 itself).
+#[tauri::command]
+async fn gist_request(
+    store: tauri::State<'_, store::Store>,
+    method: String,
+    gist_id: Option<String>,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let method = method.to_ascii_uppercase();
+    let url = gist_url(&method, gist_id.as_deref())?;
+    let token = match store.get(GIST_TOKEN_KEY) {
+        Value::String(t) if !t.is_empty() => t,
+        _ => return Err("未设置 GitHub Token".into()),
+    };
+    let target = proxy_target(&url)?;
+    let client = proxy_client();
+    let mut req = match method.as_str() {
+        "GET" => client.get(target),
+        "POST" => client.post(target),
+        _ => client.patch(target),
+    }
+    .header("Authorization", format!("token {token}"))
+    .header("Accept", "application/vnd.github.v3+json");
+    if let Some(b) = body {
+        let text = serde_json::to_string(&b).map_err(|e| e.to_string())?;
+        if text.len() > GIST_MAX_BODY {
+            return Err("请求体过大".into());
+        }
+        req = req.header("Content-Type", "application/json").body(text);
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    let text = read_capped(resp).await?;
+    Ok(json!({ "status": status, "body": text }))
+}
+
 
 /// Eval arbitrary JS inside the arena.ai page webview. Called by the native
 /// dock (dock.js) to drive probe RPCs, toggle the manager panel, set
@@ -815,6 +977,9 @@ pub fn run() {
             store_set,
             store_keys,
             proxy_get,
+            gist_request,
+            gist_token_set,
+            gist_token_status,
             open_tab,
             arena_command,
             login_set,
@@ -825,6 +990,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(data_dir.join("arenakit-store.json")));
             app.manage(TraceState::default());
+            app.manage(DockGuard::new());
             app.manage(LoginState::default());
 
             // Desktop: split-view window. `arena.ai` webview on the left,
@@ -835,7 +1001,7 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 let _ = desktop_layout(&app.state::<store::Store>().get("prefs"));
-                let init = build_init_script(None, "desktop");
+                let init = build_init_script(None, "desktop", "");
                 let width = 1360.0_f64;
                 let height = 900.0_f64;
                 let dock_w = 320.0_f64;
@@ -900,7 +1066,7 @@ pub fn run() {
 
             #[cfg(mobile)]
             {
-                let init = build_init_script(Some(DOCK_EMBED_JS), "mobile");
+                let init = build_init_script(Some(DOCK_EMBED_JS), "mobile", &app.state::<DockGuard>().0);
                 let nav_app = app.handle().clone();
                 let load_app = app.handle().clone();
                 let _arena = tauri::WebviewWindowBuilder::new(
@@ -935,6 +1101,50 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_keys_need_the_dock_or_the_launch_token() {
+        let tok = "abc123";
+        // Ordinary keys: anyone who may use the store.
+        assert!(store_access_ok("prefs", "arena", None, tok));
+        // Credential keys: the native dock webview, or the token.
+        for key in ["accounts", "secret.gistToken"] {
+            assert!(store_access_ok(key, "dock", None, tok), "{key}: dock");
+            assert!(store_access_ok(key, "arena", Some(tok), tok), "{key}: token");
+            assert!(!store_access_ok(key, "arena", None, tok), "{key}: page without token");
+            assert!(!store_access_ok(key, "arena", Some("wrong"), tok), "{key}: wrong token");
+            assert!(!store_access_ok(key, "arena", Some(""), ""), "{key}: empty token never matches");
+        }
+    }
+
+    #[test]
+    fn launch_tokens_are_long_hex_and_differ() {
+        let (a, b) = (random_token(), random_token());
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn gist_requests_are_limited_to_the_gists_api() {
+        assert_eq!(gist_url("POST", None).unwrap(), "https://api.github.com/gists");
+        assert_eq!(gist_url("POST", Some("  ")).unwrap(), "https://api.github.com/gists");
+        assert_eq!(gist_url("GET", Some("abc123")).unwrap(), "https://api.github.com/gists/abc123");
+        assert_eq!(gist_url("PATCH", Some("abc123")).unwrap(), "https://api.github.com/gists/abc123");
+        for (m, id) in [
+            ("GET", None),
+            ("PATCH", None),
+            ("DELETE", Some("abc")),
+            ("POST", Some("abc")),
+            ("GET", Some("../user")),
+            ("GET", Some("a/b")),
+            ("GET", Some("abc?x=1")),
+        ] {
+            assert!(gist_url(m, id).is_err(), "{m} {id:?}");
+        }
+        // Whatever the id, the target passes the proxy allowlist.
+        assert!(proxy_target(&gist_url("GET", Some("abc123")).unwrap()).is_ok());
+    }
 
     #[test]
     fn proxy_target_accepts_allowlisted_https_hosts() {
@@ -984,10 +1194,10 @@ mod tests {
 
     #[test]
     fn init_script_isolates_every_module() {
-        let s = build_init_script(None, "desktop");
+        let s = build_init_script(None, "desktop", "");
         // platform stamp, then bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("window.__ARENAKIT_PLATFORM__=\"desktop\";\ntry{\n"));
-        assert!(build_init_script(None, "mobile").starts_with("window.__ARENAKIT_PLATFORM__=\"mobile\";\n"));
+        assert!(build_init_script(None, "mobile", "").starts_with("window.__ARENAKIT_PLATFORM__=\"mobile\";\n"));
         assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
         for name in ["bridge", "gm-shim", "snoop", "monitor", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "account", "manager", "plus"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
@@ -1051,11 +1261,16 @@ mod tests {
 
     #[test]
     fn embedded_dock_is_appended_last_in_the_deferred_block() {
-        let s = build_init_script(Some("/*DOCK*/"), "mobile");
+        let s = build_init_script(Some("/*DOCK*/"), "mobile", "tok-123");
         let dock = s.find("/*DOCK*/").unwrap();
         // bridge.js has its own DOMContentLoaded hook; the deferred-run trailer is the LAST one.
         assert!(dock < s.rfind("DOMContentLoaded").unwrap());
         assert!(s.contains("[ArenaKit] dock-embedded init failed"));
+        // the launch token is only the wrapper's argument, never a page global
+        assert!(s.contains("(function(__AK_GUARD__){"));
+        assert!(s.contains("})(\"tok-123\");"));
+        assert_eq!(s.matches("tok-123").count(), 1);
+        assert!(!build_init_script(None, "desktop", "tok-123").contains("tok-123"));
         // the committed bundle is a self-contained classic script
         let bundle = include_str!("../../src/embed/dock-embedded.gen.js");
         assert!(bundle.starts_with("/* GENERATED by scripts/bundle-dock.mjs"));

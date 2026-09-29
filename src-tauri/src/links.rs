@@ -95,26 +95,14 @@ fn scheme_of(url: &str) -> String {
     }
 }
 
-/// Host and path of an http(s) URL without pulling in a parser: `scheme://host[:port]/path?…`.
+/// Host and path of an http(s) URL, from the same WHATWG parser the webview
+/// uses (so backslashes, `#`, `?`, userinfo and default ports mean what they mean
+/// to the browser). Unparsable input yields ("", "").
 fn host_and_path(url: &str) -> (String, String) {
-    let u = url.trim();
-    let rest = match u.find("://") {
-        Some(i) => &u[i + 3..],
-        None => return (String::new(), String::new()),
-    };
-    let end = rest.find(['?', '#']).unwrap_or(rest.len());
-    let rest = &rest[..end];
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, ""),
-    };
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    let host = if host.starts_with('[') {
-        host.split(']').next().map(|h| format!("{h}]")).unwrap_or_default()
-    } else {
-        host.split(':').next().unwrap_or(host).to_string()
-    };
-    (host, path.to_string())
+    match url.trim().parse::<tauri::Url>() {
+        Ok(u) => (u.host_str().unwrap_or("").to_string(), u.path().to_string()),
+        Err(_) => (String::new(), String::new()),
+    }
 }
 
 /// A main-frame navigation of the arena webview (same window).
@@ -208,6 +196,20 @@ mod tests {
         assert_eq!(route_main("file:///sdcard/secret.txt"), Route::Block);
         assert_eq!(route_main("content://com.example.provider/x"), Route::Block);
         assert_eq!(route_main("JavaScript:alert(1)"), Route::Block);
+    }
+
+    #[test]
+    fn host_is_the_one_the_browser_would_connect_to() {
+        // Look-alikes that a hand-rolled splitter reads as arena.ai.
+        for u in [
+            "https://evil.example\\@arena.ai/",
+            "https://evil.example#@arena.ai/",
+            "https://evil.example?x=@arena.ai/",
+            "https://arena.ai.evil.example/",
+        ] {
+            assert_eq!(route_main(u), Route::NewTab, "{u}");
+        }
+        assert_eq!(route_main("https://ARENA.AI:443/x"), Route::InPlace);
     }
 
     #[test]

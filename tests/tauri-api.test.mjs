@@ -24,6 +24,23 @@ test('createStore routes to the Rust store commands', async () => {
   ]);
 });
 
+test('createStore adds the launch token only when the embedded dock closure provides one', async () => {
+  const calls = [];
+  const tauri = { invoke: async (cmd, args) => { calls.push([cmd, args]); return null; } };
+  globalThis.__AK_GUARD__ = 'abc123';
+  try {
+    const store = createStore(tauri);
+    await store.get('accounts');
+    await store.set('secret.gistToken', 'x');
+    await store.keys('');
+  } finally { delete globalThis.__AK_GUARD__; }
+  assert.deepEqual(calls, [
+    ['store_get', { key: 'accounts', guardToken: 'abc123' }],
+    ['store_set', { key: 'secret.gistToken', value: 'x', guardToken: 'abc123' }],
+    ['store_keys', { prefix: '', guardToken: 'abc123' }],
+  ]);
+});
+
 test('getTauri is null outside the runtime', () => {
   assert.equal(getTauri(), null);
 });

@@ -132,6 +132,8 @@ jobs:
           export ANDROID_NDK_HOME="$NDK_HOME"
           echo "NDK_HOME=$NDK_HOME"
           cargo tauri android init --ci --skip-targets-install
+          # The generated manifest allows adb/cloud backup of app data (saved logins).
+          node scripts/patch-android-manifest.mjs src-tauri/gen/android/app/src/main/AndroidManifest.xml
           # Overlay our Android sources onto the generated project (MainActivity
           # with status-bar/IME inset handling, adaptive launcher icon, …).
           # gen/android itself is not committed; src-tauri/android/ is.

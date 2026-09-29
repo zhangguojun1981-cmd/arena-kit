@@ -158,3 +158,28 @@ test('manager.js: remote company-rule patterns are vetted, the admin token stays
   assert.ok(!/settings\.adminToken\s*=[^=]/.test(src), 'the admin token must not be written into persisted settings');
   assert.match(src, /delete this\.data\.settings\.adminToken/, 'a token saved by an older build is dropped on load');
 });
+
+test('the bundled dock page runs under a restrictive CSP', () => {
+  const conf = JSON.parse(read('src-tauri/tauri.conf.json'));
+  const csp = conf.app.security.csp;
+  assert.equal(typeof csp, 'string', 'csp must not be null');
+  assert.match(csp, /(^|; )default-src 'self'/);
+  assert.match(csp, /(^|; )script-src 'self'(;|$)/, 'no inline or remote scripts');
+  assert.ok(!/unsafe-eval|script-src[^;]*unsafe-inline/.test(csp));
+  assert.match(csp, /connect-src ipc: http:\/\/ipc\.localhost(;|$)/, 'only Tauri IPC, no network from the dock');
+  // dock.html must not rely on anything the policy forbids
+  const html = read('src/dock.html');
+  assert.ok(!/<script(?![^>]*\bsrc=)[^>]*>/.test(html), 'no inline <script>');
+  assert.ok(!/\son[a-z]+\s*=/.test(html), 'no inline event handlers');
+});
+
+test('both page capabilities grant the Gist commands and nothing wider', () => {
+  for (const f of ['arena', 'arena-mobile']) {
+    const cap = JSON.parse(read(`src-tauri/capabilities/${f}.json`));
+    for (const p of ['allow-gist-request', 'allow-gist-token-set', 'allow-gist-token-status']) {
+      assert.ok(cap.permissions.includes(p), `${f} has ${p}`);
+    }
+  }
+  const dock = JSON.parse(read('src-tauri/capabilities/default.json'));
+  assert.ok(!dock.permissions.some((p) => p.startsWith('allow-gist-')), 'the dock has no use for the Gist token');
+});

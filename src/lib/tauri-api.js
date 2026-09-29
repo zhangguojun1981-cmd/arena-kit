@@ -11,10 +11,16 @@ export function getTauri() {
  * localStorage in browser preview mode so the dock UI can still be exercised. */
 export function createStore(tauri) {
   if (tauri) {
+    // Embedded (Android) dock only: src-tauri hands it a per-launch token as the
+    // `__AK_GUARD__` argument of its init-script closure. Credential keys
+    // (`accounts`, `secret.*`) are refused without it; the desktop dock is
+    // recognised by its webview label instead and has no token.
+    const guard = typeof __AK_GUARD__ === 'string' ? __AK_GUARD__ : '';
+    const withGuard = (args) => (guard ? { ...args, guardToken: guard } : args);
     return {
-      get: (key) => tauri.invoke('store_get', { key }),
-      set: (key, value) => tauri.invoke('store_set', { key, value: value === undefined ? null : value }),
-      keys: (prefix) => tauri.invoke('store_keys', { prefix: prefix || '' }),
+      get: (key) => tauri.invoke('store_get', withGuard({ key })),
+      set: (key, value) => tauri.invoke('store_set', withGuard({ key, value: value === undefined ? null : value })),
+      keys: (prefix) => tauri.invoke('store_keys', withGuard({ prefix: prefix || '' })),
     };
   }
   const ls = globalThis.localStorage;

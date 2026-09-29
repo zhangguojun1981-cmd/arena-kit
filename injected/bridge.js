@@ -160,6 +160,11 @@
     proxyGet: (url) => invoke('proxy_get', { url }),
     storeGet: (key) => invoke('store_get', { key }),
     storeSet: (key, value) => invoke('store_set', { key, value: value === undefined ? null : value }),
+    // GitHub Gist sync (manager.js). The token lives in Rust: it can be set or
+    // cleared here but never read back, and requests only reach api.github.com/gists.
+    gistTokenSet: (token) => invoke('gist_token_set', { token: String(token || '') }),
+    gistTokenStatus: () => invoke('gist_token_status'),
+    gistRequest: (method, gistId, body) => invoke('gist_request', { method, gistId: gistId || null, body: body === undefined ? null : body }),
     send, on, dispatch, navState, sessionFromPath, isNewChatPath,
   };
 

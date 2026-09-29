@@ -22,6 +22,24 @@ test('bridge exposes the IPC surface and routes commands', async () => {
   assert.equal(page.calls.find((c) => c.cmd === 'proxy_get').args.url, 'https://arena.ai/x');
 });
 
+test('bridge exposes Gist calls that never carry a token', async () => {
+  const page = fakePage({ pathname: '/agent/abc-123' });
+  runInjected('injected/bridge.js', page.sandbox);
+  const ak = page.sandbox.__ARENAKIT__;
+  await ak.gistTokenSet('ghp_x');
+  await ak.gistTokenStatus();
+  await ak.gistRequest('PATCH', 'abc', { files: {} });
+  await ak.gistRequest('POST', '', { files: {} });
+  const by = (cmd) => page.calls.filter((c) => c.cmd === cmd).map((c) => plain(c.args));
+  assert.deepEqual(by('gist_token_set'), [{ token: 'ghp_x' }]);
+  assert.equal(by('gist_token_status').length, 1);
+  assert.deepEqual(by('gist_request'), [
+    { method: 'PATCH', gistId: 'abc', body: { files: {} } },
+    { method: 'POST', gistId: null, body: { files: {} } },
+  ]);
+  for (const a of by('gist_request')) assert.ok(!('token' in a) && !('Authorization' in a));
+});
+
 test('bridge announces navigation on init, pushState and popstate with session ids', async () => {
   const page = fakePage({ pathname: '/agent' });
   runInjected('injected/bridge.js', page.sandbox);
