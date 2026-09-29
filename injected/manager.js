@@ -2410,8 +2410,12 @@
         toast(msg, type = 'info') {
             document.querySelectorAll('.lmm-toast').forEach(t => t.remove());
             const t = document.createElement('div'); t.className = `lmm-toast lmm-toast-${type}`;
-            t.innerHTML = `<span>${type === 'success' ? '✅' : type === 'warning' ? '⚠️' : 'ℹ️'}</span><span>${msg}</span><button class="lmm-toast-x">×</button>`;
-            document.body.appendChild(t); t.querySelector('.lmm-toast-x').onclick = () => t.remove(); setTimeout(() => t.remove(), 4000);
+            // msg can carry model names read from the page or server error text: text only, never markup.
+            const icon = document.createElement('span'); icon.textContent = type === 'success' ? '✅' : type === 'warning' ? '⚠️' : 'ℹ️';
+            const text = document.createElement('span'); text.textContent = String(msg);
+            const close = document.createElement('button'); close.className = 'lmm-toast-x'; close.textContent = '×';
+            t.append(icon, text, close);
+            document.body.appendChild(t); close.onclick = () => t.remove(); setTimeout(() => t.remove(), 4000);
         }
 
         startObserving() {

@@ -3881,7 +3881,7 @@ function renderTurns() {
     const model = e.models.join(' / ') || e.model;
     const icon = model ? `<span class="ak-turn-ok" title="已识别">${ICON_CHECK}</span>` : failed(e) ? `<span class="ak-turn-fail" title="${esc(e.status || '')}">${ICON_ALERT}</span>` : '<span class="ak-turn-spin" title="识别中"></span>';
     const status = model ? (e.status && !/^已识别|^完成|^历史/.test(e.status) ? e.status : '') : (e.status || '识别中');
-    return `<div class="ak-turn"><span class="ak-turn-n">R${e.turn}</span><span class="ak-turn-m${e.routed ? ' ak-routed' : ''}">${esc(model || (failed(e) ? (e.status || '未识别') : '识别中…'))}${e.strength ? ' <span class="ak-sub">· ' + esc(e.strength) + '</span>' : ''}${routed}${marks}</span>${status && model ? `<span class="ak-turn-s">${esc(status)}</span>` : ''}${icon}</div>`;
+    return `<div class="ak-turn"><span class="ak-turn-n">R${esc(e.turn)}</span><span class="ak-turn-m${e.routed ? ' ak-routed' : ''}">${esc(model || (failed(e) ? (e.status || '未识别') : '识别中…'))}${e.strength ? ' <span class="ak-sub">· ' + esc(e.strength) + '</span>' : ''}${routed}${marks}</span>${status && model ? `<span class="ak-turn-s">${esc(status)}</span>` : ''}${icon}</div>`;
   }).join('');
 }
 
@@ -4036,7 +4036,7 @@ function renderHistory() {
   q('ak-history-list').innerHTML = rows.map((r) => {
     const turns = recordTurns(r);
     const models = turns.length > 1
-      ? turns.map((t) => `R${t.turn ?? '?'} ${esc(t.models.join('/'))}`).join(' · ')
+      ? turns.map((t) => `R${esc(t.turn ?? '?')} ${esc(t.models.join('/'))}`).join(' · ')
       : esc(recordModels(r).map((m) => m.model).join(' / '));
     const t = r.totals || {};
     const usage = t.spanCount ? `${formatTokens(t.tokens, t.tokensApproximate)} · ${formatMoney(t.costUsd)}` : '';
@@ -4434,7 +4434,7 @@ function renderMonitor() {
     const badges = e.anomalies.map((a) => `<span class="ak-badge ak-badge-err">${esc(a.label.split('：')[0])}</span>`).join('');
     const when = new Date(e.at);
     const hm = `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
-    return `<div class="ak-item"><span class="ak-item-title">${esc(hm)} · ${e.turn ? 'R' + e.turn : '会话 ' + esc(e.sessionId.slice(0, 8))}${badges}</span><span class="ak-item-models ak-sub">${esc(e.line)}</span></div>`;
+    return `<div class="ak-item"><span class="ak-item-title">${esc(hm)} · ${e.turn ? 'R' + esc(e.turn) : '会话 ' + esc(e.sessionId.slice(0, 8))}${badges}</span><span class="ak-item-models ak-sub">${esc(e.line)}</span></div>`;
   }).join('');
 }
 onPage('reply-monitor', (summary) => {
