@@ -131,7 +131,8 @@ https://evil.example\.arena.ai/        https://127.0.0.1:8080#.arena.ai/
 3. **Gist token 的残余**:见 §1.7。管理员推送功能(连续点击 5 次进入)建议仅保留在独立构建里。
 4. **安卓 APK 用仓库里提交的调试钥匙签名**(`.github/android/debug.keystore`,密码 `android`,公开)。个人使用无碍;若要分发,请换成自己的钥匙并放进 GitHub Secrets。
 5. **许可证**:`plus.js`(GPLv3)等见 `THIRD_PARTY_NOTICES.md`,公开发布前必须处理。
-6. **以下内容本环境无法验证,必须真机确认**:安卓存储守卫(账号列表 / 切换 / 保存登录仍正常)、内嵌 dock 携带令牌的所有存储调用、Gist 同步端到端(上传 / 下载 / 自动同步 / 旧 token 迁移)、桌面 dock 在新 CSP 下样式与功能正常、安卓 `allowBackup` 补丁确实生效(`aapt dump xmltree` 或 `adb shell dumpsys package` 查看)。
+6. **真机(PHZ110 / Android 16,调试版)已验证**:页面脚本读写 `accounts` / `secret.*` 被拒且键名不可见、内嵌 dock 仍列出全部账号且无拒绝提示、`allowBackup` 已关闭、Gist token 设置 / 查询 / 清除、Gist ID 与方法校验、真实 HTTPS 往返(带假 token 请求 `api.github.com/gists/<id>` 得到 GitHub 的 401 Bad credentials,token 之后已清除)。注意:访问 GitHub 受手机上代理 / VPN 规则影响(fake-ip 地址),规则不放行时表现为约 5 秒后连接超时;错误信息现在会带上完整原因链。
+7. **以下内容仍未在真机验证**:账号切换 / 保存登录的交互、使用真实 token 的 Gist 上传 / 下载 / 自动同步、旧 token 迁移、桌面 dock 在新 CSP 下样式与功能正常。原先合并列出的待测项:安卓存储守卫(账号列表 / 切换 / 保存登录仍正常)、内嵌 dock 携带令牌的所有存储调用、Gist 同步端到端(上传 / 下载 / 自动同步 / 旧 token 迁移)、桌面 dock 在新 CSP 下样式与功能正常、安卓 `allowBackup` 补丁确实生效(`aapt dump xmltree` 或 `adb shell dumpsys package` 查看)。
 
 > 更正:本报告初版曾写"`eni.js` 默认开启的提示词含越狱风格内容"。核对 0.5.0 后**该结论不成立**——ENI 在 0.5.0 中默认关闭(`prefs.eniOn = false`,提示词默认为空,脚本头部亦注明),无需改动。
 
