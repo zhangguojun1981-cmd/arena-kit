@@ -9,4 +9,3 @@ commands.allow = ["gist_token_status"]
 identifier = "deny-gist-token-status"
 description = "Denies the gist_token_status command without any pre-configured scope."
 commands.deny = ["gist_token_status"]
-

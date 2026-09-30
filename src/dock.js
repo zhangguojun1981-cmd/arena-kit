@@ -330,6 +330,14 @@ function confirmDialog(opts) {
 async function requestReload(source = 'panel') {
   const now = Date.now();
   if (now - state.reloadAt < 800) return false;
+  if (source === 'watchdog' && state.rpc && (!EMBED || typeof globalThis.ArenaProbe === 'object')) {
+    const pre = await state.rpc.call('precheck').catch(() => null);
+    if (pre?.hasDraft && !pre.draftIsOwnPrompt) {
+      setStatus('回复异常，但输入框有未发送草稿；已停止自动刷新，请手动处理');
+      flashPill('有草稿 · 请手动刷新', 4000);
+      return false;
+    }
+  }
   state.reloadAt = now;
   const running = state.probe?.isRunning ? state.probe.mode : null;
   if (running) {
@@ -1206,6 +1214,11 @@ onPage('link-tab', (p) => {
   const open = !!(p && p.open);
   setStatus(open ? '链接页已打开（返回键 / ✕ 关闭）' : '链接页已关闭');
   if (open && EMBED) EMBED.close();
+});
+
+onPage('unlock-report', (p) => {
+  const hits = Math.max(0, Math.trunc(Number(p?.hits) || 0));
+  if (hits) setStatus(`模型解锁重写已命中 ${hits} 次`);
 });
 
 // ── reply watchdog: auto refresh on error card / empty reply (reference ReplyWatchdog) ──

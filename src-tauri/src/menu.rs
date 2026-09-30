@@ -114,7 +114,11 @@ fn arena_action(app: &AppHandle, action: &str) {
     match action {
         "reload" | "back" | "forward" => {
             // dock.js onPage('menu'): reload → requestReload('menu'), back / forward → navBack / navForward.
-            let _ = app.emit("arenakit://page", json!({"name": "menu", "payload": {"action": action}}));
+            let _ = app.emit_to(
+                tauri::EventTarget::labeled(crate::dock_label()),
+                "arenakit://page",
+                json!({"name": "menu", "payload": {"action": action}}),
+            );
         }
         "open-external" | "copy-link" => {
             let Some(wv) = app.get_webview("arena") else { return };

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "arena-page",
-  "description": "Scripts injected into the REMOTE arena.ai page (injected/*.js via bridge.js). The dock is its own webview on macOS (WebviewUrl::App dock.html) and embedded inside the page on Android (dock-embedded.gen.js). Deliberately narrow: hand over run tokens, relay page events to the dock, allowlisted proxy GETs and the Rust event stream the embedded dock subscribes to (arenakit://trace, arenakit://page). No window/webview APIs and no arena_command (the page must never eval into itself via Rust).",
+  "description": "Scripts injected into the REMOTE arena.ai page on desktop (injected/*.js via bridge.js). The dock is its own webview there (WebviewUrl::App dock.html), so the page only needs to hand over run tokens, relay page events to the dock, do allowlisted proxy GETs / Gist calls, open link tabs and end a re-login (login_clear). No event subscription (nothing in the page listens; only the dock does), no login_set (only the dock starts a re-login), no store, no window/webview APIs and no arena_command (the page must never eval into itself via Rust). The embedded-dock grants live in arena-mobile.json.",
   "windows": [
     "main"
   ],
@@ -15,8 +15,6 @@
     ]
   },
   "permissions": [
-    "core:event:allow-unlisten",
-    "core:event:allow-listen",
     "allow-on-token",
     "allow-page-event",
     "allow-proxy-get",
@@ -24,7 +22,6 @@
     "allow-gist-token-set",
     "allow-gist-token-status",
     "allow-open-tab",
-    "allow-login-set",
     "allow-login-clear"
   ]
 }

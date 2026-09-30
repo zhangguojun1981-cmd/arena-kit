@@ -43,6 +43,14 @@ window.__AK_UNLOCK_GET__=function(){try{return JSON.parse(localStorage.getItem("
 var c=window._ac||{e:true,o:false,h:false};
 delete window._ac;
 if(!c.e||(!c.o&&!c.h))return;
+var rewriteHits=0, lastReportAt=0;
+function reportHit(kind){
+  rewriteHits++;
+  var now=Date.now();
+  if(now-lastReportAt<1000 && rewriteHits!==1)return;
+  lastReportAt=now;
+  try{window.__ARENAKIT__&&window.__ARENAKIT__.send('unlock-report',{hits:rewriteHits,kind:String(kind||'rsc')});}catch(e){}
+}
 function keep(orig,repl){var pad=orig.length-repl.length;return pad<0?orig:repl+" ".repeat(pad);}
 function p(s){
 if(typeof s!=="string"||s.length<40)return s;
@@ -55,7 +63,9 @@ m=m.replace(/(\\?"(?:publicName|name)\\?":\s*\\?"[^"\\]*opus[^"\\]*\\?"[\s\S]{0,
 if(c.h){
 m=m.replace(/(\\?"userSelectable\\?":\s*)false/g,function(all,pre){return pre+"true ";});
 }
-return m.length===s.length?m:s;
+var out=m.length===s.length?m:s;
+if(out!==s)reportHit('rsc');
+return out;
 }catch(e){return s;}
 }
 var np=Array.prototype.push;

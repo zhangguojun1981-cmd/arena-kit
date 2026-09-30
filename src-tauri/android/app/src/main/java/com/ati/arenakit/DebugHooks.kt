@@ -13,6 +13,7 @@ import android.webkit.WebView
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.io.File
+import java.security.SecureRandom
 
 /**
  * Test-build-only hooks. They do nothing unless the manifest carries
@@ -31,6 +32,11 @@ import java.io.File
 object DebugHooks {
   private const val TAG = "ArenaKitDebug"
   const val ACTION = "com.ati.arenakit.DEBUG_EVAL"
+  private val nonce: String by lazy {
+    val bytes = ByteArray(16)
+    SecureRandom().nextBytes(bytes)
+    bytes.joinToString("") { "%02x".format(it) }
+  }
 
   fun isEnabled(context: Context): Boolean = try {
     @Suppress("DEPRECATION")
@@ -47,9 +53,14 @@ object DebugHooks {
 
   /** Registers the DEBUG_EVAL receiver; the caller unregisters it in onDestroy. */
   fun install(activity: Activity, webView: WebView): BroadcastReceiver {
+    Log.i(TAG, "DEBUG_EVAL nonce=$nonce  (pass as --es nonce <value>)")
     webView.addJavascriptInterface(Sink(activity.applicationContext), "__akdbg")
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(context: Context, intent: Intent) {
+        if (intent.getStringExtra("nonce") != nonce) {
+          Log.w(TAG, "DEBUG_EVAL: bad nonce, ignored")
+          return
+        }
         val id = cleanId(intent.getStringExtra("id"))
         val code = try {
           String(Base64.decode(intent.getStringExtra("js64") ?: "", Base64.DEFAULT), Charsets.UTF_8)
@@ -82,7 +93,7 @@ object DebugHooks {
     value.chunked(3000).forEach { Log.i(TAG, "[$id] $it") }
     Log.i(TAG, "[$id] end")
     try {
-      File(context.getExternalFilesDir(null), "debug-$id.json").writeText(value)
+      File(context.filesDir, "debug-$id.json").writeText(value)
     } catch (e: Exception) {
       Log.w(TAG, "could not write debug-$id.json", e)
     }

@@ -173,6 +173,41 @@ test('the bundled dock page runs under a restrictive CSP', () => {
   assert.ok(!/\son[a-z]+\s*=/.test(html), 'no inline event handlers');
 });
 
+test('debug hooks require a per-install nonce and write only to private app files', () => {
+  const src = read('src-tauri/android/app/src/main/java/com/ati/arenakit/DebugHooks.kt');
+  assert.match(src, /SecureRandom\(\)/);
+  assert.match(src, /getStringExtra\("nonce"\)/);
+  assert.match(src, /getStringExtra\("nonce"\)\s*!=\s*nonce/);
+  assert.match(src, /context\.filesDir/);
+  assert.doesNotMatch(src, /getExternalFilesDir\(null\)/);
+});
+
+test('Cargo.lock is tracked policy, not ignored', () => {
+  const ignore = read('.gitignore');
+  assert.doesNotMatch(ignore, /^Cargo\.lock\s*$/m);
+});
+
+test('second-audit Rust hardening is implemented and events are dock-targeted', () => {
+  const lib = read('src-tauri/src/lib.rs');
+  const store = read('src-tauri/src/store.rs');
+  const menu = read('src-tauri/src/menu.rs');
+  assert.match(lib, /TRACE_MAX_INFLIGHT:\s*usize\s*=\s*8/);
+  assert.match(lib, /read_capped_to\(r,\s*4\s*\*\s*1024\s*\*\s*1024\)/);
+  assert.match(lib, /vet_gist_body\(&mut b\)/);
+  assert.match(store, /STORE_MAX_VALUE_BYTES:\s*usize\s*=\s*4\s*\*\s*1024\s*\*\s*1024/);
+  assert.match(lib, /emit_to\(tauri::EventTarget::labeled\(dock_label\(\)\)/);
+  assert.match(menu, /emit_to\([\s\S]*EventTarget::labeled\(crate::dock_label\(\)\)/);
+  assert.doesNotMatch(lib, /app\.emit\("arenakit:\/\/(?:trace|page)"/);
+});
+
+test('watchdog reload protects human drafts and unlock reports rewrite hits', () => {
+  const dock = read('src/dock.js');
+  const unlock = read('injected/unlock.js');
+  assert.match(dock, /source === 'watchdog'[\s\S]*rpc\.call\('precheck'\)[\s\S]*pre\?\.hasDraft[\s\S]*return false/);
+  assert.match(unlock, /send\('unlock-report',\{hits:rewriteHits/);
+  assert.match(dock, /onPage\('unlock-report'/);
+});
+
 test('both page capabilities grant the Gist commands and nothing wider', () => {
   for (const f of ['arena', 'arena-mobile']) {
     const cap = JSON.parse(read(`src-tauri/capabilities/${f}.json`));
@@ -182,4 +217,65 @@ test('both page capabilities grant the Gist commands and nothing wider', () => {
   }
   const dock = JSON.parse(read('src-tauri/capabilities/default.json'));
   assert.ok(!dock.permissions.some((p) => p.startsWith('allow-gist-')), 'the dock has no use for the Gist token');
+});
+
+// ── second-opinion audit (docs/AUDIT-2.md) ──────────────────────────────
+
+test('desktop arena.json grants the page no event subscription and no login_set', () => {
+  // On desktop the dock is its own webview: nothing in the page ever calls
+  // listen(), and only the dock starts a re-login. Mobile embeds the dock in
+  // the page and legitimately keeps both.
+  const remote = JSON.parse(read('src-tauri/capabilities/arena.json'));
+  const mobile = JSON.parse(read('src-tauri/capabilities/arena-mobile.json'));
+  const dock = JSON.parse(read('src-tauri/capabilities/default.json'));
+  assert.ok(!remote.permissions.some((p) => p.startsWith('core:event:')), 'desktop page: no core:event:*');
+  assert.ok(!remote.permissions.includes('allow-login-set'), 'desktop page: no login_set');
+  assert.ok(remote.permissions.includes('allow-login-clear'), 'account.js ends a re-login from the page');
+  assert.ok(dock.permissions.includes('allow-login-set'), 'the dock starts re-logins');
+  for (const p of ['core:event:allow-listen', 'allow-login-set', 'allow-store-get']) {
+    assert.ok(mobile.permissions.includes(p), `embedded dock keeps ${p}`);
+  }
+  // No page script subscribes to Tauri events (the grant would be dead weight
+  // on desktop and is what makes removing it safe).
+  for (const f of ['bridge', 'snoop', 'monitor', 'pulse', 'unlock', 'eni', 'conversation-rename', 'probe', 'watchdog', 'links', 'account', 'gm-shim', 'manager', 'plus']) {
+    const src = read(`injected/${f}.js`);
+    assert.ok(!/\.event\.listen\(|plugin:event\|listen|__TAURI__\.event/.test(src), `${f}.js does not listen to Tauri events`);
+  }
+});
+
+test('manager.js: remote config strings are plain text and icons are escaped at the innerHTML sink', () => {
+  const src = read('injected/manager.js');
+  const method = (name) => src.match(new RegExp(`\\n {8}${name}\\([^)]*\\) \\{[\\s\\S]*?\\n {8}\\}\\n`))[0];
+  const dm = new Function(`return new (class { ${method('plainRemoteText')} })()`)();
+  assert.equal(dm.plainRemoteText(' Anthropic ', 64), 'Anthropic');
+  assert.equal(dm.plainRemoteText('🅰️', 8), '🅰️');
+  for (const bad of ['<img src=x onerror=alert(1)>', 'a"b', "a'b", 'a&b', 'x'.repeat(65), 42, null, undefined, 'tab\there']) {
+    assert.equal(dm.plainRemoteText(bad, 64), '', `rejected: ${String(bad).slice(0, 20)}`);
+  }
+  // loadRemoteConfig vets both strings and drops rules without a company.
+  const load = src.slice(src.indexOf('async loadRemoteConfig()'), src.indexOf('async loadRemoteConfig()') + 2500);
+  assert.match(load, /company: this\.plainRemoteText\(r && r\.company, 64\)/);
+  assert.match(load, /icon: this\.plainRemoteText\(r && r\.icon, 8\) \|\| '❔'/);
+  assert.match(load, /\.filter\(r => r\.company\)/);
+
+  // getOrgLogoHtml (innerHTML sink for rule / model icons) escapes what it returns.
+  const ui = new Function(`
+    const COMPANY_RULES = [{ company: 'Evil', icon: '<img src=x onerror=alert(1)>', patterns: [] }, { company: 'OpenAI', icon: '🤖', patterns: [] }];
+    return new (class {
+      constructor() { this.logoCache = { OpenAI: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' }; }
+      ${method('esc')}
+      sanitizeSvg() { return ''; }
+      ${method('getOrgLogoHtml')}
+    })()`)();
+  assert.equal(ui.getOrgLogoHtml('Evil'), '&lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(ui.getOrgLogoHtml('Nobody', '<b>x</b>'), '&lt;b&gt;x&lt;/b&gt;');
+  assert.equal(ui.getOrgLogoHtml('Nobody', 42), '42', 'esc() copes with non-string icons');
+  assert.equal(ui.getOrgLogoHtml('Nobody', null), '', 'null icon renders nothing, not "null"');
+  assert.equal(ui.getOrgLogoHtml('OpenAI'), '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" class="lmm-org-icon" alt="OpenAI">');
+
+  // The recommended-config diff modal and the group topbar escape names too.
+  const diff = src.slice(src.indexOf('showDiffModal(diff, remote) {'), src.indexOf('showDiffModal(diff, remote) {') + 6000);
+  assert.match(diff, /arr\.slice\(0, max\)\.map\(x => this\.esc\(String\(x\)\)\)/);
+  assert.ok(!/diff\.groups\.(added|modified)\.join\(/.test(diff), 'group names go through trunc()/esc');
+  assert.match(src, /data-mode="group_\$\{this\.esc\(name\)\}"/);
 });

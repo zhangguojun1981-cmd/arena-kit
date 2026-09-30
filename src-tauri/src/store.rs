@@ -17,6 +17,10 @@ pub fn is_protected(key: &str) -> bool {
     key == "accounts" || key.starts_with("secret.")
 }
 
+/// Cap a single stored value (A6): a page script with store access must not be
+/// able to bloat the on-disk store unboundedly.
+pub const STORE_MAX_VALUE_BYTES: usize = 4 * 1024 * 1024;
+
 pub struct Store {
     path: PathBuf,
     data: Mutex<Map<String, Value>>,
@@ -67,6 +71,12 @@ impl Store {
     pub fn set(&self, key: &str, value: Value) -> Result<(), String> {
         if key.is_empty() || key.len() > 256 {
             return Err("store key 无效".into());
+        }
+        if !value.is_null() {
+            let size = serde_json::to_vec(&value).map_err(|e| e.to_string())?.len();
+            if size > STORE_MAX_VALUE_BYTES {
+                return Err("store value 过大".into());
+            }
         }
         let mut d = self.data.lock().map_err(|_| "store 状态不可用".to_string())?;
         if value.is_null() {
@@ -144,6 +154,19 @@ mod tests {
         assert!(!is_protected("prefs"));
         assert!(!is_protected("history.a"));
         assert!(!is_protected("accountsX"));
+    }
+
+    #[test]
+    fn oversized_values_are_rejected_without_mutating_store() {
+        let path = temp_path("size");
+        let store = Store::open(path.clone());
+        assert!(store
+            .set("prefs", Value::String("x".repeat(STORE_MAX_VALUE_BYTES)))
+            .is_err());
+        assert_eq!(store.get("prefs"), Value::Null);
+        store.set("prefs", json!({"ok": true})).unwrap();
+        assert_eq!(store.get("prefs")["ok"], true);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

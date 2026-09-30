@@ -2135,6 +2135,17 @@
             try { return new RegExp(source, flags); } catch (e) { return null; }
         }
 
+        /**
+         * A short plain-text string from the remote config ('' when it is not
+         * one): no markup / quote / control characters, at most `max` chars.
+         * Remote strings are rendered with innerHTML and used in attributes.
+         */
+        plainRemoteText(v, max) {
+            if (typeof v !== 'string') return '';
+            const s = v.trim();
+            return s && s.length <= max && !/[<>&"'\u0000-\u001f\u007f]/.test(s) ? s : '';
+        }
+
         async loadRemoteConfig() {
             try {
                 const res = await new Promise((resolve, reject) => {
@@ -2149,13 +2160,16 @@
                 if (res.status >= 200 && res.status < 300) {
                     const remoteConfig = JSON.parse(res.responseText);
                     if (Array.isArray(remoteConfig.COMPANY_RULES) && remoteConfig.COMPANY_RULES.length <= 500) {
+                        // ArenaKit: `company` / `icon` come from a third-party repo and
+                        // end up in innerHTML (getOrgLogoHtml) and in data-* attributes —
+                        // plain short text only; a rule without a usable company is dropped.
                         COMPANY_RULES = remoteConfig.COMPANY_RULES.map(r => ({
                             patterns: (Array.isArray(r.patterns) ? r.patterns.slice(0, 20) : [])
                                 .map(p => (typeof p === 'string' ? this.compileRemotePattern(p) : p))
                                 .filter(Boolean),
-                            company: r.company,
-                            icon: r.icon
-                        }));
+                            company: this.plainRemoteText(r && r.company, 64),
+                            icon: this.plainRemoteText(r && r.icon, 8) || '❔'
+                        })).filter(r => r.company);
                         console.log('[Arena Manager] 远程配置加载成功');
                     }
                 }
@@ -3825,7 +3839,7 @@
                 html += `<div class="lmm-topbar-sep"></div>`;
                 groups.forEach(name => {
                     const cnt = counts[`group_${name}`] || 0;
-                    html += `<div class="lmm-topbar-item ${this.currentMode === `group_${name}` ? 'active' : ''}" data-mode="group_${name}">📁 ${this.esc(name)} ${cnt > 0 ? `<span class="cnt">${cnt}</span>` : ''}</div>`;
+                    html += `<div class="lmm-topbar-item ${this.currentMode === `group_${name}` ? 'active' : ''}" data-mode="group_${this.esc(name)}">📁 ${this.esc(name)} ${cnt > 0 ? `<span class="cnt">${cnt}</span>` : ''}</div>`;
                 });
             }
 
@@ -4507,15 +4521,18 @@
             if (safeSvg) {
                 return `<span class="lmm-dynamic-svg">${safeSvg}</span>`;
             }
+            // ArenaKit: the result is inserted with innerHTML. Icons are emoji /
+            // short text from the remote rules, the recommended config, a Gist or
+            // the user — never markup, so they are escaped here at the sink.
             const rule = COMPANY_RULES.find(r => r.company === company);
             if (rule) {
                 const cached = this.logoCache[company];
                 if (cached) {
-                    return `<img src="${cached}" class="lmm-org-icon" alt="${this.esc(company)}">`;
+                    return `<img src="${this.esc(cached)}" class="lmm-org-icon" alt="${this.esc(company)}">`;
                 }
-                return rule.icon;
+                return this.esc(rule.icon);
             }
-            return fallbackIcon;
+            return this.esc(fallbackIcon);
         }
 
         async loadLogo(orgName) {
@@ -4732,8 +4749,10 @@
                 return;
             }
 
+            // ArenaKit: model / group names here come straight from the remote
+            // recommended config → escape before they meet innerHTML.
             const trunc = (arr, max = 5) => {
-                const s = arr.slice(0, max).join(', ');
+                const s = arr.slice(0, max).map(x => this.esc(String(x))).join(', ');
                 return arr.length > max ? `${s} +${arr.length - max}` : s;
             };
             const modeIcons = { text: '📝', search: '🔍', image: '🎨', code: '💻', video: '🎬' };
@@ -4770,8 +4789,8 @@
 
             if (groupCount > 0) {
                 html += `<div class="lmm-diff-section"><label class="lmm-diff-category"><input type="checkbox" checked data-diff="groups"> ${this.t('groupChanges')}</label><div class="lmm-diff-details">`;
-                if (diff.groups.added.length) html += `<div>${this.t('newGroups')}: ${diff.groups.added.join(', ')}</div>`;
-                if (diff.groups.modified.length) html += `<div>${this.t('modifiedGroups')}: ${diff.groups.modified.join(', ')}</div>`;
+                if (diff.groups.added.length) html += `<div>${this.t('newGroups')}: ${trunc(diff.groups.added, diff.groups.added.length)}</div>`;
+                if (diff.groups.modified.length) html += `<div>${this.t('modifiedGroups')}: ${trunc(diff.groups.modified, diff.groups.modified.length)}</div>`;
                 html += '</div></div>';
             }
 
@@ -4998,7 +5017,7 @@
 
         esc(s) {
             if (!s) return '';
-            return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+            return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
         }
 
         getModeIcons(modes) {

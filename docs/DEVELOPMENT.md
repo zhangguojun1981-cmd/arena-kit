@@ -50,13 +50,13 @@
 - 验收:真机截图,面板出现,能隐藏/排序模型。**待真机跑 `cargo tauri dev` 截图确认。**
 
 ### M2 — 前端增强全量注入 ✅ 代码就位
-- 追加 `unlock.js`(解锁隐藏模型)、`plus.js`、`eni.js`(0.5.1 起 `leaderboard.js` 已下线:它只有上游域名的选择器,在 arena.ai 上不会记录任何投票)(提示词注入,带设置面板)。
+- 追加 `unlock.js`(解锁隐藏模型)、`plus.js`、`eni.js`(0.5.0 起 `leaderboard.js` 已下线:它只有上游域名的选择器,在 arena.ai 上不会记录任何投票)(提示词注入,带设置面板)。
 - 实现:全部纳入 `build_init_script`;`proxy_get`(白名单原生 GET)绕页面 CORS 供取 Logo/价格/Gist。
 - 验收:Direct 模式能选出 Claude Opus;排行榜出现性价比列;新对话带上系统提示词(在 trace 里能看到 prompt 前缀)。**待真机确认。**
 
 ### M3 — 取证核心移植到 Rust(B 的核心)✅ 逻辑完成+测试
 - 把 `core.js` / `ArenaProtocol.kt` 的 `validate_token` / `extract_models` / SSE 解析移植成 `src-tauri/src/trace.rs`,附单元测试(对齐扩展版 `core.test.mjs` 与安卓 `ArenaProtocolTest.kt` 的用例)。
-- `snoop.js` 截令牌 → `__ARENAKIT__.onToken` → `fetch_trace` 命令 → Trigger.dev 8×3s 轮询 → `extract_models` → `emit('arenakit://models')`。
+- `snoop.js` 截令牌 → `__ARENAKIT__.onToken`(bridge.js 路由守卫)→ `on_token` 命令 → Trigger.dev 8×3s 轮询 → `extract_models` → `emit('arenakit://trace', {stage:'model', …})`(旧名 `fetch_trace` / `arenakit://models` 已在 0.5.0 前废弃)。
 - 状态:10 单测全绿(validate/extract/dedup/fatal-status);实况轮询已接线。**待真机发消息确认 HUD 显示模型名。**
 
 ### M4 — 额度百分比(pulse)✅ 代码就位
@@ -101,7 +101,7 @@
 - 覆盖层还承载 **页面链接标签**:`MainActivity.onWebViewCreate(webView)`(Wry 在把页面 WebView 设为 content view 之后、首次加载之前调用)里 (1) 装 `ArenaKitAndroid` 页面桥 —— `WebViewCompat.addWebMessageListener`(仅 arena.ai 来源;旧 WebView 回退 `addJavascriptInterface`),`injected/links.js` 以 `postMessage(JSON)` 发 `{cmd:'openTab'|'closeTab'|'external', url}`;(2) `LinkTab.kt`(参考 `LinkTab.kt` + `ExternalLinks.kt` 的移植,纯代码布局,`activity.addContentView` 叠在 Wry WebView 之上、仍在加过 insets padding 的 content 框内);(3) 在 Wry 自己的 `OnBackPressedCallback` 之后再注册一个(LIFO → 先执行):链接页历史 / 关闭 → `__ARENAKIT_EMBED__.handleBack()`(evaluateJavascript,不受页面 CSP 限制)→ 页面 `goBack()` → 交回系统。链接页开关状态经 `__ARENAKIT_LINKS__.setOpen()` 回写页面,dock 收 `link-tab` 事件(看门狗在链接页打开时不刷新)。Rust 侧 `links.rs` 的 `on_navigation` 是导航级兜底(未经点击的跳转:`NewTab` → 安卓 eval `__ARENAKIT_LINKS__.open(url)` / 桌面新开窗口;`ExternalApp` → 安卓 `__ARENAKIT_LINKS__.external(url)` / 桌面 `open` / `xdg-open` / `rundll32`;`Block` → 丢弃)。
 - `cargo tauri android build --apk --target aarch64` 出 release arm64 apk(优化 + strip,debug 包带符号约 190 MB),CI 再用 `zipalign` + `apksigner` 以仓库内固定的调试密钥 `.github/android/debug.keystore`(PKCS12,别名 `arenakitdebug`,密码 `android`)签名——每次构建签名一致,可覆盖安装。这不是商店密钥;正式发布时换成 secrets 里的密钥。
 - **dock 内嵌模式(仅 Android)**:mobile Tauri 一窗一 webview(`Window::add_child` 仅桌面),所以安卓不建第二个 webview,而是 `node scripts/bundle-dock.mjs` 把 `src/dock.js` + `src/lib/*` + `src/embed/shell.js` 打成一个经典脚本 `src/embed/dock-embedded.gen.js`(已提交,CI `--check` 防过期),Rust `include_str!` 并追加到 init 脚本末尾;页面加载后挂载状态胶囊 + 底部面板(shadow DOM,样式互不干扰)。改了 `src/` 记得重新跑 bundler(测试 `embed-bundle.test.mjs` 会提示)。
-- **macOS 仅分栏**:桌面唯一布局是分栏——`lib.rs` 启动时 `desktop_layout()` 直接返回 `Dock`,起一个 `Window "main"`(1360×900)装两个子 webview:左 `arena`(`https://arena.ai`,init 脚本只含 bridge/snoop/... 等注入,平台标记 `__ARENAKIT_PLATFORM__="desktop"`),右 `dock`(`dock.html`,与安卓同一份前端,通过 WebviewUrl::App 加载)。`prefs.desktopLayout` 已废弃——历史值被忽略,旧 dock 不会读取它。`shell.js` 桌面补齐:window 捕获阶段 `keydown`:Esc → `handleBack()`、⌘/Ctrl+R / F5 → `fire('refresh')`(dock `requestReload`)、⌘[ / ⌘] → `history.back/forward`(编辑框内不拦截);`@media (hover: hover)` 悬停样式。桌面 `capabilities/arena.json` 需 `core:event:allow-listen/unlisten`(内嵌 dock 订阅 `arenakit://trace` / `arenakit://page`)。
+- **macOS 仅分栏**:桌面唯一布局是分栏——`lib.rs` 启动时 `desktop_layout()` 直接返回 `Dock`,起一个 `Window "main"`(1360×900)装两个子 webview:左 `arena`(`https://arena.ai`,init 脚本只含 bridge/snoop/... 等注入,平台标记 `__ARENAKIT_PLATFORM__="desktop"`),右 `dock`(`dock.html`,与安卓同一份前端,通过 WebviewUrl::App 加载)。`prefs.desktopLayout` 已废弃——历史值被忽略,旧 dock 不会读取它。`shell.js` 桌面补齐:window 捕获阶段 `keydown`:Esc → `handleBack()`、⌘/Ctrl+R / F5 → `fire('refresh')`(dock `requestReload`)、⌘[ / ⌘] → `history.back/forward`(编辑框内不拦截);`@media (hover: hover)` 悬停样式。桌面 `capabilities/arena.json` **不**授予 `core:event:*` 与 `login_set`:桌面 dock 是独立 webview(`default.json`,`core:default` 自带事件订阅),页面里没有任何脚本调用 `listen()`;只有安卓的 `arena-mobile.json`(dock 内嵌在页面里)才需要 `core:event:allow-listen/unlisten` 和 `login_set`(AUDIT-2 §2.3)。
 - **桌面菜单栏「页面」**(`src-tauri/src/menu.rs`,`Menu::default` + 追加子菜单,保留 Edit 复制粘贴 / Window ⌘W 关窗):刷新 ⌘R、后退 ⌘[、前进 ⌘]、在浏览器中打开 ⌘⇧O、复制链接 ⌘⇧C —— 安卓链接页工具栏(⟳ / 在浏览器中打开 / 复制 / ✕)的桌面对应。分发:焦点在 `tab-*` 链接窗口 → 直接 `eval` / `url()` 处理;否则针对 arena 页面:刷新 / 前进 / 后退经 `arenakit://page` 事件 `menu` 交给 dock(与胶囊 ⟳ 同一条 `requestReload` 路径:防抖、忙碌确认、进度条),在浏览器中打开 / 复制链接用 `get_webview("arena").url()` 原生完成(macOS `pbcopy`,文本走 stdin 不经 shell)。macOS 上菜单快捷键先于网页 keydown,所以 ⌘R 由菜单处理;shell.js 里的 ⌘R / F5 是 Windows / Linux 与无菜单场景的兜底。
 - 验收:真机安装,登录、截令牌、额度、注入脚本、抽屉里的全部模块可用。
 
@@ -206,10 +206,12 @@ Tauri 命令(`src-tauri/src/lib.rs`,由 `build.rs` 的 `AppManifest::commands` �
 | `proxy_get {url}` | 两者 | 白名单原生 GET(Logo/价格/Gist) |
 | `arena_command {js}` | **仅 dock** | 在 arena 页面 eval(远程页面永远拿不到此权限) |
 | `open_tab {url}` | arena 页面(`injected/links.js`) | 桌面:为 http(s) 链接开一个独立窗口(无注入脚本、无 IPC);安卓:返回 false(页面直接走 `ArenaKitAndroid` 原生链接页) |
-| `login_set {creds}` | dock(内嵌时即 arena 页面) | 一键重新登录:把 `{accountId, email, startedAt}`(只有「是谁」,无密码)存进 Rust 内存(TTL);之后每次 `on_page_load`(arena 域 + `links.rs` 认定的登录域)eval `window.__AK_LOGIN_APPLY__(creds)` |
+| `gist_token_set {token}` / `gist_token_status` | arena 页面(`manager.js` 设置面板) | GitHub Gist 同步的 token 存 Rust 侧 `secret.gistToken`(凭据键):页面只能设置 / 清空 / 查询有无,读不回来 |
+| `gist_request {method, gistId?, body?}` | arena 页面(`manager.js`) | 用存好的 token 访问 `api.github.com/gists`(仅 `POST /gists`、`GET|PATCH /gists/{id}`,id 仅字母数字,body ≤ 2 MB,响应 ≤ 8 MB) |
+| `login_set {creds}` | dock(桌面 `default.json`;安卓内嵌时即 arena 页面,`arena-mobile.json`) | 一键重新登录:把 `{accountId, email, startedAt}`(只有「是谁」,无密码)存进 Rust 内存(TTL);之后每次 `on_page_load`(arena 域 + `links.rs` 认定的登录域)eval `window.__AK_LOGIN_APPLY__(creds)` |
 | `login_clear` | 两者 | 忘掉待登录凭据(account.js 在会话 Cookie 出现时调用;dock 在切换成功 / 停止时调用) |
 
-capabilities:`capabilities/arena.json`(`remote.urls: https://arena.ai/*`,只给页面必需的 7 个命令)与 `capabilities/default.json`(dock,含 `arena_command`)。远程页面要用 IPC 必须有 `remote` capability,且启用了 app manifest 后所有自定义命令都走 ACL。
+capabilities:`capabilities/arena.json`(桌面远程页面,`remote.urls: https://arena.ai/*`,只给页面必需的 8 个命令:`on_token` `page_event` `proxy_get` `gist_request` `gist_token_set` `gist_token_status` `open_tab` `login_clear`,无事件订阅)、`capabilities/arena-mobile.json`(安卓单 webview,页面 + 内嵌 dock:上述 8 个 + `store_*`(凭据键需启动令牌)+ `login_set` + `core:event:allow-listen/unlisten`)与 `capabilities/default.json`(桌面 dock,含 `arena_command`)。远程页面要用 IPC 必须有 `remote` capability,且启用了 app manifest 后所有自定义命令都走 ACL。
 
 Rust → dock 事件:
 
@@ -234,7 +236,7 @@ Rust → dock 事件:
 | `pulse` | pulse.js | `{ok:true, percent, refreshedAt, at}` / `{ok:false, error, retryAfterMs, at}` |
 | `account` | account.js(监视器,仅 arena 域) | `{reason:'init'|'poll'|'wake', bootCheck?(仅 init:'intact'|'rotated'|'reapplied:…'|'expired'), loggedIn(非匿名且有邮箱), anonymous(站点游客态), hasAuthCookie, scope:'host'|'domain'|'', userId, email, name, avatar, provider, expiresAt, cookies:[{name,value}], sig, at}`(仅 auth Cookie 签名变化时发) |
 | `account-result` | account.js | `{reqId, ok, data}` / `{reqId, ok:false, error}`(账号 RPC 应答) |
-| `login` | account.js(重新登录进度,只在 arena 域发) | `{stage:'arena-open'|'arena-agree'|'arena-google'|'arena-google-direct'|'arena-waiting'|'user-active'|'done'|'wrong-account'|'error'|'timeout'|'stopped', host, accountId, email, at, error?}`;Google 域上的阶段(`google-pick` / `google-continue` / `google-need-user` / `google-not-listed` / `google-blocked`)只显示在页面底部说明条 |
+| `login` | account.js(重新登录进度,只在 arena 域发) | `{stage:'arena-google'|'arena-add'|'arena-retry'|'arena-waiting'|'user-active'|'done'|'wrong-account'|'error'|'timeout'|'stopped', host, accountId, email, at, error?}`(0.4.10 起不再点站内登录弹窗,直接打开 `/nextjs-api/sign-in/google?shouldLinkHistory=false`;`arena-open` / `arena-agree` / `arena-google-direct` 已不存在);Google 域上的阶段(`google-waiting` / `google-pick` / `google-continue` / `google-another` / `google-need-user` / `google-not-listed` / `google-blocked`)只显示在页面底部说明条 |
 
 dock → 页面:`arena_command` eval;约定入口 `window.__ARENAKIT__.dispatch(name, payload)`(如 `pulse-refresh`)、`window.ArenaProbe.call(action, argsJson, reqId)`(探针 RPC)、`__AK_*_SET__`(增强脚本开关)。
 

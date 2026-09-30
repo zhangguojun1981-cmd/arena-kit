@@ -9,4 +9,3 @@ commands.allow = ["gist_request"]
 identifier = "deny-gist-request"
 description = "Denies the gist_request command without any pre-configured scope."
 commands.deny = ["gist_request"]
-

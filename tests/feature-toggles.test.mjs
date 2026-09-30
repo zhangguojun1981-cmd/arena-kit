@@ -12,11 +12,12 @@ const storage = (init = {}) => {
   return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), map: m };
 };
 
-function unlockPage(ls = storage(), fetchImpl = async () => new Response('')) {
+function unlockPage(ls = storage(), fetchImpl = async () => new Response(''), send = null) {
   const sb = {
-    localStorage: ls, console, JSON, Object, Array, String, Math,
+    localStorage: ls, console, JSON, Object, Array, String, Math, Date,
     setInterval: () => 0, clearInterval() {}, setTimeout: () => 0,
     fetch: fetchImpl, Response, TransformStream, TextDecoder, TextEncoder,
+    __ARENAKIT__: send ? { send } : undefined,
   };
   sb.self = sb; sb.window = sb;
   return runInjected('injected/unlock.js', sb);
@@ -75,6 +76,19 @@ test('unlock.js: every rewrite keeps the byte length — a length-prefixed RSC r
   const first = parseTRow(out);
   assert.equal(JSON.parse(first.replace('中文说明', '')).initialModels[0].userSelectable, true);
   assert.equal(parseTRow(out.slice(out.indexOf('1b:'))), 'after', 'the next row is still aligned');
+});
+
+test('unlock.js reports the cumulative count only after an actual rewrite', () => {
+  const events = [];
+  const w = unlockPage(storage({ _at: JSON.stringify({ o: true }) }), undefined, (name, payload) => events.push([name, payload]));
+  w.__next_f = [];
+  w.__next_f.push([1, chunk('plain-model')]);
+  assert.equal(events.length, 0, 'untouched chunks stay silent');
+  w.__next_f.push([1, chunk('claude-opus-4-1')]);
+  assert.equal(events.length, 1);
+  assert.equal(events[0][0], 'unlock-report');
+  assert.equal(events[0][1].hits, 1);
+  assert.equal(events[0][1].kind, 'rsc');
 });
 
 test('unlock.js: router (text/x-component) responses are rewritten as a stream keeping url / redirected; chat streams and foreign hosts untouched', async () => {

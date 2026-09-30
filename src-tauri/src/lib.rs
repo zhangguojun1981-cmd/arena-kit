@@ -249,6 +249,10 @@ const DESKTOP_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 /// token is re-emitted per frame; only the first sighting may start a lookup)
 /// and a per-session generation counter so a newer token cancels an older
 /// lookup for the same conversation (background.js `cancelLookup`).
+/// Bound on concurrently polling Trigger.dev lookups (A5): page-side token spam
+/// must not be able to spawn an unbounded number of background tasks.
+const TRACE_MAX_INFLIGHT: usize = 8;
+
 #[derive(Default)]
 pub struct TraceState {
     last_token: Mutex<String>,
@@ -257,6 +261,27 @@ pub struct TraceState {
     /// Process-wide, never reused: pruning a finished session's entry must not
     /// let a later lookup take a number an older, still-sleeping poll holds.
     counter: std::sync::atomic::AtomicU64,
+    /// Number of lookups currently polling Trigger.dev (see TRACE_MAX_INFLIGHT).
+    inflight: std::sync::atomic::AtomicUsize,
+}
+
+/// Reserve one of the TRACE_MAX_INFLIGHT lookup slots, or return false if full.
+fn try_acquire_trace(inflight: &std::sync::atomic::AtomicUsize) -> bool {
+    let mut current = inflight.load(std::sync::atomic::Ordering::Relaxed);
+    loop {
+        if current >= TRACE_MAX_INFLIGHT {
+            return false;
+        }
+        match inflight.compare_exchange_weak(
+            current,
+            current + 1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
 }
 
 fn now_secs() -> f64 {
@@ -291,7 +316,19 @@ fn valid_session_id(s: &str) -> bool {
 /// a status line and the per-turn timeline from a single listener:
 ///   {stage:"token"|"poll"|"model"|"error"|"done", sessionId, runId?, status, ...}
 fn emit_trace(app: &tauri::AppHandle, payload: Value) {
-    let _ = app.emit("arenakit://trace", payload);
+    let _ = app.emit_to(tauri::EventTarget::labeled(dock_label()), "arenakit://trace", payload);
+}
+
+/// The webview label the dock listens on (§2.3): its own `dock` webview on
+/// desktop, the shared `arena` webview on mobile (single-webview platforms).
+/// Desktop page scripts, even with event permission, never see dock events.
+#[cfg(desktop)]
+pub(crate) const fn dock_label() -> &'static str {
+    "dock"
+}
+#[cfg(mobile)]
+pub(crate) const fn dock_label() -> &'static str {
+    "arena"
 }
 
 fn is_live(app: &tauri::AppHandle, session_id: &str, generation: u64) -> bool {
@@ -353,6 +390,10 @@ fn on_token(
         g.insert(session_id.clone(), n);
         n
     };
+    if !try_acquire_trace(&state.inflight) {
+        forget_token(&app, &token);
+        return Err("同时进行的 trace 查询过多".into());
+    }
     let expires_at_ms: u64 = (claims.exp * 1000.0) as u64;
     let key = token_key(&token);
     emit_trace(
@@ -364,7 +405,10 @@ fn on_token(
         }),
     );
     tauri::async_runtime::spawn(async move {
-        poll_trace(app, token, session_id, claims, generation).await;
+        poll_trace(app.clone(), token, session_id, claims, generation).await;
+        app.state::<TraceState>()
+            .inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     });
     Ok(())
 }
@@ -477,11 +521,11 @@ async fn poll_trace_loop(
                         Ok(Poll::Continue(retry(&label)))
                     }
                 } else {
-                    match r.text().await {
-                        Err(_) => Ok(Poll::Continue(retry("trace 读取失败"))),
-                        Ok(text) if text.len() > 4 * 1024 * 1024 => {
+                    match read_capped_to(r, 4 * 1024 * 1024).await {
+                        Err(e) if e == "响应过大" => {
                             Err((true, "trace 超过 4 MB，停止解析".into()))
                         }
+                        Err(_) => Ok(Poll::Continue(retry("trace 读取失败"))),
                         Ok(text) => match serde_json::from_str::<Value>(&text) {
                             Err(_) => Err((true, "trace 不是有效 JSON".into())),
                             Ok(trace_json) => handle_trace(&app, &base, &claims.run_id, &trace_json, attempt),
@@ -588,8 +632,12 @@ fn page_event(app: tauri::AppHandle, name: String, payload: Value) -> Result<(),
     if name.is_empty() || name.len() > 64 {
         return Err("事件名无效".into());
     }
-    app.emit("arenakit://page", json!({"name": name, "payload": payload}))
-        .map_err(|e| e.to_string())
+    app.emit_to(
+        tauri::EventTarget::labeled(dock_label()),
+        "arenakit://page",
+        json!({"name": name, "payload": payload}),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Per-launch random token for the credential keys of the store.
@@ -768,19 +816,25 @@ fn net_err(e: reqwest::Error) -> String {
     msg
 }
 
-/// The response body as text, refusing anything over `PROXY_MAX_BYTES`.
-async fn read_capped(mut resp: reqwest::Response) -> Result<String, String> {
-    if resp.content_length().is_some_and(|n| n > PROXY_MAX_BYTES as u64) {
+/// The response body as text, refusing anything over `max` bytes (checks both
+/// the advertised Content-Length and the streamed size).
+async fn read_capped_to(mut resp: reqwest::Response, max: usize) -> Result<String, String> {
+    if resp.content_length().is_some_and(|n| n > max as u64) {
         return Err("响应过大".into());
     }
     let mut body: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if body.len() + chunk.len() > PROXY_MAX_BYTES {
+        if body.len() + chunk.len() > max {
             return Err("响应过大".into());
         }
         body.extend_from_slice(&chunk);
     }
     Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// The response body as text, refusing anything over `PROXY_MAX_BYTES`.
+async fn read_capped(resp: reqwest::Response) -> Result<String, String> {
+    read_capped_to(resp, PROXY_MAX_BYTES).await
 }
 
 // ── GitHub Gist sync (Arena Manager's cloud backup) ──────────────────────
@@ -789,6 +843,29 @@ async fn read_capped(mut resp: reqwest::Response) -> Result<String, String> {
 // never read it back, and can only reach api.github.com/gists.
 const GIST_TOKEN_KEY: &str = "secret.gistToken";
 const GIST_MAX_BODY: usize = 2 * 1024 * 1024;
+
+/// Only the request shapes Arena Manager's Gist sync makes (A2). A body must be
+/// an object, is never `public: true` (the token must not become a "publish a
+/// gist under this account" oracle for page scripts), and `files` carries plain
+/// file names only.
+fn vet_gist_body(body: &mut Value) -> Result<(), String> {
+    let obj = body
+        .as_object_mut()
+        .ok_or_else(|| "Gist 请求体必须是对象".to_string())?;
+    obj.insert("public".into(), Value::Bool(false));
+    if let Some(files) = obj.get("files") {
+        let files = files.as_object().ok_or_else(|| "Gist files 无效".to_string())?;
+        let name_ok = |k: &String| {
+            !k.is_empty()
+                && k.len() <= 64
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        };
+        if files.len() > 16 || !files.keys().all(name_ok) {
+            return Err("Gist 文件名无效".into());
+        }
+    }
+    Ok(())
+}
 
 /// `https://api.github.com/gists[/<id>]` for an allowed method / id pair:
 /// creating (POST) takes no id, reading (GET) and updating (PATCH) need one.
@@ -843,7 +920,8 @@ async fn gist_request(
     }
     .header("Authorization", format!("token {token}"))
     .header("Accept", "application/vnd.github.v3+json");
-    if let Some(b) = body {
+    if let Some(mut b) = body {
+        vet_gist_body(&mut b)?;
         let text = serde_json::to_string(&b).map_err(|e| e.to_string())?;
         if text.len() > GIST_MAX_BODY {
             return Err("请求体过大".into());
@@ -1159,6 +1237,35 @@ mod tests {
         }
         // Whatever the id, the target passes the proxy allowlist.
         assert!(proxy_target(&gist_url("GET", Some("abc123")).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn gist_bodies_are_private_and_plainly_named() {
+        let mut b = json!({"public": true, "files": {"arena-manager-data.json": {"content": "{}"}}});
+        vet_gist_body(&mut b).unwrap();
+        assert_eq!(b["public"], json!(false));
+        for bad in [
+            json!([]),
+            json!("x"),
+            json!({"files": "x"}),
+            json!({"files": {"../x": {}}}),
+            json!({"files": {"a b.json": {}}}),
+        ] {
+            let mut v = bad;
+            assert!(vet_gist_body(&mut v).is_err());
+        }
+    }
+
+    #[test]
+    fn trace_inflight_limit_is_atomic_and_bounded() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = AtomicUsize::new(0);
+        for _ in 0..TRACE_MAX_INFLIGHT {
+            assert!(try_acquire_trace(&n));
+        }
+        assert!(!try_acquire_trace(&n), "the {TRACE_MAX_INFLIGHT}+1 th lookup is refused");
+        n.fetch_sub(1, Ordering::AcqRel);
+        assert!(try_acquire_trace(&n), "a freed slot can be re-acquired");
     }
 
     #[test]
