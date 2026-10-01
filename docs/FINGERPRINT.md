@@ -2,7 +2,7 @@
 
 > 适用范围：当 Trigger trace 管线**无法**确认一个会话的真实模型名时，用一批结构化探针回答做**统计推断**，给出 `opus / fable / gpt6 / unknown` 的家族判断，必要且证据充分时再给出具体 `estimatedModel`。
 >
-> 这是**辅助**手段，不是真名来源。它永远不会覆盖服务端已确认的模型，不会把不同协议的概率合并，也不会把一次“魔法答案”当成判据。
+> 这是**辅助**手段，不是真名来源。它永远不会覆盖服务端已确认的模型，不会把不同协议的概率合并，也不会把一次“魔法答案”当成判据。按估计重命名默认关闭——仅当用户在「指纹」页显式打开开关、且本次估计 `status==='attributed'` 并且 `confidence ≥ 阈值`（懒人默认 `fingerprintRenameThreshold=0.85`）时才会按估计模型重命名当前会话；服务端真名随时覆盖，且此开关与「服务端确认模型自动重命名」(`prefs.autoRename`) 相互独立。
 
 ## 为什么需要它
 
@@ -121,5 +121,6 @@ node scripts/fingerprint-calibrate.mjs --seed 42 --sessions 80 --budget 8 --inte
 - **PR2**：history 增加 `estimatedModel` 字段；model‑resolve 优先级（低于 live/history 真名，高于 title 猜测）；只读 dock UI 展示。← 已完成
 - **PR3**：页面侧回答归约 + 安全事件通道（**仍不发送**）。← 已完成
 - **PR4**：主动探针编排器（**需用户再次明确确认**，预算确认，固定提示词 allowlist，页面侧 prompt 不可被远端配置替换）+ dock 接线。← 已完成
-- **PR5（本次）**：评估/校准脚手架——确定性离线评估、全套指标公布、阈值扫描；为真实盲测集到位后的标定做准备。unknown 判定与渐进停止策略已随脚手架固化（未校准 bank 永不提前短路）。← 已完成
+- **PR5**：评估/校准脚手架——确定性离线评估、全套指标公布、阈值扫描；为真实盲测集到位后的标定做准备。unknown 判定与渐进停止策略已随脚手架固化（未校准 bank 永不提前短路）。← 已完成
+- **PR6（本次）**：UI 收口——删除旧的算术抽卡探针 / 清理 / 会话探针（`src/lib/probe-logic.js`、`probe-runner.js`、`session-probe.js` 及其测试），指纹面板成为「探针」页唯一内容。修复 0‑send bug（`fingerprintPageState()` 现把开着的 `/agent/{id}`、`/c/{id}` 对话也视为合法探测面；此前只认 `/agent` 空白新对话，导致在已打开对话里 `pageChanged()` 在首次发送前就中断）。新增：会话数 / 最多发送步进（`ak-fingerprint-budget` 1..24 默认 3）、按置信度阈值重命名开关（`ak-fingerprint-autorename`，默认关）、阈值输入（`ak-fingerprint-threshold` 0..1 默认 0.85）、共用标题前缀（`ak-rename-prefix`）。`firstModelOf()` 放宽旧的「指纹来源一律不改名」硬排除：仍先用 live / 服务端确认真名，仅当上述开关开启且置信度达阈值时才回退到指纹估计。← 已完成
 - **数据工作（阻塞项）**：仍缺 Fable 5.1 同协议参考、GPT‑6 fpverify 覆盖、以及任何真实匹配渠道的盲测集；在这些就位前，阈值保持未标定、UI 保持“未完成 Arena 校准”标注。

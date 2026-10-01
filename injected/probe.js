@@ -1,9 +1,9 @@
 /* ArenaKit injected/probe.js
  * Source: arena-trace-android assets/probe.js (page-side discrete DOM actions,
  * ported from the extension's auto-draw.js + conversation-rename.js).
- * MAIN world, document_start. Stateless RPC layer: the dock (src/lib/probe-runner.js)
- * drives the loop the way the Android ProbeController does, one safe DOM step
- * per call, and gets model names from the snoop → Rust trace pipeline.
+ * MAIN world, document_start. Stateless RPC layer: the dock
+ * (src/lib/fingerprint-runner.js) drives the loop one safe DOM step per call,
+ * and gets model names from the snoop → Rust trace pipeline.
  *
  * Call:   window.ArenaProbe.call(action, argsJson, reqId)      (dock → arena_command eval)
  * Result: __ARENAKIT__.send('probe-result', {reqId, ok, data|error})  (page → dock)

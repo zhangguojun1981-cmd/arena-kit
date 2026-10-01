@@ -21,9 +21,6 @@ import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTota
 import { createTurnTracker } from './lib/turns.js';
 import { createRpc } from './lib/rpc.js';
 import { buildTitle, sanitizePrefix, createRenameGate } from './lib/rename.js';
-import { parseTargets, DEFAULT_TARGETS } from './lib/probe-logic.js';
-import { createProbeController } from './lib/probe-runner.js';
-import { sessionProbePrecheck, sessionProbeText, awaitTurnModel } from './lib/session-probe.js';
 import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
 import { pillLabel, turnHeadline } from './lib/pill-layout.js';
@@ -115,18 +112,7 @@ const state = {
   rpc: null,                // createRpc() — dock → page probe.js actions
   renameGate: null,         // createRenameGate() — auto-rename once per conversation
   renaming: false,          // a rename dialog is being driven right now
-  probe: null,              // createProbeController() — auto probe / cleanup / quick send
-  probeDraw: false,         // current probe run is a draw (自动抽卡) rather than a target probe
-  quickBusy: false,         // a session probe is in flight
-  // 模型指纹: page-side fixed-probe reducer. In PR3 this only COLLECTS the
-  // structured features the page emits ('fingerprint-sample') and shows a
-  // de-identified diagnostic; it never auto-sends a probe and never classifies
-  // on its own yet (the fingerprint-runner + classify wiring arrives in PR4).
-  // samples: the reduced features received so far this session (counts /
-  // normalized picks / parse-error codes only — never any reply text).
-  // runner: the active createFingerprintRunner() instance (set in boot once the
-  // RPC channel exists); it sends FIXED allowlisted probes only after an
-  // explicit user click + a confirmed max-message budget.
+  // 模型指纹: page-side fixed-probe reducer. It COLLECTS the structured features
   fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null, runner: null },
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
@@ -201,19 +187,25 @@ const DEFAULT_PREFS = {
   eniOn: false,
   eniText: '',
   renamePrefix: '',   // optional title prefix: "<prefix><model>"
-  autoRename: false,  // rename the current conversation once its model is identified
-  probeTargets: DEFAULT_TARGETS.join(', '),
-  probeRounds: 5,
-  probeFindAll: true,
-  probeRename: true,
-  probeRepo: '',        // optional project for the probe (repo name, fuzzy — 0.4.9)
+  autoRename: false,  // rename the current conversation once its model is identified (from a CONFIRMED server model)
+  // scheduleAgentDefaults still uses these: app open / account switch →
+  // Agent Mode + GitHub on. The old arithmetic-probe project/branch inputs are
+  // gone, so repo/branch stay '' (github-only default); the switch moved to the
+  // 指纹 panel.
+  probeRepo: '',
   probeBranch: '',
-  agentDefaults: true,  // app open / account switch → Agent Mode + GitHub on (+ project)
-  cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
-  quickText: '',            // session probe text ('' = random arithmetic)
-  quickRename: false,       // rename the conversation after the session probe identifies its model
+  agentDefaults: true,  // app open / account switch → Agent Mode + GitHub on
   fingerprintProtocol: 'modeltrace-long-integers-v1', // last-selected fingerprint protocol
-  fingerprintBudget: 3,     // max fixed probes a fingerprint run may send (1..24)
+  fingerprintBudget: 3,     // max fixed probes (= 会话/轮数) a fingerprint run may send (1..24)
+  // Auto-rename from a fingerprint ESTIMATE (statistical, not a true name). Off
+  // by default: renaming is a persistent, user-visible mutation and the
+  // estimate is explicitly uncalibrated. When on, a server-confirmed true name
+  // still wins, and only an estimate at or above the confidence threshold
+  // renames. 0.85 ("lazy mode" default): higher than the classify pass gate
+  // (0.6) so only confident attributions rename; reachable because the softmax
+  // confidence saturates near 1.0 on well-separated replies.
+  fingerprintAutoRename: false,
+  fingerprintRenameThreshold: 0.85,
   theme: 'auto',            // 'auto' (follow system, like the reference DayNight theme) | 'light' | 'dark'
   panelTab: 'chat',         // last selected segmented tab
   pillRefresh: true,        // 悬浮窗显示刷新按钮 (Android status pill ⟳ zone)
@@ -326,19 +318,19 @@ function wireSettings() {
       setStatus(autoRefresh.checked ? '已开启：回复出错或空白时自动刷新' : '已关闭自动刷新（回复异常仍会记录）');
     });
   }
-  // 最多轮数 stepper (and other [data-step] steppers via data-step-target)
+  // steppers (本轮最多发送 等): a [data-step] button adjusts the number input
+  // named by data-step-target (default: the fingerprint budget).
   root.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => {
-    const targetId = b.dataset.stepTarget || 'ak-probe-rounds';
+    const targetId = b.dataset.stepTarget || 'ak-fingerprint-budget';
     const input = q(targetId);
     if (!input) return;
     const lo = parseInt(input.min, 10); const hi = parseInt(input.max, 10);
     const min = Number.isFinite(lo) ? lo : 1;
-    const max = Number.isFinite(hi) ? hi : 100;
+    const max = Number.isFinite(hi) ? hi : 24;
     const base = parseInt(input.value, 10) || min;
     const n = Math.min(max, Math.max(min, base + Number(b.dataset.step)));
     input.value = String(n);
-    if (targetId === 'ak-probe-rounds') persistProbePanel();
-    else if (targetId === 'ak-fingerprint-budget') persistFingerprintPanel();
+    if (targetId === 'ak-fingerprint-budget') persistFingerprintPanel();
   }));
 }
 
@@ -363,14 +355,15 @@ async function requestReload(source = 'panel') {
     }
   }
   state.reloadAt = now;
-  const running = state.probe?.isRunning ? state.probe.mode : null;
-  if (running) {
+  // A reload tears down the page the fingerprint runner drives, so stop it
+  // first (ask, unless the watchdog is auto-recovering a broken page).
+  const fpRunning = !!(state.fingerprint.runner && state.fingerprint.runner.isRunning);
+  if (fpRunning) {
     if (source !== 'watchdog') {
-      const what = running === 'cleanup' ? '清理正在进行，刷新会中断本次清理。' : '探针正在运行，刷新会中断本次探针。';
-      const ok = await confirmDialog({ title: '刷新页面？', message: what, ok: '停止并刷新', cancel: '取消' });
+      const ok = await confirmDialog({ title: '刷新页面？', message: '指纹探测正在运行，刷新会中断本次探测。', ok: '停止并刷新', cancel: '取消' });
       if (!ok) return false;
     }
-    state.probe.stop();
+    try { state.fingerprint.runner.stop(); } catch { /* best effort */ }
     await new Promise((r) => setTimeout(r, 300));
   }
   if (source === 'watchdog') setStatus(WATCHDOG_LOG_RELOADING);
@@ -511,7 +504,7 @@ function flashPill(text, ms = 2500) {
 function setTask(task) {
   state.hud.task = task || null;
   if (task && task.kind !== 'recovery') { if (!state.taskStartedAt) state.taskStartedAt = Date.now(); }
-  else if (!state.quickBusy) state.taskStartedAt = 0;
+  else state.taskStartedAt = 0;
   renderPill();
 }
 
@@ -893,7 +886,7 @@ async function archiveCurrent(btn) {
   const sid = state.nav.sessionId;
   if (!sid) { setStatus('当前没有打开的对话'); return; }
   if (!state.rpc) { setStatus('无 Tauri 运行时'); return; }
-  if (state.probe?.isRunning) { setStatus('探针 / 清理进行中，请先停止'); return; }
+  if (state.fingerprint.runner?.isRunning) { setStatus('指纹探测进行中，请先停止'); return; }
   if (Date.now() - archiveArmed > 4000) {
     archiveArmed = Date.now(); btn.textContent = '再点一次确认归档';
     setTimeout(() => { btn.textContent = ARCHIVE_LABEL; }, 4000);
@@ -988,14 +981,13 @@ onPage('nav', (n) => {
 // 0.4.8. Runs once per page load when the page lands on a fresh /agent
 // composer: app start (the start URL is /agent) and after every account
 // switch / login (both navigate to /agent). Never sends anything; failures
-// only show up in the status line / probe log, e.g. GitHub not connected yet.
+// only show up in the status line, e.g. GitHub not connected yet.
 let agentDefaultsGen = 0;
 function scheduleAgentDefaults(delayMs = 2500) {
   if (state.prefs.agentDefaults === false || !state.rpc) return;
   const gen = ++agentDefaultsGen;
   setTimeout(async () => {
     if (gen !== agentDefaultsGen) return;             // a newer page load took over
-    if (state.probe?.isRunning) return;                // the probe does it itself
     if (state.nav.sessionId) return;                   // user already opened a chat
     const args = { github: true, repo: state.prefs.probeRepo || '', branch: state.prefs.probeBranch || '' };
     let r;
@@ -1005,149 +997,7 @@ function scheduleAgentDefaults(delayMs = 2500) {
     const parts = [r.agent ? 'Agent 模式' : '', r.github ? 'GitHub 已开' : '', r.project ? '项目 ' + r.project : ''].filter(Boolean);
     const line = (parts.length ? '已设默认：' + parts.join(' · ') : '默认模式未生效') + (r.errors?.length ? '（' + r.errors.join('；') + '）' : '');
     setStatus(line.slice(0, 200));
-    probeLog(line);
   }, delayMs);
-}
-
-// ── module: auto probe (Android ProbeController port) ───────────────────
-// The dock is the orchestrator; every page step is a probe.js RPC action and
-// model names come from the trace pipeline (state.sessions, keyed by session).
-const PROBE_LOG_MAX = 60;
-function probeLog(line) {
-  const el = q('ak-probe-log');
-  const t = new Date();
-  const hh = String(t.getHours()).padStart(2, '0'), mm = String(t.getMinutes()).padStart(2, '0'), ss = String(t.getSeconds()).padStart(2, '0');
-  const lines = el.textContent ? el.textContent.split('\n') : [];
-  lines.push(`${hh}:${mm}:${ss} ${line}`);
-  el.textContent = lines.slice(-PROBE_LOG_MAX).join('\n');
-  el.hidden = false;
-  el.scrollTop = el.scrollHeight;
-  setStatus(line);
-}
-
-function probeConfigFromPanel() {
-  const rounds = Math.min(100, Math.max(1, parseInt(q('ak-probe-rounds').value, 10) || 5));
-  q('ak-probe-rounds').value = String(rounds);
-  return {
-    targets: parseTargets(q('ak-probe-targets').value),
-    maxRounds: rounds,
-    findAll: q('ak-probe-findall').checked,
-    autoRename: q('ak-probe-rename').checked,
-    repo: q('ak-probe-repo').value.trim(),
-    branch: q('ak-probe-branch').value.trim(),
-  };
-}
-function persistProbePanel() {
-  const cfg = probeConfigFromPanel();
-  return savePrefs({ probeTargets: q('ak-probe-targets').value, probeRounds: cfg.maxRounds, probeFindAll: cfg.findAll, probeRename: cfg.autoRename, probeRepo: cfg.repo, probeBranch: cfg.branch, agentDefaults: q('ak-agent-defaults').checked });
-}
-function setProbeRunningUi(running, what = '探针') {
-  root.querySelector('[data-action="probe-start"]').disabled = running;
-  root.querySelector('[data-action="draw-start"]').disabled = running;
-  root.querySelector('[data-action="probe-stop"]').disabled = !running;
-  root.querySelector('[data-action="probe-stop"]').textContent = running ? `停止${what}` : '停止';
-}
-
-/* mode 'probe' (until targets hit) or 'draw' (extension 自动抽卡: N rounds,
- * every chat renamed to its model, no targets). */
-async function startProbe(mode = 'probe') {
-  if (!state.probe) { probeLog('无 Tauri 运行时'); return; }
-  if (state.probe.isRunning) { probeLog(state.probe.mode === 'cleanup' ? '清理进行中，请先停止' : '探针已在运行'); return; }
-  await persistProbePanel();
-  const cfg = { ...probeConfigFromPanel(), mode };
-  if (mode !== 'draw' && !cfg.targets.length) { probeLog('请填写至少一个目标'); return; }
-  q('ak-probe-log').textContent = '';
-  setProbeRunningUi(true, mode === 'draw' ? '抽卡' : '探针');
-  let result = null;
-  try {
-    result = await state.probe.start(cfg);
-  } finally {
-    setProbeRunningUi(false);
-  }
-  // Optional follow-up sweep: archive the arithmetic-titled chats the run
-  // left behind (hit chats were renamed, so they are not candidates). Skipped
-  // when the user stopped the probe by hand.
-  if (result && !result.cancelled && state.prefs.cleanupAfterProbe) {
-    probeLog('探针结束，开始自动清理…');
-    await startCleanup();
-  }
-}
-
-// ── module: cleanup sweep (archive arithmetic-titled probe residue) ─────
-function setCleanupRunningUi(running) {
-  root.querySelector('[data-action="cleanup-start"]').disabled = running;
-  root.querySelector('[data-action="cleanup-stop"]').disabled = !running;
-}
-async function startCleanup() {
-  if (!state.probe) { setStatus('无 Tauri 运行时'); return null; }
-  if (state.probe.isRunning) { probeLog(state.probe.mode === 'probe' ? '探针运行中，请先停止再清理' : '清理已在进行'); return null; }
-  setCleanupRunningUi(true);
-  q('ak-cleanup-state').textContent = '扫描侧栏算式标题…';
-  try {
-    // keepSessionId = the conversation on screen; it is never archived.
-    return await state.probe.cleanup(state.nav.sessionId || null);
-  } finally {
-    setCleanupRunningUi(false);
-  }
-}
-function wireCleanup() {
-  const after = q('ak-cleanup-after');
-  after.checked = !!state.prefs.cleanupAfterProbe;
-  after.addEventListener('change', () => savePrefs({ cleanupAfterProbe: after.checked }));
-  setCleanupRunningUi(false);
-}
-
-function createDockProbe() {
-  const counters = state.prefs.probeSuffixes && typeof state.prefs.probeSuffixes === 'object' ? state.prefs.probeSuffixes : {};
-  return createProbeController({
-    rpc: state.rpc,
-    // The probe knows the PAGE id; turn data lives under the stream id it aliases.
-    modelForSession: (sid) => (state.sessions.get(conversationFor(sid))?.models || []).map((m) => m.model),
-    // Extension acquire.js parity: show which stage the capture is in while waiting.
-    stageForSession: (sid) => {
-      if (state.tracker.sessionId !== conversationFor(sid)) return '截获会话流，等待运行令牌';
-      const t = state.tracker.turns.at(-1);
-      return t?.status && t.status !== '已识别' ? `拉取 trace · ${t.status}` : '已取得运行令牌，读取 trace…';
-    },
-    onProgress: probeLog,
-    onFinished: (summary) => {
-      probeLog(summary);
-      if (/^清理|^没有需要归档/.test(summary)) q('ak-cleanup-state').textContent = summary;
-      else q('ak-probe-state').textContent = summary;
-    },
-    onProbeState: (round, max, hits, active) => {
-      const draw = !!state.probeDraw;
-      q('ak-probe-state').textContent = active
-        ? (draw ? `抽卡进行中 · 第 ${round}/${max} 轮 · 已识别 ${hits}` : `探针运行中 · 第 ${round}/${max} 轮 · 命中 ${hits}`)
-        : (q('ak-probe-state').textContent || '');
-      // Reference pill: "探针 2/5 · 命中 1" while running, "探针结束 · 命中 n" for 4 s after.
-      if (active) setTask({ kind: 'probe', round, max, hits, draw });
-      else { setTask(null); flashPill(`${draw ? '抽卡' : '探针'}结束 · ${draw ? '识别' : '命中'} ${hits}`, 4000); }
-    },
-    onCleanupState: (archived, active) => {
-      q('ak-cleanup-state').textContent = active ? `清理中 · 已归档 ${archived}` : `上次清理已归档 ${archived}`;
-      if (active) setTask({ kind: 'cleanup', archived });
-      else { setTask(null); flashPill(`清理完成 · 已归档 ${archived}`, 4000); }
-    },
-    // Extension parity: an archived probe chat also loses its local record.
-    onArchived: (sid) => { dropLocalRecord(sid).catch(() => {}); },
-    buildTitle: (model, suffix) => buildTitle({ prefix: state.prefs.renamePrefix, model, suffix }),
-    titlePrefix: () => state.prefs.renamePrefix || '',
-    suffixCounters: counters,
-    onSuffixes: (c) => savePrefs({ probeSuffixes: c }),
-  });
-}
-
-function wireProbe() {
-  q('ak-probe-targets').value = state.prefs.probeTargets || DEFAULT_TARGETS.join(', ');
-  q('ak-probe-rounds').value = String(state.prefs.probeRounds || 5);
-  q('ak-probe-findall').checked = state.prefs.probeFindAll !== false;
-  q('ak-probe-rename').checked = state.prefs.probeRename !== false;
-  q('ak-probe-repo').value = state.prefs.probeRepo || '';
-  q('ak-probe-branch').value = state.prefs.probeBranch || '';
-  q('ak-agent-defaults').checked = state.prefs.agentDefaults !== false;
-  for (const id of ['ak-probe-targets', 'ak-probe-rounds', 'ak-probe-findall', 'ak-probe-rename', 'ak-probe-repo', 'ak-probe-branch', 'ak-agent-defaults']) q(id).addEventListener('change', persistProbePanel);
-  setProbeRunningUi(false);
 }
 
 // ── module: model fingerprint (page-side statistical estimate) ──────────
@@ -1163,6 +1013,7 @@ const FP_PROTO_LABEL = {
   'fpverify-battery-v1': '分类问答组（五问）',
 };
 const FP_ERR_LABEL = { 0: '正常', 1: '无整数', 2: '整数过少', 3: '空回复', 4: '无法绑定到当前探针' };
+const FP_LOG_MAX = 60; // keep the last N fingerprint log lines
 function fingerprintProtocolId() {
   const v = q('ak-fingerprint-protocol') && q('ak-fingerprint-protocol').value;
   return (v === 'fpverify-battery-v1' || v === 'modeltrace-long-integers-v1') ? v : 'modeltrace-long-integers-v1';
@@ -1193,7 +1044,7 @@ function fingerprintLog(line) {
   const hh = String(t.getHours()).padStart(2, '0'), mm = String(t.getMinutes()).padStart(2, '0'), ss = String(t.getSeconds()).padStart(2, '0');
   const lines = el.textContent ? el.textContent.split('\n') : [];
   lines.push(`${hh}:${mm}:${ss} ${line}`);
-  el.textContent = lines.slice(-PROBE_LOG_MAX).join('\n');
+  el.textContent = lines.slice(-FP_LOG_MAX).join('\n');
   el.hidden = false;
   el.scrollTop = el.scrollHeight;
 }
@@ -1309,18 +1160,57 @@ function wireFingerprint() {
   if (budget) budget.value = String(Math.min(24, Math.max(1, parseInt(state.prefs.fingerprintBudget, 10) || 3)));
   if (proto) proto.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
   if (budget) budget.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
+  // Opt-in rename from the fingerprint estimate (SEPARATE from the confirmed-model
+  // auto-rename ak-auto-rename). A server-confirmed true name always wins; this
+  // only renames when the estimate's confidence clears the threshold below.
+  const autoRename = q('ak-fingerprint-autorename');
+  if (autoRename) {
+    autoRename.checked = !!state.prefs.fingerprintAutoRename;
+    autoRename.addEventListener('change', () => {
+      savePrefs({ fingerprintAutoRename: autoRename.checked });
+      renderRenamePreview();
+      setStatus(autoRename.checked
+        ? `已开启：指纹置信度 ≥ ${Number(state.prefs.fingerprintRenameThreshold) || 0.85} 时按估计重命名当前会话（服务端真名优先）`
+        : '已关闭指纹估计重命名');
+    });
+  }
+  // Confidence threshold for the opt-in rename (0..1, lazy default 0.85).
+  const threshold = q('ak-fingerprint-threshold');
+  if (threshold) {
+    const clamp = (n) => Math.min(1, Math.max(0, Number.isFinite(n) ? n : 0.85));
+    const stored = Number(state.prefs.fingerprintRenameThreshold);
+    threshold.value = String(Number.isFinite(stored) ? clamp(stored) : 0.85);
+    const commit = () => {
+      const v = clamp(parseFloat(threshold.value));
+      threshold.value = String(v);
+      savePrefs({ fingerprintRenameThreshold: v });
+      renderRenamePreview();
+    };
+    threshold.addEventListener('change', commit);
+  }
   setFingerprintRunningUi(false);
   renderFingerprintState();
 }
 
 // A sync page snapshot the runner uses to detect a page / mode change mid-run.
 // state.nav is kept current by onPage('nav'); the dock webview is always on the
-// arena origin, so the hard signal is the agent composer path. (The runner also
-// relies on the page-side send guard, which re-checks origin + agent mode and
-// the human draft before every send.)
+// arena origin, so the hard signal is being on an Agent surface. (The runner
+// also relies on the page-side send guard, which re-checks origin + agent mode
+// and the human draft before every send.)
+//
+// agentPath must be TRUE both for the fresh /agent composer AND for an already
+// open conversation (/agent/{id} or /c/{id}): a user starts a fingerprint run
+// from whatever chat is on screen, and the runner calls newChat FIRST (which
+// navigates to the fresh /agent composer) before it ever sends. If we only
+// accepted the bare /agent composer here, pageChanged() would fire on the very
+// first loop iteration — BEFORE newChat runs — and abort with "发送 0 条",
+// which is exactly the 0-send bug. The page-side send guard still enforces the
+// fresh /agent composer at send time, so widening this snapshot is safe.
 function fingerprintPageState() {
   const path = String(state.nav.path || '').replace(/\/+$/, '');
-  return { onArena: true, agentPath: path === '/agent' || path === '', session: state.nav.sessionId || null };
+  const onAgentSurface = path === '' || path === '/agent'
+    || path.startsWith('/agent/') || path.startsWith('/c/');
+  return { onArena: true, agentPath: onAgentSurface, session: state.nav.sessionId || null };
 }
 // Probe ids per protocol — must mirror injected/probe.js FINGERPRINT_PROMPTS
 // (the page-side allowlist). The runner only ever passes an id; the prompt text
@@ -1374,7 +1264,9 @@ function createDockFingerprint() {
     candidateModelsForSession: (sid) => (state.sessions.get(conversationFor(sid))?.models || []).map((m) => m.model),
     // Refuse to start while an arithmetic probe / cleanup / quick send or a
     // rename is in flight — they share the same page surface and RPC channel.
-    otherRunActive: () => !!(state.probe?.isRunning || state.quickBusy || state.renaming),
+    // Refuse to start while a rename dialog is being driven — it shares the
+    // same page surface and RPC channel.
+    otherRunActive: () => !!state.renaming,
     pageState: fingerprintPageState,
     protocolMeta: (protocolId) => {
       const meta = fingerprintProtocolMeta(protocolId) || {};
@@ -1394,9 +1286,16 @@ async function startFingerprint() {
   if (state.fingerprint.runner.isRunning) { setStatus('指纹探测已在运行'); return; }
   const protocolId = fingerprintProtocolId();
   const maxRounds = fingerprintBudget();
+  // Rename is now opt-in: tell the user whether this run may rename, so the
+  // confirm reflects what will actually happen (a server-confirmed true name
+  // still always wins over the estimate).
+  const willRename = !!state.prefs.fingerprintAutoRename;
+  const renameNote = willRename
+    ? `识别置信度达到阈值（${Number(state.prefs.fingerprintRenameThreshold) || 0.85}）时会按估计重命名当前会话`
+    : '不会重命名会话';
   const ok = await confirmDialog({
     title: '开始模型指纹探测',
-    message: `本次最多发送 ${maxRounds} 条固定探针消息（会消耗额度）。结果为统计估计（非真名），阈值未完成 Arena 校准，不会覆盖服务端确认的模型，也不会重命名会话。确定继续？`,
+    message: `本次最多发送 ${maxRounds} 条固定探针消息（会消耗额度）。结果为统计估计（非真名），阈值未完成 Arena 校准，不会覆盖服务端确认的模型，${renameNote}。确定继续？`,
     ok: '发送探针',
     cancel: '取消',
   });
@@ -1538,57 +1437,6 @@ onPage('watch', (payload) => {
   }
 });
 
-// ── module: session probe (send into the OPEN conversation, identify this turn)
-const quickState = (t) => { q('ak-quick-state').textContent = t; };
-async function sessionProbe() {
-  if (!state.probe || !state.rpc) { quickState('无 Tauri 运行时'); return; }
-  if (state.quickBusy) { quickState('上一条探针仍在等待识别…'); return; }
-  state.quickBusy = true;
-  if (!state.taskStartedAt) state.taskStartedAt = Date.now();
-  const btn = root.querySelector('[data-action="quick-send"]');
-  btn.disabled = true;
-  try {
-    await savePrefs({ quickText: q('ak-quick-text').value, quickRename: q('ak-quick-rename').checked });
-    let text;
-    try { text = sessionProbeText(state.prefs.quickText); } catch (e) { quickState(String(e.message || e)); return; }
-    const pre = await state.rpc.call('precheck').catch((e) => { quickState('无法读取页面状态: ' + (e.message || e)); return null; });
-    if (!pre) return;
-    const go = sessionProbePrecheck(pre, { probeRunning: state.probe.isRunning });
-    if (!go.ok) { quickState(go.reason); return; }
-    const sessionId = pre.session || null;
-    const afterTurn = sessionId && state.tracker.sessionId === sessionId ? state.tracker.turnCount : 0;
-    quickState(`发送 "${text.slice(0, 40)}"…${go.reason ? ' · ' + go.reason : ''}`);
-    flashPill('探针发送中…', 2500);
-    const sent = await state.probe.quickSend(text);
-    if (!sent.ok) { quickState(sent.message); return; }
-    quickState('已发送，等待本轮 trace 识别模型…');
-    const hit = await awaitTurnModel({ tracker: state.tracker, afterTurn, sessionId });
-    if (!hit) { quickState('等待超时：本轮未识别到模型（trace 可能未包含模型标签）'); return; }
-    const routed = state.tracker.firstModel && hit.model !== state.tracker.firstModel;
-    quickState(`第 ${hit.turn} 轮实际模型：${hit.models.join(' / ')}${routed ? `（非首轮模型 ${state.tracker.firstModel}）` : ''}`);
-    setStatus(`会话探针：第 ${hit.turn} 轮 → ${hit.model}`);
-    if (state.prefs.quickRename) {
-      const sid = sessionId || state.tracker.sessionId || state.nav.sessionId;
-      if (!sid) { quickState(q('ak-quick-state').textContent + ' · 无会话 ID，未重命名'); return; }
-      try {
-        await renameConversation(sid, buildTitle({ prefix: state.prefs.renamePrefix, model: hit.model }), { reason: '会话探针' });
-      } catch (e) {
-        quickState(q('ak-quick-state').textContent + ' · 重命名失败: ' + (e.message || e));
-      }
-    }
-  } finally {
-    state.quickBusy = false;
-    if (!state.hud.task || state.hud.task.kind === 'recovery') state.taskStartedAt = 0;
-    btn.disabled = false;
-  }
-}
-function wireSessionProbe() {
-  q('ak-quick-text').value = state.prefs.quickText || '';
-  q('ak-quick-rename').checked = !!state.prefs.quickRename;
-  q('ak-quick-text').addEventListener('change', () => savePrefs({ quickText: q('ak-quick-text').value }));
-  q('ak-quick-rename').addEventListener('change', (e) => savePrefs({ quickRename: e.target.checked }));
-}
-
 // ── module: rename conversation (prefix + manual / auto) ────────────────
 // Rename goes through Arena's own sidebar ⋯ → Rename dialog (probe.js →
 // conversation-rename.js), never a private endpoint. Auto-rename fires at most
@@ -1601,10 +1449,25 @@ function firstModelOf(sessionId) {
   const rec = state.sessions.get(sid);
   const live = rec?.models?.[0]?.model;
   if (live) return live;
-  // stored record by stream id / page id / pageIds (never a title or fingerprint
-  // guess: this names conversations, and only a confirmed model may do that)
+  // Prefer a stored CONFIRMED model (server true name, not a title / fingerprint
+  // guess) — a confirmed name always wins for titling.
   const r = resolveModel({ pageId: sessionId, conversationFor, sessions: state.sessions, historyIndex: state.historyIndex });
-  return r.source && r.source !== 'title' && r.source !== 'fingerprint' ? (r.models[0]?.model || '') : '';
+  if (r.source && r.source !== 'title' && r.source !== 'fingerprint') return r.models[0]?.model || '';
+  // No confirmed model. Fall back to the fingerprint ESTIMATE only when the user
+  // opted in AND the current estimate clears the (user-set) confidence threshold.
+  // This is a statistical guess, not a true name — gated behind an explicit
+  // switch so a persistent, user-visible rename never happens silently on a
+  // low-confidence or uncalibrated verdict. A server true name arriving later
+  // overwrites it through the normal trace path.
+  if (state.prefs.fingerprintAutoRename) {
+    const fp = state.fingerprint.lastResult;
+    const threshold = Number(state.prefs.fingerprintRenameThreshold);
+    if (fp && fp.status === 'attributed' && fp.sessionId === sid
+        && Number(fp.confidence) >= (Number.isFinite(threshold) ? threshold : 0.85)) {
+      return fp.estimatedModel || fp.family || '';
+    }
+  }
+  return '';
 }
 
 function renderRenamePreview() {
@@ -1651,7 +1514,7 @@ async function renameNow() {
 const autoRenameSeen = new Set(); // in-memory fast path in front of the persisted gate
 async function maybeAutoRename(sessionId, model, run) {
   if (!state.prefs.autoRename || !state.rpc || !sessionId || !model) return;
-  if (state.probe?.isRunning) return;                          // the probe names its own sessions
+  if (state.fingerprint.runner?.isRunning) return;             // a fingerprint run names its own sessions
   // Only the conversation on screen; the page id may alias the stream id
   // (/c/{evalId}) and the page-side rename needs the PAGE id.
   const pageId = state.nav.sessionId;
@@ -1850,14 +1713,6 @@ function wireControls() {
         archiveCurrent(el);
       } else if (a === 'rename-now') {
         renameNow();
-      } else if (a === 'probe-start') {
-        state.probeDraw = false;
-        startProbe('probe');
-      } else if (a === 'draw-start') {
-        state.probeDraw = true;
-        startProbe('draw');
-      } else if (a === 'probe-stop') {
-        if (state.probe?.stop()) probeLog('正在停止…');
       } else if (a === 'pulse-refresh') {
         refreshPulseNow();
       } else if (a === 'nav-back') {
@@ -1866,12 +1721,6 @@ function wireControls() {
         page('navForward');
       } else if (a === 'nav-reload' || a === 'page-reload') {
         requestReload('panel');
-      } else if (a === 'quick-send') {
-        sessionProbe();
-      } else if (a === 'cleanup-start') {
-        startCleanup();
-      } else if (a === 'cleanup-stop') {
-        if (state.probe?.mode === 'cleanup' && state.probe.stop()) probeLog('正在停止清理…');
       } else if (a === 'save-eni') {
         const eniText = q('ak-eni-text').value;
         const eniOn = q('ak-eni-on').checked;
@@ -1965,12 +1814,8 @@ async function boot() {
   wireUsageView();
   wireHistory();
   wireRename();
-  wireProbe();
-  wireCleanup();
-  wireSessionProbe();
   wireFingerprint();
   wireAccounts();
-  if (state.rpc) state.probe = createDockProbe();
   // The fingerprint runner needs the RPC channel; create it once that exists and
   // flip the start button on (setFingerprintRunningUi re-checks the toggle).
   if (state.rpc) { state.fingerprint.runner = createDockFingerprint(); setFingerprintRunningUi(false); }
@@ -1978,13 +1823,8 @@ async function boot() {
   // opens it itself), tap on ⟳ → reload, long press → quick menu (below),
   // pull-up at the bottom of the conversation → reload.
   if (EMBED && typeof EMBED.onAction === 'function') {
-    const probeRunning = () => !!state.probe?.isRunning && state.probe.mode !== 'cleanup';
-    const cleanupRunning = () => !!state.probe?.isRunning && state.probe.mode === 'cleanup';
     if (typeof EMBED.setMenuProvider === 'function') {
       EMBED.setMenuProvider(() => [
-        { id: 'probe', label: probeRunning() ? '停止探针' : '开始探针' },
-        { id: 'quick', label: '会话探针', disabled: probeRunning() || cleanupRunning() },
-        { id: 'cleanup', label: cleanupRunning() ? '停止清理' : '清理算式标题' },
         { id: 'refresh', label: '刷新页面' },
         { id: 'account', label: '切换账号' },
         { id: 'panel', label: '打开面板' },
@@ -1992,22 +1832,10 @@ async function boot() {
     }
     EMBED.onAction((name, arg) => {
       const id = name === 'menu' ? arg : name;
-      if (id === 'probe') {
-        if (probeRunning()) { state.probe.stop(); probeLog('正在停止…'); return; }
-        state.probeDraw = false;
-        showTab('probe');
-        startProbe('probe');
-      } else if (id === 'cleanup') {
-        if (cleanupRunning()) { state.probe.stop(); probeLog('正在停止清理…'); return; }
-        showTab('tools');
-        startCleanup();
-      } else if (id === 'refresh') {
+      if (id === 'refresh') {
         requestReload('pill');
       } else if (id === 'pull-refresh') {
         requestReload('pull');
-      } else if (id === 'quick') {
-        showTab('probe');
-        sessionProbe();
       } else if (id === 'account') {
         showTab('account');
         EMBED.open();

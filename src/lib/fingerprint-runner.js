@@ -1,13 +1,11 @@
 /* Active model-fingerprint orchestrator (ArenaKit 0.5.x).
  *
- * Sibling of src/lib/probe-runner.js — NOT folded into it. The arithmetic
- * probe runner draws quota to read a chat's model via the trace pipeline; this
- * runner instead sends a FIXED, allowlisted probe prompt, lets the page-side
- * reducer (injected/fingerprint.js) turn the reply into a structured feature
+ * Sends a FIXED, allowlisted probe prompt, lets the page-side reducer
+ * (injected/fingerprint.js) turn the reply into a structured feature
  * (histogram counts / normalized category pick — never raw text), and feeds
  * those features to classify() for a STATISTICAL family estimate.
  *
- * It reuses probe-runner's safety machinery verbatim in spirit:
+ * Safety machinery:
  *   - a cancel token every await races against (stop() is immediate),
  *   - a single-run gate (no concurrent fingerprint run),
  *   - RPC timeout (inherited from the shared rpc),
@@ -110,8 +108,8 @@ export function createFingerprintRunner({
 
   /* A frozen snapshot of the page we must stay on for the whole run. If the
    * origin / agent path flips we stop rather than send into an unknown surface.
-   * (The baseline is kept for symmetry with probe-runner; the hard check is the
-   * live origin + agent-path.) */
+   * (A baseline is kept for symmetry; the hard check is the live origin +
+   * agent-path.) */
   function pageChanged() {
     let s;
     try { s = pageState() || {}; } catch { return true; }
