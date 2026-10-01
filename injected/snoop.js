@@ -127,11 +127,18 @@
   // can never break token capture.
   const monitor = () => window.__ARENAKIT_MONITOR__;
   const mon = (fn, ...args) => { try { const m = monitor(); if (m && typeof m[fn] === 'function') m[fn](...args); } catch {} };
+  // Model-fingerprint hook (optional, page-world only). Same guarded shape as
+  // the monitor: it receives the SAME raw frames but only acts when the dock has
+  // armed it for a specific probe, and only ever ships numeric features — never
+  // reply text — across the bridge (injected/fingerprint.js).
+  const fingerprint = () => window.__ARENAKIT_FINGERPRINT__;
+  const fp = (fn, ...args) => { try { const f = fingerprint(); if (f && typeof f[fn] === 'function') f[fn](...args); } catch {} };
   async function tapBody(body, sessionId) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
     mon('onOpen', sessionId);
+    fp('onOpen', sessionId);
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -140,16 +147,18 @@
         if (buf.length > 2 * 1024 * 1024) buf = buf.slice(-65536);
         const parts = buf.split(/\r?\n\r?\n/);
         buf = parts.pop() || '';
-        for (const part of parts) { scanChunk(part + '\n\n', sessionId); mon('onFrame', sessionId, part, value ? value.byteLength : 0); }
+        for (const part of parts) { scanChunk(part + '\n\n', sessionId); mon('onFrame', sessionId, part, value ? value.byteLength : 0); fp('onFrame', sessionId, part, value ? value.byteLength : 0); }
         // Scan the remainder too, so a token split across a chunk boundary is
         // still caught by the raw fallback (data lines are retried on the next
         // read through buf).
         if (buf.length > 40 && /eyJ/.test(buf)) scanRaw(buf.slice(-131072), sessionId);
       }
-      if (buf.trim()) { scanChunk(buf + '\n\n', sessionId); mon('onFrame', sessionId, buf, 0); }
+      if (buf.trim()) { scanChunk(buf + '\n\n', sessionId); mon('onFrame', sessionId, buf, 0); fp('onFrame', sessionId, buf, 0); }
       mon('onEnd', sessionId, 'done');
+      fp('onEnd', sessionId, 'done');
     } catch (e) {
       mon('onEnd', sessionId, 'abort');
+      fp('onEnd', sessionId, 'abort');
       throw e;
     }
   }
@@ -159,7 +168,7 @@
       const response = await origFetch.apply(this, args);
       const sessionId = sessionFromUrl(urlOf(args[0]));
       if (!sessionId) return response;
-      if (!response.ok) { mon('onHttpError', sessionId, response.status); return response; }
+      if (!response.ok) { mon('onHttpError', sessionId, response.status); fp('onHttpError', sessionId, response.status); return response; }
       if (!response.body) return response;
       try {
         const [page, probe] = response.body.tee();
@@ -179,8 +188,9 @@
       const sessionId = sessionFromUrl(urlOf(url));
       if (sessionId) {
         mon('onOpen', sessionId);
-        es.addEventListener('message', ev => { if (typeof ev.data === 'string') { scanChunk('data: ' + ev.data + '\n\n', sessionId); mon('onFrame', sessionId, 'data: ' + ev.data, ev.data.length); } });
-        es.addEventListener('error', () => mon('onEnd', sessionId, es.readyState === OrigES.CLOSED ? 'abort' : 'retry'));
+        fp('onOpen', sessionId);
+        es.addEventListener('message', ev => { if (typeof ev.data === 'string') { scanChunk('data: ' + ev.data + '\n\n', sessionId); mon('onFrame', sessionId, 'data: ' + ev.data, ev.data.length); fp('onFrame', sessionId, 'data: ' + ev.data, ev.data.length); } });
+        es.addEventListener('error', () => { mon('onEnd', sessionId, es.readyState === OrigES.CLOSED ? 'abort' : 'retry'); fp('onEnd', sessionId, es.readyState === OrigES.CLOSED ? 'abort' : 'retry'); });
       }
       return es;
     };

@@ -115,6 +115,13 @@ const state = {
   probe: null,              // createProbeController() — auto probe / cleanup / quick send
   probeDraw: false,         // current probe run is a draw (自动抽卡) rather than a target probe
   quickBusy: false,         // a session probe is in flight
+  // 模型指纹: page-side fixed-probe reducer. In PR3 this only COLLECTS the
+  // structured features the page emits ('fingerprint-sample') and shows a
+  // de-identified diagnostic; it never auto-sends a probe and never classifies
+  // on its own yet (the fingerprint-runner + classify wiring arrives in PR4).
+  // samples: the reduced features received so far this session (counts /
+  // normalized picks / parse-error codes only — never any reply text).
+  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null },
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
   // header + status-pill display state: model/routed/pending, the running
@@ -199,6 +206,8 @@ const DEFAULT_PREFS = {
   cleanupAfterProbe: false, // sweep arithmetic-titled probe residue when a probe run ends
   quickText: '',            // session probe text ('' = random arithmetic)
   quickRename: false,       // rename the conversation after the session probe identifies its model
+  fingerprintProtocol: 'modeltrace-long-integers-v1', // last-selected fingerprint protocol
+  fingerprintBudget: 3,     // max fixed probes a fingerprint run may send (1..24)
   theme: 'auto',            // 'auto' (follow system, like the reference DayNight theme) | 'light' | 'dark'
   panelTab: 'chat',         // last selected segmented tab
   pillRefresh: true,        // 悬浮窗显示刷新按钮 (Android status pill ⟳ zone)
@@ -207,6 +216,7 @@ const DEFAULT_PREFS = {
   capture: true,            // 截获会话流 (extension 监听 toggle): hand run tokens to Rust
   pulseOn: true,            // 额度轮询: periodic /api/me/pulse reads (manual 刷新 always works)
   monitorOn: true,          // 回复监控: reply-stream anomaly detection
+  fingerprintOn: false,     // 模型指纹: page-side fixed-probe reducer (default OFF — opt-in, no raw text ever leaves the page)
 };
 
 // ── theme ───────────────────────────────────────────────────────────────
@@ -226,7 +236,7 @@ function wireTheme() {
 }
 
 // ── settings: page-side feature flags + ball centre ─────────────────────
-const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn', 'ak-pulse-on'], ['monitor', 'monitorOn', 'ak-monitor-on']];
+const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn', 'ak-pulse-on'], ['monitor', 'monitorOn', 'ak-monitor-on'], ['fingerprint', 'fingerprintOn', 'ak-fingerprint-on']];
 /* Push the switches into the arena page (injected snoop / pulse / monitor /
  * watchdog read window.__ARENAKIT_FLAGS__). Re-applied on every page load. */
 function applyPageFlags() {
@@ -285,6 +295,7 @@ function wireSettings() {
       if (flag === 'capture') setStatus(el.checked ? '已开启截获会话流' : '已关闭截获会话流：不再识别模型，直到重新开启');
       if (flag === 'pulse') { setStatus(el.checked ? '已开启额度轮询' : '已关闭额度轮询（可手动刷新）'); if (el.checked) dispatchToPage('pulse-refresh', null); }
       if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
+      if (flag === 'fingerprint') setStatus(el.checked ? '已开启模型指纹（统计估计·非真名·需手动运行）' : '已关闭模型指纹');
     });
   }
   // 悬浮窗显示刷新按钮 (Android pill ⟳ zone; the row is hidden in the desktop dock via CSS)
@@ -309,12 +320,19 @@ function wireSettings() {
       setStatus(autoRefresh.checked ? '已开启：回复出错或空白时自动刷新' : '已关闭自动刷新（回复异常仍会记录）');
     });
   }
-  // 最多轮数 stepper
+  // 最多轮数 stepper (and other [data-step] steppers via data-step-target)
   root.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => {
-    const input = q('ak-probe-rounds');
-    const n = Math.min(100, Math.max(1, (parseInt(input.value, 10) || 5) + Number(b.dataset.step)));
+    const targetId = b.dataset.stepTarget || 'ak-probe-rounds';
+    const input = q(targetId);
+    if (!input) return;
+    const lo = parseInt(input.min, 10); const hi = parseInt(input.max, 10);
+    const min = Number.isFinite(lo) ? lo : 1;
+    const max = Number.isFinite(hi) ? hi : 100;
+    const base = parseInt(input.value, 10) || min;
+    const n = Math.min(max, Math.max(min, base + Number(b.dataset.step)));
     input.value = String(n);
-    persistProbePanel();
+    if (targetId === 'ak-probe-rounds') persistProbePanel();
+    else if (targetId === 'ak-fingerprint-budget') persistFingerprintPanel();
   }));
 }
 
@@ -1126,6 +1144,165 @@ function wireProbe() {
   setProbeRunningUi(false);
 }
 
+// ── module: model fingerprint (page-side statistical estimate) ──────────
+// A STATISTICAL guess over three families (opus / fable / gpt6) from the
+// reduced features the page emits for FIXED probe prompts — never a confirmed
+// model name, never overwrites a server-confirmed model, never renames a
+// conversation. Thresholds are UNCALIBRATED. PR3 wires only the page→dock
+// feature channel + a de-identified diagnostic view; the active probe runner
+// and the classify() call arrive in PR4, so the start button stays disabled.
+const FP_PROTO_LABEL = {
+  'modeltrace-long-integers-v1': '长整数序列直方图',
+  'fpverify-battery-v1': '分类问答组（五问）',
+};
+const FP_ERR_LABEL = { 0: '正常', 1: '无整数', 2: '整数过少', 3: '空回复', 4: '无法绑定到当前探针' };
+function fingerprintProtocolId() {
+  const v = q('ak-fingerprint-protocol') && q('ak-fingerprint-protocol').value;
+  return (v === 'fpverify-battery-v1' || v === 'modeltrace-long-integers-v1') ? v : 'modeltrace-long-integers-v1';
+}
+function fingerprintBudget() {
+  const n = parseInt(q('ak-fingerprint-budget') && q('ak-fingerprint-budget').value, 10);
+  return Math.min(24, Math.max(1, Number.isFinite(n) ? n : 3));
+}
+function persistFingerprintPanel() {
+  return savePrefs({ fingerprintProtocol: fingerprintProtocolId(), fingerprintBudget: fingerprintBudget() });
+}
+function setFingerprintRunningUi(running) {
+  const start = root.querySelector('[data-action="fingerprint-start"]');
+  const stop = root.querySelector('[data-action="fingerprint-stop"]');
+  // The active runner lands in PR4; until then start stays disabled regardless
+  // (the feature is still useful read-only: it shows the features the page
+  // emits for a probe the USER sends by hand).
+  if (start) start.disabled = true;
+  if (stop) stop.disabled = !running;
+}
+function fingerprintLog(line) {
+  const el = q('ak-fingerprint-log');
+  if (!el) return;
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, '0'), mm = String(t.getMinutes()).padStart(2, '0'), ss = String(t.getSeconds()).padStart(2, '0');
+  const lines = el.textContent ? el.textContent.split('\n') : [];
+  lines.push(`${hh}:${mm}:${ss} ${line}`);
+  el.textContent = lines.slice(-PROBE_LOG_MAX).join('\n');
+  el.hidden = false;
+  el.scrollTop = el.scrollHeight;
+}
+// A one-line, de-identified summary of a received feature frame. NEVER any
+// reply text — only counts / a normalized pick / an error code.
+function fingerprintSampleLine(s) {
+  if (!s || typeof s !== 'object') return '收到无法解析的样本';
+  const kind = s.kind === 'categorical' ? '分类' : '直方图';
+  if (s.parseError) return `${kind} · 解析失败（${FP_ERR_LABEL[s.parseError] || '错误码 ' + s.parseError}）· 帧 ${s.frames || 0}`;
+  if (s.kind === 'histogram') {
+    const n = Number.isFinite(s.n) ? s.n : 0;
+    return `直方图 · 有效整数 ${n} · 维度 ${s.dims || 0} · 帧 ${s.frames || 0}`;
+  }
+  if (s.kind === 'categorical') {
+    const v = s.value == null ? '（无）' : String(s.value).slice(0, 32);
+    return `分类 · 挑选 ${v} · 帧 ${s.frames || 0}`;
+  }
+  return `${kind} · 帧 ${s.frames || 0}`;
+}
+function renderFingerprintState() {
+  const el = q('ak-fingerprint-state');
+  if (!el) return;
+  if (state.prefs.fingerprintOn === false) { el.textContent = '模型指纹已关闭（设置 → 模型指纹）。'; return; }
+  const fp = state.fingerprint;
+  const n = fp.samples.length;
+  if (!n) { el.textContent = `未分析 · 协议 ${FP_PROTO_LABEL[fingerprintProtocolId()] || fingerprintProtocolId()} · 预算 ${fingerprintBudget()} 条 · 等待固定探针回答`; return; }
+  el.textContent = `已收集 ${n} 个样本 · 协议 ${FP_PROTO_LABEL[fingerprintProtocolId()] || fingerprintProtocolId()} · 最近：${fingerprintSampleLine(fp.samples[n - 1])}`;
+}
+// The page emits a reduced feature for a fixed probe's reply. PR3: collect +
+// show it (read-only); classification is PR4. Payload is counts / a normalized
+// pick / an error code only — asserted again here, no text is ever read.
+onPage('fingerprint-sample', (sample) => {
+  if (state.prefs.fingerprintOn === false) return;
+  if (!sample || typeof sample !== 'object') return;
+  // Only numeric / short-id fields are kept — defensive mirror of the page-side
+  // reduction and the sanitize layer; this guarantees no stray text is stored.
+  const clean = {
+    sessionId: sample.sessionId ? String(sample.sessionId).slice(0, 128) : null,
+    probeId: sample.probeId ? String(sample.probeId).slice(0, 120) : null,
+    protocolId: sample.protocolId ? String(sample.protocolId).slice(0, 120) : null,
+    kind: sample.kind === 'categorical' ? 'categorical' : sample.kind === 'histogram' ? 'histogram' : null,
+    frames: Number.isFinite(sample.frames) ? sample.frames : 0,
+    ended: sample.ended ? String(sample.ended).slice(0, 24) : null,
+    parseError: Number.isInteger(sample.parseError) ? sample.parseError : 0,
+  };
+  if (clean.kind === 'histogram') {
+    clean.n = Number.isFinite(sample.n) ? sample.n : 0;
+    clean.dims = Number.isFinite(sample.dims) ? sample.dims : 0;
+    clean.counts = Array.isArray(sample.counts) ? sample.counts.slice(0, 512).map((x) => (Number.isFinite(x) ? x : 0)) : null;
+  } else if (clean.kind === 'categorical') {
+    // A single normalized token (bare integer or one short word), never free text.
+    clean.value = sample.value == null ? null : String(sample.value).slice(0, 64);
+  }
+  if (state.fingerprint.sessionId && clean.sessionId && state.fingerprint.sessionId !== clean.sessionId) {
+    // A new conversation → start a fresh collection.
+    state.fingerprint.samples = [];
+  }
+  state.fingerprint.sessionId = clean.sessionId || state.fingerprint.sessionId;
+  state.fingerprint.protocolId = clean.protocolId || state.fingerprint.protocolId;
+  state.fingerprint.samples.push(clean);
+  if (state.fingerprint.samples.length > 64) state.fingerprint.samples = state.fingerprint.samples.slice(-64);
+  fingerprintLog(fingerprintSampleLine(clean));
+  renderFingerprintState();
+});
+// A de-identified diagnostic for copy: protocol / counts summary / error codes
+// only. Never any reply text, token, header, or candidate model names copied
+// from a confirmed source.
+function fingerprintDiagnostic() {
+  const fp = state.fingerprint;
+  const lines = [
+    'ArenaKit 模型指纹诊断（脱敏）',
+    `协议: ${fingerprintProtocolId()}`,
+    `预算: ${fingerprintBudget()} 条`,
+    `样本数: ${fp.samples.length}`,
+    '说明: 统计估计 · 非真名 · 阈值未完成 Arena 校准 · 不覆盖服务端确认模型',
+  ];
+  fp.samples.forEach((s, i) => {
+    lines.push(`#${i + 1} ${fingerprintSampleLine(s)}`);
+  });
+  if (fp.lastResult) {
+    const r = fp.lastResult;
+    lines.push(`结果: ${r.status} · 系列 ${r.family} · 置信 ${r.confidence} · 边距 ${r.margin} · bank ${r.referenceBankVersion || '—'}`);
+  }
+  return lines.join('\n');
+}
+async function copyFingerprintDiagnostic() {
+  const text = fingerprintDiagnostic();
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
+    else throw new Error('no clipboard');
+    setStatus('已复制脱敏诊断');
+  } catch {
+    // Fall back to logging it so the user can select it manually.
+    fingerprintLog('复制失败，诊断已输出到日志：');
+    fingerprintLog(text);
+    setStatus('复制失败，诊断已输出到指纹日志');
+  }
+}
+function clearFingerprint() {
+  state.fingerprint.samples = [];
+  state.fingerprint.lastResult = null;
+  state.fingerprint.sessionId = null;
+  const log = q('ak-fingerprint-log');
+  if (log) { log.textContent = ''; log.hidden = true; }
+  renderFingerprintState();
+  setStatus('已清除本次指纹结果');
+}
+function wireFingerprint() {
+  const proto = q('ak-fingerprint-protocol');
+  const budget = q('ak-fingerprint-budget');
+  const saved = state.prefs.fingerprintProtocol;
+  if (proto) proto.value = (saved === 'fpverify-battery-v1' || saved === 'modeltrace-long-integers-v1') ? saved : 'modeltrace-long-integers-v1';
+  if (budget) budget.value = String(Math.min(24, Math.max(1, parseInt(state.prefs.fingerprintBudget, 10) || 3)));
+  if (proto) proto.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
+  if (budget) budget.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
+  setFingerprintRunningUi(false);
+  renderFingerprintState();
+}
+
 // ── module: quota gauge (pulse %) ───────────────────────────────────────
 // injected/pulse.js polls /api/me/pulse inside the arena page (cookies stay
 // there) and posts `pulse` events; the dock anchors the reset countdown
@@ -1606,6 +1783,16 @@ function wireControls() {
         state.acctEditId = null;
       } else if (a === 'acct-stop-login') {
         acct().stopLogin();
+      } else if (a === 'fingerprint-start') {
+        // The active probe runner lands in PR4; the button stays disabled until
+        // then. Guard here too so a stray click can never auto-send a message.
+        setStatus('主动指纹探测将在后续版本启用（需单独确认最大消息数）');
+      } else if (a === 'fingerprint-stop') {
+        if (state.fingerprint.runner && typeof state.fingerprint.runner.stop === 'function') { state.fingerprint.runner.stop(); fingerprintLog('正在停止…'); }
+      } else if (a === 'fingerprint-copy') {
+        copyFingerprintDiagnostic();
+      } else if (a === 'fingerprint-clear') {
+        clearFingerprint();
       }
     });
   });
@@ -1674,6 +1861,7 @@ async function boot() {
   wireProbe();
   wireCleanup();
   wireSessionProbe();
+  wireFingerprint();
   wireAccounts();
   if (state.rpc) state.probe = createDockProbe();
   // Status-pill gestures (reference MainActivity): tap → panel (the shell

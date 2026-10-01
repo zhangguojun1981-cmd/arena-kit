@@ -803,7 +803,7 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(label.textContent, '新对话');
 
   // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
-  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, autoRefresh: true }));
+  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, fingerprint: false, autoRefresh: true }));
   assert.equal(byId['ak-pill-refresh'].checked, true, 'pill ⟳ switch defaults on');
   assert.equal(byId['ak-auto-refresh'].checked, true, 'auto-refresh switch defaults on');
   assert.equal(sandbox.__ARENAKIT_EMBED__.host.dataset.embed, 'true');

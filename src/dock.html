@@ -137,6 +137,35 @@
         <div class="ak-note">也可以长按悬浮窗，选择「会话探针」</div>
         <div id="ak-quick-state" class="ak-sub"></div>
       </div>
+      <hr class="ak-divider" />
+      <div class="ak-group">
+        <div class="ak-group-head"><span>模型指纹（统计估计 · 非真名）</span></div>
+        <div class="ak-sub">对<b>固定探针提示词</b>的回答做纯页面侧统计归约（长整数直方图 / 分类挑选），据此在 opus / fable / gpt6 三系列间给出<b>概率估计</b>。永远不覆盖服务端确认的模型，不重命名会话；阈值尚未完成 Arena 校准，结果仅供参考，以服务端确认为准。</div>
+        <div class="ak-note">需先在「设置」中开启「模型指纹」开关。页面侧归约：只上报计数 / 单个归一化挑选，绝不传回复文本。</div>
+        <label class="ak-field"><span>协议</span>
+          <select id="ak-fingerprint-protocol" class="ak-input">
+            <option value="modeltrace-long-integers-v1">长整数序列（ModelTrace · 直方图）</option>
+            <option value="fpverify-battery-v1">分类问答组（fpverify · 五问）</option>
+          </select>
+        </label>
+        <div class="ak-stepper-row">
+          <span class="ak-stepper-label">本轮最多发送</span>
+          <div class="ak-stepper">
+            <button type="button" class="ak-icon-btn" data-step="-1" data-step-target="ak-fingerprint-budget" aria-label="减少">−</button>
+            <input id="ak-fingerprint-budget" class="ak-input ak-stepper-num" type="number" min="1" max="24" step="1" inputmode="numeric" value="3" />
+            <button type="button" class="ak-icon-btn" data-step="1" data-step-target="ak-fingerprint-budget" aria-label="增加">+</button>
+          </div>
+        </div>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-filled" data-action="fingerprint-start" disabled>开始指纹探测</button>
+          <button class="ak-btn ak-btn-sm" data-action="fingerprint-stop" disabled>停止</button>
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="fingerprint-copy" title="复制本次诊断（协议 / 概率 / 边距 / 样本数，不含任何回复文本）">复制诊断</button>
+          <button class="ak-btn ak-btn-sm" data-action="fingerprint-clear" title="清除本次收集的指纹样本与结果">清除</button>
+        </div>
+        <div class="ak-note">开始前会提示「本次最多发送 N 条固定探针消息（消耗额度）」。固定提示词托管在页面侧 allowlist，不接受任意文本。低于判定阈值时结果为「未判定」而非强行归类。</div>
+        <div id="ak-fingerprint-state" class="ak-sub"></div>
+        <pre id="ak-fingerprint-log" class="ak-log" hidden></pre>
+      </div>
     </section>
 
     <!-- ── 工具 (reference page_tools) ── -->
@@ -268,6 +297,7 @@
         <label class="ak-switch"><span class="ak-switch-text">截获会话流<small>识别模型的前提；关闭后不再上报运行令牌</small></span><input type="checkbox" id="ak-capture-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">额度轮询<small>每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新</small></span><input type="checkbox" id="ak-pulse-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">回复监控<small>空回复 / 报错 / 中断 / 停滞标记到对应轮次</small></span><input type="checkbox" id="ak-monitor-on" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">模型指纹<small>页面侧固定探针归约；默认关闭，开启后仅上报计数，绝不传回复文本</small></span><input type="checkbox" id="ak-fingerprint-on" /><i class="ak-switch-track"></i></label>
         <button class="ak-link" data-action="pulse-refresh" title="额度接口每 60 秒读取一次；点此立即刷新">立即刷新额度</button>
       </div>
       <div class="ak-about">ArenaKit · 界面参考 arena-trace-android</div>
