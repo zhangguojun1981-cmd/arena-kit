@@ -51,6 +51,29 @@
 
 > 关键:令牌校验/解析/SSE 解析规则来自 `core.js`(扩展版)与 `ArenaProtocol.kt`(安卓版),两者已逐条对齐,移植到 Rust 时必须保持规则一致(见 DEVELOPMENT.md 的移植表)。
 
+## trace 失败时的指纹兜底(统计推测,不是真名)
+
+trace 管线依赖一枚**明确指定单一 run 的** Trigger.dev 公开令牌:令牌缺失 / 过期 / scope 不匹配 / Trigger.dev 事件不含模型标签时,`extract_models` 给不出服务端真名。此时 ArenaKit 可退回一条**完全独立、离线、统计性**的推测链——它给出的是「指纹推测」而非「已确认」,信任等级低于任何服务端信号。
+
+```
+服务端真名(trace / 历史记录)              ← 唯一可信「已确认」来源,SOURCE_RANK 最高
+      │  缺失时才启用 ↓
+指纹推测(fingerprint,source='fingerprint',SOURCE_RANK=2)
+      │
+      ├─ 被动:监控已有回复 → 页面侧归约成结构化特征(数字/类别,绝不出原文)
+      └─ 主动:probe-runner 发固定探针(需用户再次确认 + 预算上限)→ 同样归约
+                        ↓
+      src/lib/fingerprint.js classify():判别式白化 + softmax,带 OOD / margin / confidence 三道门
+                        ↓
+      通过 → estimatedModel + family(opus/fable/gpt6);任一门不过 → unresolved / unknown(宁可无结论)
+```
+
+- **数据流**:页面侧(`injected/fingerprint.js` + `probe.js`)把回复**只归约成数字 / 类别特征**,经 flag 门控的 `fingerprint-sample` 安全事件通道传给 dock;**原文永不过桥**。dock 的 `fingerprint-runner.js` 按协议累积特征,`fingerprint.js` 的 `classify()` 对照离线 bank(`src/lib/fingerprint-banks.js`,`data/fingerprint/*` 的冻结副本,**不走网络**,远端配置无法替换参考分布)打分。
+- **信任顺序**(`src/lib/model-resolve.js`):指纹推测的 `SOURCE_RANK=2`,**低于**本次运行 / 历史记录里的服务端真名,**高于**标题推断;一旦服务端真名到达(trace 后续成功),**立即覆盖**指纹推测。指纹**绝不覆盖已确认的模型,也绝不触发自动重命名**(自动重命名只认服务端真名)。
+- **两协议严格分离**:ModelTrace 长整数直方图(`modeltrace-long-integers-v1`)与 fpverify 类别电池(`fpverify-battery-v1`)各自独立评分,**候选概率永不跨协议合并**。
+- **诚实边界**:bank 是作者自述第三方渠道的**起始先验**,未经真实匹配渠道的 Arena 盲测标定(`DEFAULT_THRESHOLDS.calibrated=false`,UI 标注「未完成 Arena 校准」);family ≠ 精确版本;softmax 不是标定后的正确概率。离线评估脚手架(`scripts/fingerprint-calibrate.mjs`)只公布内部可分性上界,不等于 Arena 真实准确率。详见 `docs/FINGERPRINT.md`。
+- **门禁**:缺 bank 不发送;未确认不发探针、不新建会话、不消耗额度;取消即时生效且不超预算重发。主动探针这条路**默认关闭**,只在用户单独确认后小规模受控启用。
+
 ## 安全边界
 
 - 页面 webview 的 capability(`capabilities/arena.json`)只开放 `on_token / page_event / store_* / proxy_get`;`arena_command` 只有 dock 能调,远程页面永远不能借 Rust 向自己 eval。
