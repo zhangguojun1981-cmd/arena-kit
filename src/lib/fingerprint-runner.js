@@ -181,7 +181,16 @@ export function createFingerprintRunner({
 
       for (let i = 0; i < plan.length; i++) {
         if (tok.cancelled) throw new Cancelled();
-        if (pageChanged()) { onProgress('页面/模式已变化，停止探测'); break; }
+        // Between-rounds safety stop only. The FIRST probe is NEVER gated on
+        // the dock's page snapshot: the user starts a run from whatever chat is
+        // on screen (a /c/{id} or /agent/{id} conversation), and newChat() below
+        // navigates to the fresh /agent composer before we ever send. Gating the
+        // first iteration on the pre-newChat snapshot is exactly the 0-send bug
+        // ("发送 0 条") — the old arithmetic probe (probe-runner.js) had no such
+        // pre-send gate and relied on newChat + the page-side send guard, which
+        // is the real authority (sendFingerprintProbe re-checks origin + agent
+        // mode + fresh composer live before every send).
+        if (i > 0 && pageChanged()) { onProgress('页面/模式已变化，停止探测'); break; }
         if (consecutiveFailures >= FP_MAX_CONSECUTIVE_FAILURES) { onProgress(`连续失败 ${consecutiveFailures} 次，停止`); break; }
 
         const step = plan[i];

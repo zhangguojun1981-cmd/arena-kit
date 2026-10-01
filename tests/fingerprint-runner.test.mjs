@@ -199,23 +199,43 @@ test('stop() cancels the run; isRunning flips back to false', async () => {
   void resolveFeature;
 });
 
-/* ── page change stops the run ───────────────────────────────────────── */
+/* ── page change stops the run (but never the FIRST probe) ───────────── */
 test('a page/mode change stops before sending the next probe', async () => {
   const feats = [featureForModel(MT, MT.models[0].id)];
-  // pageState() is read once per loop iteration (pageChanged at the top).
-  // Round 1 sees on-arena, round 2 sees off-arena → stop before probe 2.
+  // The first probe is NEVER gated on the pre-newChat page snapshot (that was
+  // the 0-send bug). pageState() is first consulted at the top of iteration 2.
+  // So an off-arena snapshot here stops the run AFTER probe 1, before probe 2.
   const h = harness({
     featuresByProbe: feats,
     probeIds: MT_PROBE_IDS,
     pageSeq: [
-      { onArena: true, agentPath: true },   // round 1 check
-      { onArena: false, agentPath: false },  // round 2 check → stop
+      { onArena: false, agentPath: false },  // iteration 2 check → stop
     ],
   });
   const r = await h.runner.start({ ...h.startCfg, maxRounds: 3 });
   assert.equal(r.started, true);
-  assert.ok(r.sent <= 1);
+  assert.equal(r.sent, 1, 'sent the first probe, stopped before the second');
   assert.ok(h.log.some((l) => /页面\/模式已变化/.test(l)));
+});
+
+/* ── first probe is not gated on the pre-newChat page snapshot ────────── */
+test('first probe sends even when the starting page looks off-surface', async () => {
+  // Simulate starting a run from an already-open conversation whose snapshot
+  // the dock reports as off the fresh /agent composer. The runner must still
+  // send probe 1 (newChat navigates first; the page-side guard is the real
+  // authority). This is the regression guard for the 0-send bug.
+  const feats = [featureForModel(MT, MT.models[0].id), featureForModel(MT, MT.models[0].id)];
+  const h = harness({
+    featuresByProbe: feats,
+    probeIds: MT_PROBE_IDS,
+    pageSeq: [
+      { onArena: false, agentPath: false },  // iteration 2 check → stop after probe 1
+    ],
+    // first iteration never calls pageState, so this off snapshot can't block probe 1
+  });
+  const r = await h.runner.start({ ...h.startCfg, maxRounds: 3 });
+  assert.equal(r.started, true);
+  assert.ok(r.sent >= 1, 'first probe was sent despite an off-surface start snapshot');
 });
 
 /* ── consecutive failure cap ─────────────────────────────────────────── */
