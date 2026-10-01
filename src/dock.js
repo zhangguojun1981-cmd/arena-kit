@@ -31,6 +31,9 @@ import { initialState as watchdogInitialState, parseStatus as watchdogParse, dec
 import { accountLabel, accountEmail, initialOf, hasSession, canLogin, loginStageText, sessionAgeText } from './lib/accounts.js';
 import { createAccountFlow } from './lib/account-flow.js';
 import { resolveModel, SOURCE_TEXT } from './lib/model-resolve.js';
+import { createFingerprintRunner, FP_FEATURE_POLL_MS, FP_FEATURE_WAIT_MS } from './lib/fingerprint-runner.js';
+import { classify as fingerprintClassify } from './lib/fingerprint.js';
+import { fingerprintReference, fingerprintProtocolMeta } from './lib/fingerprint-banks.js';
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -121,7 +124,10 @@ const state = {
   // on its own yet (the fingerprint-runner + classify wiring arrives in PR4).
   // samples: the reduced features received so far this session (counts /
   // normalized picks / parse-error codes only — never any reply text).
-  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null },
+  // runner: the active createFingerprintRunner() instance (set in boot once the
+  // RPC channel exists); it sends FIXED allowlisted probes only after an
+  // explicit user click + a confirmed max-message budget.
+  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null, runner: null },
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
   // header + status-pill display state: model/routed/pending, the running
@@ -295,7 +301,7 @@ function wireSettings() {
       if (flag === 'capture') setStatus(el.checked ? '已开启截获会话流' : '已关闭截获会话流：不再识别模型，直到重新开启');
       if (flag === 'pulse') { setStatus(el.checked ? '已开启额度轮询' : '已关闭额度轮询（可手动刷新）'); if (el.checked) dispatchToPage('pulse-refresh', null); }
       if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
-      if (flag === 'fingerprint') setStatus(el.checked ? '已开启模型指纹（统计估计·非真名·需手动运行）' : '已关闭模型指纹');
+      if (flag === 'fingerprint') { setStatus(el.checked ? '已开启模型指纹（统计估计·非真名·需手动运行）' : '已关闭模型指纹'); setFingerprintRunningUi(state.fingerprint.runner ? state.fingerprint.runner.isRunning : false); renderFingerprintState(); }
     });
   }
   // 悬浮窗显示刷新按钮 (Android pill ⟳ zone; the row is hidden in the desktop dock via CSS)
@@ -1148,9 +1154,10 @@ function wireProbe() {
 // A STATISTICAL guess over three families (opus / fable / gpt6) from the
 // reduced features the page emits for FIXED probe prompts — never a confirmed
 // model name, never overwrites a server-confirmed model, never renames a
-// conversation. Thresholds are UNCALIBRATED. PR3 wires only the page→dock
-// feature channel + a de-identified diagnostic view; the active probe runner
-// and the classify() call arrive in PR4, so the start button stays disabled.
+// conversation. Thresholds are UNCALIBRATED. The page→dock feature channel +
+// de-identified diagnostic view are read-only; the active probe runner
+// (createFingerprintRunner) + the classify() call send FIXED allowlisted probes
+// only after an explicit user click + a confirmed max-message budget.
 const FP_PROTO_LABEL = {
   'modeltrace-long-integers-v1': '长整数序列直方图',
   'fpverify-battery-v1': '分类问答组（五问）',
@@ -1170,10 +1177,13 @@ function persistFingerprintPanel() {
 function setFingerprintRunningUi(running) {
   const start = root.querySelector('[data-action="fingerprint-start"]');
   const stop = root.querySelector('[data-action="fingerprint-stop"]');
-  // The active runner lands in PR4; until then start stays disabled regardless
-  // (the feature is still useful read-only: it shows the features the page
-  // emits for a probe the USER sends by hand).
-  if (start) start.disabled = true;
+  // Start is enabled only when: the feature toggle is on, a runner exists
+  // (RPC channel is up), and no fingerprint run is already in flight. The hard
+  // guards (page/mode, ≥2 candidates, budget confirm) are re-checked in the
+  // runner's preflight; this is just the first gate so a disabled button never
+  // auto-sends. When running, start is disabled and stop is enabled.
+  const canStart = !running && !!state.fingerprint.runner && state.prefs.fingerprintOn !== false;
+  if (start) start.disabled = !canStart;
   if (stop) stop.disabled = !running;
 }
 function fingerprintLog(line) {
@@ -1301,6 +1311,102 @@ function wireFingerprint() {
   if (budget) budget.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
   setFingerprintRunningUi(false);
   renderFingerprintState();
+}
+
+// A sync page snapshot the runner uses to detect a page / mode change mid-run.
+// state.nav is kept current by onPage('nav'); the dock webview is always on the
+// arena origin, so the hard signal is the agent composer path. (The runner also
+// relies on the page-side send guard, which re-checks origin + agent mode and
+// the human draft before every send.)
+function fingerprintPageState() {
+  const path = String(state.nav.path || '').replace(/\/+$/, '');
+  return { onArena: true, agentPath: path === '/agent' || path === '', session: state.nav.sessionId || null };
+}
+// Probe ids per protocol — must mirror injected/probe.js FINGERPRINT_PROMPTS
+// (the page-side allowlist). The runner only ever passes an id; the prompt text
+// lives on the page so a remote config can never swap the probe body.
+const FP_PROBE_IDS = {
+  'modeltrace-long-integers-v1': ['seq-1-355'],
+  'fpverify-battery-v1': ['random_1_100', 'random_color', 'animal', 'city', 'coin'],
+};
+// Wait for the page reducer to emit the structured feature for a specific
+// (sessionId, probeId). onPage('fingerprint-sample') pushes clean features into
+// state.fingerprint.samples; poll it for a match and consume it so the next
+// probe can't re-read a stale sample. Resolves null on timeout.
+function takeFingerprintFeature(sessionId, probeId, { timeoutMs = FP_FEATURE_WAIT_MS } = {}) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const seen = new Set();
+    const tick = () => {
+      const samples = state.fingerprint.samples || [];
+      for (let i = samples.length - 1; i >= 0; i--) {
+        const s = samples[i];
+        if (!s || seen.has(s)) continue;
+        if (s.sessionId === sessionId && (!s.probeId || s.probeId === probeId)) {
+          seen.add(s);
+          const feature = s.kind === 'categorical'
+            ? { questionId: probeId, value: s.value ?? null, parseError: s.parseError || 0, frames: s.frames || 0 }
+            : { counts: Array.isArray(s.counts) ? s.counts : null, n: s.n || 0, dims: s.dims || 0, parseError: s.parseError || 0, frames: s.frames || 0 };
+          resolve(feature);
+          return;
+        }
+      }
+      if (Date.now() - started >= timeoutMs) { resolve(null); return; }
+      setTimeout(tick, FP_FEATURE_POLL_MS);
+    };
+    tick();
+  });
+}
+// Build the active fingerprint runner. Every side effect is injected so the
+// controller stays DOM/IPC-free and unit-testable. loadReference reads the
+// BUNDLED banks (fingerprint-banks.js) — never the network — so the estimate
+// works fully offline and no remote host can swap a reference distribution.
+function createDockFingerprint() {
+  return createFingerprintRunner({
+    rpc: state.rpc,
+    dispatchToPage,
+    loadReference: async (protocolId) => fingerprintReference(protocolId),
+    classify: fingerprintClassify,
+    probeIdsForProtocol: (protocolId) => FP_PROBE_IDS[protocolId] || [],
+    takeFeature: (sessionId, probeId, opts) => takeFingerprintFeature(sessionId, probeId, opts),
+    // The trace pipeline already saw these models for the conversation; a verdict
+    // is a real discrimination only when ≥2 are plausible (gate in preflight).
+    candidateModelsForSession: (sid) => (state.sessions.get(conversationFor(sid))?.models || []).map((m) => m.model),
+    // Refuse to start while an arithmetic probe / cleanup / quick send or a
+    // rename is in flight — they share the same page surface and RPC channel.
+    otherRunActive: () => !!(state.probe?.isRunning || state.quickBusy || state.renaming),
+    pageState: fingerprintPageState,
+    protocolMeta: (protocolId) => {
+      const meta = fingerprintProtocolMeta(protocolId) || {};
+      return { kind: meta.kind, channel: meta.source?.channel, reasoningTier: meta.reasoningTier, language: meta.language, questions: meta.questions };
+    },
+    onProgress: fingerprintLog,
+    onResult: (r) => { state.fingerprint.lastResult = r; renderFingerprintState(); },
+    onFinished: (summary) => { fingerprintLog(summary); const el = q('ak-fingerprint-state'); if (el && summary) el.textContent = summary; },
+    onRunState: (round, max, active) => setFingerprintRunningUi(active),
+  });
+}
+// Explicit-click entry point: confirm the max-message budget (real messages that
+// consume quota), then start the runner. The runner's preflight re-checks every
+// hard gate (page/mode, ≥2 candidates, loadable bank, budget confirm).
+async function startFingerprint() {
+  if (!state.fingerprint.runner) { setStatus('指纹探测不可用（RPC 通道未就绪）'); return; }
+  if (state.fingerprint.runner.isRunning) { setStatus('指纹探测已在运行'); return; }
+  const protocolId = fingerprintProtocolId();
+  const maxRounds = fingerprintBudget();
+  const ok = await confirmDialog({
+    title: '开始模型指纹探测',
+    message: `本次最多发送 ${maxRounds} 条固定探针消息（会消耗额度）。结果为统计估计（非真名），阈值未完成 Arena 校准，不会覆盖服务端确认的模型，也不会重命名会话。确定继续？`,
+    ok: '发送探针',
+    cancel: '取消',
+  });
+  if (!ok) { setStatus('已取消指纹探测'); return; }
+  await state.fingerprint.runner.start({
+    protocolId,
+    sessionId: state.nav.sessionId || null,
+    maxRounds,
+    budgetConfirmed: true,
+  });
 }
 
 // ── module: quota gauge (pulse %) ───────────────────────────────────────
@@ -1784,9 +1890,10 @@ function wireControls() {
       } else if (a === 'acct-stop-login') {
         acct().stopLogin();
       } else if (a === 'fingerprint-start') {
-        // The active probe runner lands in PR4; the button stays disabled until
-        // then. Guard here too so a stray click can never auto-send a message.
-        setStatus('主动指纹探测将在后续版本启用（需单独确认最大消息数）');
+        // Explicit user click → confirm the max-message budget, then run. Real
+        // messages are sent only after the confirm; the runner's preflight
+        // re-checks every hard gate (page/mode, ≥2 candidates, bank).
+        startFingerprint();
       } else if (a === 'fingerprint-stop') {
         if (state.fingerprint.runner && typeof state.fingerprint.runner.stop === 'function') { state.fingerprint.runner.stop(); fingerprintLog('正在停止…'); }
       } else if (a === 'fingerprint-copy') {
@@ -1864,6 +1971,9 @@ async function boot() {
   wireFingerprint();
   wireAccounts();
   if (state.rpc) state.probe = createDockProbe();
+  // The fingerprint runner needs the RPC channel; create it once that exists and
+  // flip the start button on (setFingerprintRunningUi re-checks the toggle).
+  if (state.rpc) { state.fingerprint.runner = createDockFingerprint(); setFingerprintRunningUi(false); }
   // Status-pill gestures (reference MainActivity): tap → panel (the shell
   // opens it itself), tap on ⟳ → reload, long press → quick menu (below),
   // pull-up at the bottom of the conversation → reload.

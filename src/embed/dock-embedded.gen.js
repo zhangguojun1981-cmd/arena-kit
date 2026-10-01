@@ -3356,6 +3356,873 @@ const SOURCE_TEXT = {
 
 __exports.modelsFromRuns = modelsFromRuns; __exports.findRecord = findRecord; __exports.knownModels = knownModels; __exports.inferModelFromTitle = inferModelFromTitle; __exports.resolveModel = resolveModel; __exports.SOURCE_TEXT = SOURCE_TEXT; __exports.addPageId = addPageId; __exports.MAX_PAGE_IDS = MAX_PAGE_IDS;
 });
+__define("lib/fingerprint-runner.js", function (__exports, __require) {
+'use strict';
+/* Active model-fingerprint orchestrator (ArenaKit 0.5.x).
+ *
+ * Sibling of src/lib/probe-runner.js — NOT folded into it. The arithmetic
+ * probe runner draws quota to read a chat's model via the trace pipeline; this
+ * runner instead sends a FIXED, allowlisted probe prompt, lets the page-side
+ * reducer (injected/fingerprint.js) turn the reply into a structured feature
+ * (histogram counts / normalized category pick — never raw text), and feeds
+ * those features to classify() for a STATISTICAL family estimate.
+ *
+ * It reuses probe-runner's safety machinery verbatim in spirit:
+ *   - a cancel token every await races against (stop() is immediate),
+ *   - a single-run gate (no concurrent fingerprint run),
+ *   - RPC timeout (inherited from the shared rpc),
+ *   - round pacing (don't hammer Arena / trip 429),
+ *   - a consecutive-failure cap,
+ *   - stop on page / session / mode change,
+ *   - never overwrite a human draft (the page-side guard enforces this).
+ *
+ * It sends REAL messages that consume quota, so the dock must only call start()
+ * after an explicit user click + a confirmed max-message budget. The estimate
+ * is uncalibrated and NEVER renames a session or overwrites a confirmed model.
+ *
+ * Pure of DOM / IPC: every side effect is an injected dependency, so the whole
+ * loop is unit-testable with mocks and NO real model calls. */
+
+const FP_RPC_TIMEOUT_MS = 45_000;    // a fixed probe + its reply is slower than an arithmetic draw
+const FP_FEATURE_WAIT_MS = 60_000;    // wait for the page reducer to emit the structured feature
+const FP_FEATURE_POLL_MS = 400;
+const FP_ROUND_PACING_MS = 2_500;     // space out probes
+const FP_MAX_CONSECUTIVE_FAILURES = 3;
+const FP_MAX_BUDGET = 24;             // hard ceiling regardless of UI
+
+class Cancelled extends Error { constructor(msg = '已取消') { super(msg); this.name = 'Cancelled'; } }
+const isCancelled = (e) => e instanceof Cancelled || e?.name === 'Cancelled';
+
+function makeToken() {
+  let cancel;
+  const promise = new Promise((_, reject) => { cancel = () => reject(new Cancelled()); });
+  promise.catch(() => {});
+  return { cancelled: false, promise, cancel() { if (!this.cancelled) { this.cancelled = true; cancel(); } } };
+}
+
+/* The fixed probe plan for a protocol. For the histogram protocol a single
+ * probe id is repeated up to the budget (each reply is an independent sample).
+ * For the categorical battery the plan walks the registered questions in order,
+ * one probe per question, and the per-question picks are merged into one
+ * answer map before classify() (which needs ≥3 answered questions). The probe
+ * ids MUST exist in injected/probe.js's FINGERPRINT_PROMPTS allowlist — the
+ * runner only ever passes ids, never prompt text. */
+function buildProbePlan(protocolId, probeIds, budget) {
+  const ids = Array.isArray(probeIds) ? probeIds.filter((x) => typeof x === 'string' && x) : [];
+  if (!ids.length) return [];
+  const cap = Math.min(FP_MAX_BUDGET, Math.max(1, Number(budget) || 1));
+  if (protocolId === 'fpverify-battery-v1') {
+    // One probe per registered question, in order, up to the budget.
+    return ids.slice(0, cap).map((probeId) => ({ probeId, kind: 'categorical', questionId: probeId }));
+  }
+  // Histogram (default): repeat the single long-integer probe id up to the budget.
+  const probeId = ids[0];
+  return new Array(cap).fill(0).map(() => ({ probeId, kind: 'histogram', questionId: null }));
+}
+
+function createFingerprintRunner({
+  rpc,                                  // shared createRpc(); .call('sendFingerprintProbe', {protocolId, probeId})
+  dispatchToPage = () => {},            // (name, payload) → arm/disarm the page reducer
+  loadReference,                        // async (protocolId) → parsed reference bank (data/fingerprint/references/*)
+  classify,                             // the pure classify() from fingerprint.js
+  probeIdsForProtocol,                  // (protocolId) → string[] of allowlisted probe ids (from ArenaProbe.fingerprintProbeIds)
+  takeFeature,                          // async (sessionId, probeId, {signal}) → structured feature | null — resolves when the page emits it
+  candidateModelsForSession = () => [], // (sessionId|null) → string[] of models the trace pipeline already saw (gate: ≥2 candidates)
+  otherRunActive = () => false,         // () → bool — a probe/cleanup/quick send is running; refuse to start
+  pageState = () => ({}),               // () → { onArena, agentPath, session } snapshot used to detect page/mode change
+  protocolMeta = () => ({}),            // (protocolId) → { kind, channel, reasoningTier, language, ... }
+  onProgress = () => {},                // (line) → void
+  onResult = () => {},                  // (classifyResult) → void — incremental + final
+  onFinished = () => {},                // (summary) → void
+  onRunState = () => {},                // (round, maxRounds, active) → void
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  now = Date.now,
+  roundPacingMs = FP_ROUND_PACING_MS,
+  featureWaitMs = FP_FEATURE_WAIT_MS,
+} = {}) {
+  let token = null;
+  let running = false;
+
+  const isRunning = () => !!token && !token.cancelled;
+
+  function guarded(tok, p) {
+    if (tok.cancelled) return Promise.reject(new Cancelled());
+    return Promise.race([p, tok.promise]);
+  }
+  const wait = (tok, ms) => guarded(tok, sleep(ms));
+  const call = (tok, action, args) => guarded(tok, rpc.call(action, args));
+
+  function stop() {
+    if (!token) return false;
+    token.cancel();
+    return true;
+  }
+
+  function begin() {
+    if (isRunning()) return null;
+    token = makeToken();
+    running = true;
+    return token;
+  }
+  function end(tok) {
+    if (token === tok) { token = null; running = false; }
+  }
+
+  /* A frozen snapshot of the page we must stay on for the whole run. If the
+   * origin / agent path flips we stop rather than send into an unknown surface.
+   * (The baseline is kept for symmetry with probe-runner; the hard check is the
+   * live origin + agent-path.) */
+  function pageChanged() {
+    let s;
+    try { s = pageState() || {}; } catch { return true; }
+    return !s.onArena || !s.agentPath;
+  }
+
+  /* START GATE (plan 阶段4.4). All must hold or start() refuses:
+   *   - not already running, and no other probe/cleanup/quick run active,
+   *   - a loadable + validatable reference bank for the protocol,
+   *   - the protocol's probe ids are in the page allowlist,
+   *   - ≥2 candidate models (so a verdict is a real discrimination, not a
+   *     foregone single option),
+   *   - a confirmed max-message budget (the dock gets explicit user confirm).
+   * Channel / reasoning-tier / language compatibility is advisory metadata the
+   * dock surfaces; the hard gate is the five above. */
+  async function preflight(cfg) {
+    const protocolId = String(cfg?.protocolId || '');
+    if (!protocolId) return { ok: false, reason: '未选择指纹协议' };
+    if (isRunning()) return { ok: false, reason: '指纹探测已在运行' };
+    try { if (otherRunActive()) return { ok: false, reason: '有其他探针/清理正在运行，请先停止' }; } catch { /* treat as clear */ }
+
+    let probeIds = [];
+    try { probeIds = probeIdsForProtocol(protocolId) || []; } catch { probeIds = []; }
+    if (!probeIds.length) return { ok: false, reason: '该协议没有登记的探针提示' };
+
+    let reference = null;
+    try { reference = await loadReference(protocolId); } catch (e) { return { ok: false, reason: '参考库加载失败：' + (e?.message || e) }; }
+    if (!reference) return { ok: false, reason: '参考库不可用' };
+
+    // ≥2 candidate models: either already-seen trace models, or (none yet) the
+    // reference bank must itself carry ≥2 target-family members to discriminate.
+    let candidates = [];
+    try { candidates = (candidateModelsForSession(cfg?.sessionId || null) || []).filter(Boolean); } catch { candidates = []; }
+    const bankModels = Array.isArray(reference.models) ? reference.models.length : 0;
+    if (candidates.length < 2 && bankModels < 2) {
+      return { ok: false, reason: '候选模型不足两个，无法区分' };
+    }
+
+    const maxRounds = Math.min(FP_MAX_BUDGET, Math.max(1, Number(cfg?.maxRounds) || 1));
+    if (!cfg?.budgetConfirmed) return { ok: false, reason: '需确认最大消息数后再开始' };
+
+    return { ok: true, protocolId, probeIds, reference, maxRounds };
+  }
+
+  /* Run the fixed probe plan. cfg: { protocolId, sessionId?, maxRounds,
+   * budgetConfirmed, thresholds? }. Sends real messages — only after the dock's
+   * explicit-click + confirmed-budget gate. */
+  async function start(cfg = {}) {
+    const pf = await preflight(cfg);
+    if (!pf.ok) { onProgress(pf.reason); onFinished(pf.reason); return { started: false, reason: pf.reason }; }
+
+    const tok = begin();
+    if (!tok) { onProgress('指纹探测已在运行'); return { started: false, reason: '指纹探测已在运行' }; }
+
+    const { protocolId, probeIds, reference, maxRounds } = pf;
+    const meta = (() => { try { return protocolMeta(protocolId) || {}; } catch { return {}; } })();
+    const plan = buildProbePlan(protocolId, probeIds, maxRounds);
+
+    const answers = [];            // structured features fed to classify()
+    let consecutiveFailures = 0;
+    let lastResult = null;
+    let summary = '';
+    let sent = 0;
+
+    onRunState(0, plan.length, true);
+    try {
+      if (!plan.length) throw new Error('没有可执行的指纹探针');
+      onProgress(`开始指纹探测 · 协议 ${protocolId} · 计划 ${plan.length} 条固定探针（统计估计，非真名）`);
+
+      for (let i = 0; i < plan.length; i++) {
+        if (tok.cancelled) throw new Cancelled();
+        if (pageChanged()) { onProgress('页面/模式已变化，停止探测'); break; }
+        if (consecutiveFailures >= FP_MAX_CONSECUTIVE_FAILURES) { onProgress(`连续失败 ${consecutiveFailures} 次，停止`); break; }
+
+        const step = plan[i];
+        onRunState(i + 1, plan.length, true);
+        onProgress(`第 ${i + 1}/${plan.length} 条 · 探针 ${step.probeId}`);
+
+        // 1) fresh chat so each probe is an independent instance.
+        try {
+          await call(tok, 'newChat');
+          if (i === 0) await call(tok, 'ensureAgentMode');
+        } catch (e) {
+          if (isCancelled(e)) throw e;
+          consecutiveFailures += 1;
+          onProgress(`准备会话失败：${e.message || e}`);
+          await wait(tok, roundPacingMs);
+          continue;
+        }
+
+        // 2) arm the page reducer, then ask the page to send the FIXED probe.
+        //    We pass only {protocolId, probeId}; the prompt lives in the page
+        //    allowlist. Disarm in finally so a failed send never leaves the
+        //    reducer bound to a stale session.
+        let sessionId = '';
+        let feature = null;
+        try {
+          const sendData = await call(tok, 'sendFingerprintProbe', { protocolId, probeId: step.probeId });
+          sessionId = String(sendData?.session || '');
+          if (!sessionId) throw new Error('未拿到会话 id');
+          sent += 1;
+          // Arm AFTER we have the session id so the reducer binds to the right stream.
+          dispatchToPage('fingerprint-arm', {
+            sessionId, probeId: step.probeId, protocolId, kind: step.kind, questionId: step.questionId,
+          });
+          // 3) wait for the page to emit the structured feature for THIS probe.
+          feature = await guarded(tok, takeFeature(sessionId, step.probeId, { timeoutMs: featureWaitMs }));
+        } catch (e) {
+          if (isCancelled(e)) throw e;
+          consecutiveFailures += 1;
+          onProgress(`探针失败：${e.message || e}`);
+          try { dispatchToPage('fingerprint-disarm', null); } catch { /* best effort */ }
+          await wait(tok, roundPacingMs);
+          continue;
+        } finally {
+          try { dispatchToPage('fingerprint-disarm', null); } catch { /* best effort */ }
+        }
+
+        if (!feature) {
+          consecutiveFailures += 1;
+          onProgress('未收到结构化特征（可能无法绑定），跳过本条');
+          await wait(tok, roundPacingMs);
+          continue;
+        }
+        consecutiveFailures = 0;
+
+        // 4) accumulate the feature and re-score incrementally. The histogram
+        //    protocol feeds raw per-reply features; the categorical battery
+        //    merges per-question picks into one answer map so classify() sees a
+        //    multi-question vector (never one "magic answer").
+        if (step.kind === 'categorical') {
+          if (feature && feature.value != null && feature.questionId) {
+            // Merge into a single rolling answer map (one object in answers[]).
+            let bag = answers[0];
+            if (!bag) { bag = {}; answers.push(bag); }
+            bag[feature.questionId] = feature.value;
+          }
+        } else if (feature && Array.isArray(feature.counts)) {
+          // Reconstruct the integer-run string shape classify()/extractFeature
+          // expects (it re-parses). Simpler: pass the counts through a feature
+          // object the classifier can consume directly via its answer string.
+          answers.push(countsToAnswerString(feature.counts));
+        } else if (feature && feature.parseError) {
+          onProgress(`本条解析：${featureErrorText(feature.parseError)}`);
+        }
+
+        // Re-classify with everything so far.
+        try {
+          lastResult = classify({
+            sessionId: sessionId || cfg.sessionId || null,
+            protocol: {
+              id: protocolId,
+              channel: meta.channel, reasoningTier: meta.reasoningTier, language: meta.language,
+            },
+            reference,
+            answers,
+            thresholds: cfg.thresholds,
+          });
+          onResult(lastResult);
+          onProgress(`已评估 ${answers.length} 个样本 · ${verdictText(lastResult)}`);
+          // 5) stop early once a calibrated bank attributes a family. With an
+          //    uncalibrated bank we never short-circuit; we always run the full
+          //    plan and leave the final verdict unresolved unless it clears the
+          //    (uncalibrated) thresholds, which the UI labels as such.
+          if (lastResult && lastResult.status === 'attributed'
+              && lastResult.protocol && reference.calibrated === true) {
+            onProgress('已达到归因阈值（已校准），停止');
+            break;
+          }
+        } catch (e) {
+          if (isCancelled(e)) throw e;
+          onProgress(`评估失败：${e.message || e}`);
+        }
+
+        await wait(tok, roundPacingMs);
+      }
+
+      summary = lastResult
+        ? `指纹探测结束 · 发送 ${sent} 条 · ${verdictText(lastResult)}`
+        : `指纹探测结束 · 发送 ${sent} 条 · 无有效样本`;
+    } catch (e) {
+      summary = isCancelled(e)
+        ? `指纹探测已停止（发送 ${sent} 条${lastResult ? ' · ' + verdictText(lastResult) : ''}）`
+        : `指纹探测中断：${e.message || e}`;
+    } finally {
+      try { dispatchToPage('fingerprint-disarm', null); } catch { /* best effort */ }
+      end(tok);
+      onRunState(0, plan.length, false);
+      onFinished(summary);
+    }
+    return { started: true, sent, result: lastResult, summary, cancelled: tok.cancelled };
+  }
+
+  return {
+    start, stop, preflight, buildProbePlan,
+    get isRunning() { return isRunning(); },
+  };
+}
+
+/* A histogram feature arrives from the page as a 355-bin count vector. The
+ * classifier's extractFeature() re-parses an answer string, so expand the
+ * counts back into a space-joined integer run (order is irrelevant to the
+ * histogram). Kept tiny and allocation-bounded. */
+function countsToAnswerString(counts) {
+  const parts = [];
+  for (let i = 0; i < counts.length; i++) {
+    const c = counts[i] | 0;
+    for (let k = 0; k < c; k++) parts.push(i + 1);
+  }
+  return parts.join(' ');
+}
+
+const FP_ERR_TEXT = { 0: '正常', 1: '无整数', 2: '整数过少', 3: '空回复', 4: '无法绑定到当前探针' };
+function featureErrorText(code) { return FP_ERR_TEXT[code] || `错误码 ${code}`; }
+
+function verdictText(r) {
+  if (!r) return '无结果';
+  if (r.status === 'attributed') return `估计 ${r.estimatedModel || r.family}（${r.family}·统计估计·非真名）`;
+  if (r.status === 'unresolved') return `未定（${r.reason || 'unresolved'}）`;
+  if (r.status === 'failed') return `失败（${r.error || 'failed'}）`;
+  return r.status || '未知';
+}
+
+__exports.FP_RPC_TIMEOUT_MS = FP_RPC_TIMEOUT_MS; __exports.FP_FEATURE_WAIT_MS = FP_FEATURE_WAIT_MS; __exports.FP_FEATURE_POLL_MS = FP_FEATURE_POLL_MS; __exports.FP_ROUND_PACING_MS = FP_ROUND_PACING_MS; __exports.FP_MAX_CONSECUTIVE_FAILURES = FP_MAX_CONSECUTIVE_FAILURES; __exports.FP_MAX_BUDGET = FP_MAX_BUDGET; __exports.isCancelled = isCancelled; __exports.buildProbePlan = buildProbePlan; __exports.createFingerprintRunner = createFingerprintRunner; __exports.countsToAnswerString = countsToAnswerString;
+});
+__define("lib/fingerprint.js", function (__exports, __require) {
+'use strict';
+/* Offline model fingerprint classification (ArenaKit 0.5.x).
+ *
+ * When the Trigger trace pipeline cannot name a conversation's model, this
+ * module turns a batch of structured probe answers into a STATISTICAL guess:
+ *   family  → opus | fable | gpt6 | unknown
+ *   estimatedModel → a specific id, only when the margin is clear
+ * It never claims certainty, never overrides a server-confirmed model, and
+ * never merges two different probe protocols into one probability.
+ *
+ * Pure functions, no DOM / IPC / network. The reference banks live under
+ * data/fingerprint/references/*.json (versioned distribution summaries, not
+ * raw replies). The caller passes a parsed reference object in.
+ *
+ * Honesty rules baked in (see docs/FINGERPRINT.md):
+ *   - A single "magic answer" (e.g. 73, teal) is never a classifier: we always
+ *     compare the whole answer distribution.
+ *   - Non-target families (sonnet/haiku/gpt5/…) stay in the reference as
+ *     NEGATIVES; if the best match is one of them, we return `unknown`, not a
+ *     forced opus/fable/gpt6 label. A closed set must not manufacture a target.
+ *   - Thresholds below are UNCALIBRATED defaults (ported from arena-local-bridge
+ *     PR#29: MIN_MARGIN=1.2, CONFIDENCE_THRESHOLD=0.6). Until measured on real
+ *     Arena data they only gate attributed vs unresolved; they are not accuracy.
+ */
+
+const SCHEMA_VERSION = 1;
+const TARGET_FAMILIES = ['opus', 'fable', 'gpt6'];
+
+/* UNCALIBRATED defaults — see module header. */
+const DEFAULT_THRESHOLDS = Object.freeze({
+  minMargin: 1.2,          // top family softmax weight / second family weight
+  minConfidence: 0.6,      // top family's share of total softmax weight
+  minSamples: 1,           // probe answers required to attempt a verdict
+  minUniformRatio: 1.05,   // primary OOD gate (histogram): whitened distance to
+                           // the UNIFORM null / distance to the best model. An
+                           // in-distribution batch is strictly closer to some
+                           // model than to uniform noise, so this ratio exceeds
+                           // 1 and GROWS with sample size; a uniform-random
+                           // (OOD) batch sits at/under 1 at every n. Unlike an
+                           // absolute score floor it does not punish short but
+                           // genuine replies. Uncalibrated — thin at small n.
+  minTopScore: 1e-6,       // degenerate-input safety floor only (empty / all-
+                           // zero feature); real OOD rejection is the ratio.
+  calibrated: false,       // flipped to true only once Arena-measured
+});
+
+/* Softmax temperature applied to raw affinities before computing confidence /
+ * margin. Raw Bhattacharyya / likelihood affinities over hundreds of bins sit
+ * close to each other, so a plain ratio barely moves; ModelTrace's own bank
+ * calibrates beta≈7.2 (1 reply) → 12 (2–3 replies). We use its multi-reply
+ * value as an UNCALIBRATED default. This only sharpens the family decision; it
+ * does not change which family is closest, and it is not a measured accuracy. */
+const DEFAULT_BETA = 12;
+
+/* Per-protocol minimum valid signal to even attempt a verdict. ModelTrace's
+ * own bank sets minimum_valid_numbers = 80; below that a long-integer answer is
+ * too short to carry a distribution. For the categorical battery we require
+ * several answered questions, so that a single "magic answer" (73, teal) can
+ * never attribute on its own. */
+const PROTOCOL_MIN_SIGNAL = Object.freeze({
+  'modeltrace-long-integers-v1': 80, // minimum integers in one answer
+  'fpverify-battery-v1': 1,          // minimum integers (n/a — categorical)
+});
+const CATEGORICAL_MIN_QUESTIONS = 3; // answered battery questions needed
+
+const MAX_CANDIDATES = 24;
+const MAX_SAMPLES = 64;
+const MAX_ID_LEN = 120;
+const MAX_STR_LEN = 200;
+
+/* ---- parsing ---------------------------------------------------------- */
+
+/* Longest run of integers in [min,max]; a run is split when the gap between
+ * two numbers contains a letter (independent reproduction of ModelTrace's
+ * "longest digit run; alphabetic separators split runs" parser). */
+function parseIntegers(text, { min = 1, max = 355 } = {}) {
+  const s = String(text ?? '');
+  const runs = [];
+  let current = [];
+  let prevEnd = 0;
+  const re = /[0-9]+/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const gap = s.slice(prevEnd, m.index);
+    if (current.length && /\p{L}/u.test(gap)) { runs.push(current); current = []; }
+    const v = Number(m[0]);
+    if (v >= min && v <= max) current.push(v);
+    prevEnd = m.index + m[0].length;
+  }
+  if (current.length) runs.push(current);
+  let best = [];
+  for (const r of runs) if (r.length > best.length) best = r;
+  return best;
+}
+
+/* Count vector over [1..dims]. */
+function histogram(numbers, dims) {
+  const counts = new Array(dims).fill(0);
+  for (const n of numbers) {
+    const i = (n | 0) - 1;
+    if (i >= 0 && i < dims) counts[i] += 1;
+  }
+  return counts;
+}
+
+/* Add-0.5 smoothed probability vector (so unseen bins never zero out an
+ * answer), i.e. the squared Hellinger coordinates' base distribution. */
+function smoothedProbs(counts) {
+  const dims = counts.length;
+  const total = counts.reduce((a, b) => a + b, 0) + 0.5 * dims;
+  if (!(total > 0)) return counts.map(() => 1 / Math.max(dims, 1));
+  return counts.map((c) => (c + 0.5) / total);
+}
+
+/* Bhattacharyya coefficient in [0,1]: sum sqrt(p_i q_i). 1 = identical
+ * distributions, 0 = disjoint. This is 1 - squared Hellinger distance proxy;
+ * we use it directly as the per-candidate affinity. */
+function bhattacharyya(p, q) {
+  const n = Math.min(p.length, q.length);
+  let s = 0;
+  for (let i = 0; i < n; i++) s += Math.sqrt(p[i] * q[i]);
+  return s;
+}
+
+/* ---- reference validation -------------------------------------------- */
+
+/* A reference bank is a versioned distribution summary. We validate shape and
+ * bounds before trusting it (banks ship in-repo but may be swapped later). */
+function validateReference(ref) {
+  if (!ref || typeof ref !== 'object') throw new Error('参考库无效：不是对象');
+  if (ref.schemaVersion !== 1) throw new Error('参考库 schemaVersion 不受支持');
+  if (typeof ref.protocolId !== 'string' || !ref.protocolId) throw new Error('参考库缺少 protocolId');
+  if (typeof ref.referenceVersion !== 'string' || !ref.referenceVersion) throw new Error('参考库缺少 referenceVersion');
+  const kind = ref.kind || (Number.isInteger(ref.dims) ? 'histogram' : 'categorical');
+  if (kind === 'histogram') {
+    if (!Number.isInteger(ref.dims) || ref.dims < 2 || ref.dims > 4096) throw new Error('参考库 dims 超出范围');
+  }
+  if (!Array.isArray(ref.models) || !ref.models.length) throw new Error('参考库没有模型');
+  for (const m of ref.models) {
+    if (!m || typeof m.id !== 'string' || !m.id) throw new Error('参考模型缺少 id');
+    if (typeof m.family !== 'string' || !m.family) throw new Error('参考模型缺少 family');
+    if (kind === 'histogram') {
+      if (!Array.isArray(m.counts) || m.counts.length !== ref.dims) throw new Error(`参考模型 ${m.id} 直方图维度不符`);
+      if (!m.counts.every((c) => Number.isFinite(c) && c >= 0)) throw new Error(`参考模型 ${m.id} 直方图含非法值`);
+    } else {
+      if (!m.questions || typeof m.questions !== 'object') throw new Error(`参考模型 ${m.id} 缺少 questions`);
+    }
+  }
+  return { kind };
+}
+
+/* ---- feature extraction per protocol --------------------------------- */
+
+/* Turn one raw probe answer into the protocol's feature. Returns null when the
+ * answer carries too little signal to score (caller drops it). */
+function extractFeature(ref, kind, answer) {
+  if (kind === 'histogram') {
+    const [min, max] = Array.isArray(ref.range) ? ref.range : [1, ref.dims];
+    const nums = parseIntegers(answer, { min, max });
+    const need = PROTOCOL_MIN_SIGNAL[ref.protocolId] ?? 1;
+    if (nums.length < need) return null;
+    return { type: 'histogram', counts: histogram(nums, ref.dims), n: nums.length };
+  }
+  // categorical: answer is already a normalized {question: value} map produced
+  // in-page (no free text crosses the bridge). Lower-cased, trimmed values.
+  if (!answer || typeof answer !== 'object') return null;
+  const picks = {};
+  let any = 0;
+  for (const [q, v] of Object.entries(answer)) {
+    const key = String(q).slice(0, MAX_STR_LEN);
+    const val = String(v ?? '').trim().toLowerCase().slice(0, MAX_STR_LEN);
+    if (key && val) { picks[key] = val; any += 1; }
+  }
+  return any ? { type: 'categorical', picks, answered: any } : null;
+}
+
+/* Across one histogram reference bank, the per-bin mean and standard deviation
+ * of the models' smoothed distributions. Whitening by these (a diagonal
+ * nuisance projection, ModelTrace's idea without its full ordered-block stage)
+ * amplifies the few bins where models actually differ, so family separation is
+ * dramatically sharper than a raw Bhattacharyya overlap. Memoized per bank. */
+const _whitenCache = new WeakMap();
+function whitenStats(ref) {
+  if (_whitenCache.has(ref)) return _whitenCache.get(ref);
+  const dims = ref.dims;
+  const probs = ref.models.map((m) => smoothedProbs(m.counts));
+  const mean = new Array(dims).fill(0);
+  for (const p of probs) for (let i = 0; i < dims; i++) mean[i] += p[i] / probs.length;
+  const scale = new Array(dims).fill(0);
+  for (const p of probs) for (let i = 0; i < dims; i++) scale[i] += (p[i] - mean[i]) ** 2;
+  for (let i = 0; i < dims; i++) scale[i] = Math.sqrt(scale[i] / probs.length) || 1e-9;
+  const centroids = probs.map((p) => p.map((v, i) => (v - mean[i]) / (scale[i] < 1e-12 ? 1e-12 : scale[i])));
+  // The UNIFORM null distribution, whitened the same way. Used as an
+  // out-of-distribution reference: a real answer is closer to some model than
+  // to uniform noise; a PRNG batch is not.
+  const uniformWhitened = new Array(dims).fill(0).map((_, i) => ((1 / dims) - mean[i]) / (scale[i] < 1e-12 ? 1e-12 : scale[i]));
+  const stats = { mean, scale, centroids, uniformWhitened, dims };
+  _whitenCache.set(ref, stats);
+  return stats;
+}
+
+/* ---- feature scoring per protocol ------------------------------------ */
+
+/* Whitened squared distance between a whitened probability vector `z` and a
+ * reference centroid (lower = closer). Both are already in z-score space. */
+function whitenedDist(z, centroid, dims) {
+  let s = 0;
+  for (let i = 0; i < dims; i++) { const d = z[i] - centroid[i]; s += d * d; }
+  return s / dims;
+}
+
+/* Whiten a feature's smoothed distribution into z-score space once. */
+function whitenFeature(feature, stats) {
+  const p = smoothedProbs(feature.counts);
+  const { mean, scale, dims } = stats;
+  const z = new Array(dims);
+  for (let i = 0; i < dims; i++) z[i] = (p[i] - mean[i]) / (scale[i] < 1e-12 ? 1e-12 : scale[i]);
+  return z;
+}
+
+function affinityCategorical(feature, modelQuestions) {
+  // Per question, probability the model would emit the observed value, under
+  // the reference's add-0.5 smoothed category distribution; geometric mean
+  // (mean log-prob) across answered questions keeps it length-independent.
+  const qs = Object.keys(feature.picks).filter((q) => modelQuestions[q]);
+  if (!qs.length) return { logScore: -1e9, score: 0 };
+  let logSum = 0;
+  for (const q of qs) {
+    const dist = modelQuestions[q];
+    const total = Object.values(dist).reduce((a, b) => a + Number(b || 0), 0);
+    const vocab = Object.keys(dist).length || 1;
+    const observed = Number(dist[feature.picks[q]] || 0);
+    const prob = (observed + 0.5) / (total + 0.5 * (vocab + 1));
+    logSum += Math.log(prob);
+  }
+  const mean = logSum / qs.length;
+  return { logScore: mean, score: Math.exp(mean) };
+}
+
+/* ---- classification --------------------------------------------------- */
+
+/* Mean per-sample affinity for every reference model, then the best member of
+ * each family. Each model carries both a human-facing `score` in [0,1] and a
+ * `logScore` (negative whitened distance / mean log-prob) used for the softmax
+ * so that close distributions still separate. Returns the raw scoring detail;
+ * shaping into the result object is done by classify(). */
+function scoreCandidates(ref, kind, features) {
+  const stats = kind === 'histogram' ? whitenStats(ref) : null;
+  // For histograms, whiten each feature once and remember the mean distance to
+  // the uniform null, so classify() can gate out-of-distribution batches.
+  const whitened = stats ? features.map((f) => whitenFeature(f, stats)) : null;
+  const perModel = ref.models.map((m, mi) => {
+    let sumScore = 0;
+    let sumLog = 0;
+    let sumDist = 0;
+    for (let fi = 0; fi < features.length; fi++) {
+      const f = features[fi];
+      if (kind === 'histogram') {
+        const dist = whitenedDist(whitened[fi], stats.centroids[mi], stats.dims);
+        sumDist += dist;
+        sumLog += -dist;
+        sumScore += Math.exp(-dist);
+      } else {
+        const a = affinityCategorical(f, m.questions);
+        sumScore += a.score;
+        sumLog += a.logScore;
+      }
+    }
+    const n = features.length || 1;
+    return {
+      id: m.id,
+      family: m.family,
+      samples: Number.isFinite(m.samples) ? m.samples : null,
+      score: sumScore / n,
+      logScore: sumLog / n,
+      dist: kind === 'histogram' ? sumDist / n : null,
+    };
+  });
+  perModel.sort((a, b) => b.logScore - a.logScore);
+  // Family affinity = best member's logScore (a family is "near" if ANY of its
+  // versions matches; summing would punish well-sampled families).
+  const familyBest = new Map();
+  for (const c of perModel) {
+    if (!familyBest.has(c.family) || familyBest.get(c.family) < c.logScore) familyBest.set(c.family, c.logScore);
+  }
+  // OOD gate (histogram only): mean whitened distance to the uniform null over
+  // distance to the single best model. >1 means "closer to a model than to
+  // uniform noise". Grows with sample size for genuine replies; stays ≤1 for
+  // PRNG / flat batches regardless of how lopsided the family softmax is.
+  let uniformRatio = null;
+  if (kind === 'histogram' && whitened.length) {
+    let sumUni = 0;
+    for (const z of whitened) sumUni += whitenedDist(z, stats.uniformWhitened, stats.dims);
+    const meanUni = sumUni / whitened.length;
+    const bestDist = perModel[0].dist;
+    uniformRatio = bestDist > 1e-12 ? meanUni / bestDist : (meanUni > 0 ? Infinity : 1);
+  }
+  return { perModel, familyBest, uniformRatio };
+}
+
+/* Main entry. Produces a result object matching the fingerprint schema.
+ *   opts: { sessionId, protocol:{id,version,promptSetHash,channel,reasoningTier,language},
+ *           reference, answers:[...], thresholds?, now? }
+ */
+function classify(opts = {}) {
+  const {
+    sessionId = null,
+    protocol = {},
+    reference = null,
+    answers = [],
+    thresholds = DEFAULT_THRESHOLDS,
+    now = new Date().toISOString(),
+  } = opts;
+
+  const th = { ...DEFAULT_THRESHOLDS, ...(thresholds || {}) };
+  const base = {
+    schemaVersion: SCHEMA_VERSION,
+    sessionId: sessionId ? String(sessionId).slice(0, 128) : null,
+    family: 'unknown',
+    estimatedModel: null,
+    candidates: [],
+    confidence: 0,
+    margin: 0,
+    status: 'failed',
+    source: 'fingerprint',
+    protocol: sanitizeProtocol(protocol),
+    referenceBankVersion: null,
+    probeCount: Array.isArray(answers) ? answers.length : 0,
+    createdAt: String(now),
+  };
+
+  let kind;
+  try {
+    ({ kind } = validateReference(reference));
+  } catch (e) {
+    return { ...base, status: 'failed', error: String(e && e.message || e).slice(0, MAX_STR_LEN) };
+  }
+  base.referenceBankVersion = String(reference.referenceVersion).slice(0, MAX_ID_LEN);
+  if (reference.protocolId !== base.protocol.id && base.protocol.id) {
+    return { ...base, status: 'failed', error: '协议与参考库不匹配' };
+  }
+  base.protocol.id = base.protocol.id || reference.protocolId;
+
+  const raw = Array.isArray(answers) ? answers.slice(0, MAX_SAMPLES) : [];
+  const features = [];
+  for (const a of raw) { const f = extractFeature(reference, kind, a); if (f) features.push(f); }
+
+  if (features.length < Math.max(1, th.minSamples)) {
+    return { ...base, status: 'unresolved', reason: 'insufficient-signal' };
+  }
+  // For the categorical battery, require enough answered questions in total so
+  // that one shared "magic answer" (73, which Fable AND Opus-4.8-thinking both
+  // emit) can never attribute on its own.
+  if (kind === 'categorical') {
+    const answered = features.reduce((a, f) => a + (f.answered || 0), 0);
+    if (answered < CATEGORICAL_MIN_QUESTIONS) {
+      return { ...base, status: 'unresolved', reason: 'insufficient-signal' };
+    }
+  }
+
+  const { perModel, familyBest, uniformRatio } = scoreCandidates(reference, kind, features);
+  const candidates = perModel.slice(0, MAX_CANDIDATES).map((c) => ({
+    id: c.id.slice(0, MAX_ID_LEN),
+    family: c.family,
+    score: round(c.score),
+    normalizedScore: 0,
+    samples: c.samples,
+    referenceVersion: base.referenceBankVersion,
+  }));
+
+  // Family-level confidence / margin from best-member affinities, sharpened
+  // through a softmax (raw distribution affinities sit close together, so a
+  // bare ratio under-separates families; the temperature is uncalibrated).
+  const fams = [...familyBest.entries()].sort((a, b) => b[1] - a[1]);
+  const beta = Number.isFinite(th.beta) ? th.beta : DEFAULT_BETA;
+  const maxAff = fams[0][1];
+  const weights = fams.map(([f, v]) => [f, Math.exp(beta * (v - maxAff))]);
+  const totalW = weights.reduce((a, [, w]) => a + w, 0) || 1;
+  const weightOf = new Map(weights);
+  for (const c of candidates) c.normalizedScore = round((weightOf.get(c.family) || 0) / totalW);
+  const [topFam] = weights[0];
+  const topW = weights[0][1];
+  const secondW = weights[1] ? weights[1][1] : 1e-9;
+  const confidence = topW / totalW;
+  const margin = topW / Math.max(secondW, 1e-9);
+
+  const result = {
+    ...base,
+    candidates,
+    confidence: round(confidence),
+    margin: round(margin),
+  };
+
+  const isTarget = TARGET_FAMILIES.includes(topFam);
+  // Out-of-distribution gate. A batch that resembles NO reference model (uniform
+  // random, OOD) can still produce a lopsided softmax between two equally-bad
+  // families, so we must reject it on an ABSOLUTE basis, not a relative one.
+  //   - histogram: primary test is uniformRatio = dist(sample, uniform null) /
+  //     dist(sample, best model). >=minUniformRatio means the batch is closer to
+  //     a real model than to uniform noise. This holds for short genuine replies
+  //     and grows with sample size, while uniform batches sit at/under 1.
+  //   - also keep a tiny absolute floor against degenerate (empty) features.
+  const topScore = perModel.length ? perModel[0].score : 0;
+  const floorOk = topScore >= (Number.isFinite(th.minTopScore) ? th.minTopScore : 0);
+  const ratioOk = kind !== 'histogram'
+    || uniformRatio == null
+    || uniformRatio >= (Number.isFinite(th.minUniformRatio) ? th.minUniformRatio : 1);
+  const resembles = floorOk && ratioOk;
+  const passes = isTarget && resembles && margin >= th.minMargin && confidence >= th.minConfidence;
+
+  if (!resembles) {
+    // Nothing in the bank is actually close: do not attribute.
+    return { ...result, family: 'unknown', status: 'unresolved', reason: 'no-close-reference' };
+  }
+  if (!isTarget) {
+    // Best match is a non-target negative (sonnet/haiku/gpt5/…): refuse to
+    // force a target label.
+    return { ...result, family: 'unknown', status: 'unresolved', reason: 'closest-is-non-target' };
+  }
+  if (!passes) {
+    return { ...result, family: topFam, status: 'unresolved', reason: margin < th.minMargin ? 'low-margin' : 'low-confidence' };
+  }
+  const topModel = perModel.find((c) => c.family === topFam);
+  return {
+    ...result,
+    family: topFam,
+    estimatedModel: topModel ? topModel.id.slice(0, MAX_ID_LEN) : null,
+    status: 'attributed',
+  };
+}
+
+/* ---- serialization / sanitization ------------------------------------ */
+
+function sanitizeProtocol(p) {
+  const o = p && typeof p === 'object' ? p : {};
+  const str = (v) => (v == null ? '' : String(v).slice(0, MAX_ID_LEN));
+  return {
+    id: str(o.id),
+    version: str(o.version),
+    promptSetHash: str(o.promptSetHash),
+    channel: str(o.channel),
+    reasoningTier: str(o.reasoningTier),
+    language: str(o.language),
+  };
+}
+
+const round = (x) => (Number.isFinite(x) ? Math.round(x * 1e6) / 1e6 : 0);
+
+/* Strip a result down to the fields allowed in persistence / diagnostics.
+ * Guarantees no stray fields (and never any raw answer text, token, header). */
+function sanitizeResult(result) {
+  if (!result || typeof result !== 'object') return null;
+  const r = result;
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    sessionId: r.sessionId ? String(r.sessionId).slice(0, 128) : null,
+    family: TARGET_FAMILIES.includes(r.family) ? r.family : 'unknown',
+    estimatedModel: r.estimatedModel ? String(r.estimatedModel).slice(0, MAX_ID_LEN) : null,
+    candidates: (Array.isArray(r.candidates) ? r.candidates : []).slice(0, MAX_CANDIDATES).map((c) => ({
+      id: String(c.id || '').slice(0, MAX_ID_LEN),
+      family: String(c.family || '').slice(0, 40),
+      score: round(Number(c.score) || 0),
+      normalizedScore: round(Number(c.normalizedScore) || 0),
+      samples: Number.isFinite(c.samples) ? c.samples : null,
+      referenceVersion: String(c.referenceVersion || '').slice(0, MAX_ID_LEN),
+    })),
+    confidence: round(Number(r.confidence) || 0),
+    margin: round(Number(r.margin) || 0),
+    status: ['attributed', 'unresolved', 'failed'].includes(r.status) ? r.status : 'failed',
+    source: 'fingerprint',
+    protocol: sanitizeProtocol(r.protocol),
+    referenceBankVersion: r.referenceBankVersion ? String(r.referenceBankVersion).slice(0, MAX_ID_LEN) : null,
+    probeCount: Number.isInteger(r.probeCount) && r.probeCount >= 0 ? r.probeCount : 0,
+    createdAt: String(r.createdAt || new Date().toISOString()).slice(0, 40),
+    ...(r.reason ? { reason: String(r.reason).slice(0, 60) } : {}),
+    ...(r.error ? { error: String(r.error).slice(0, MAX_STR_LEN) } : {}),
+  };
+}
+
+__exports.SCHEMA_VERSION = SCHEMA_VERSION; __exports.TARGET_FAMILIES = TARGET_FAMILIES; __exports.DEFAULT_THRESHOLDS = DEFAULT_THRESHOLDS; __exports.DEFAULT_BETA = DEFAULT_BETA; __exports.PROTOCOL_MIN_SIGNAL = PROTOCOL_MIN_SIGNAL; __exports.CATEGORICAL_MIN_QUESTIONS = CATEGORICAL_MIN_QUESTIONS; __exports.parseIntegers = parseIntegers; __exports.histogram = histogram; __exports.smoothedProbs = smoothedProbs; __exports.bhattacharyya = bhattacharyya; __exports.validateReference = validateReference; __exports.extractFeature = extractFeature; __exports.scoreCandidates = scoreCandidates; __exports.classify = classify; __exports.sanitizeResult = sanitizeResult;
+});
+__define("lib/fingerprint-banks.js", function (__exports, __require) {
+'use strict';
+/* GENERATED — do not edit by hand.
+ *
+ * Bundled offline fingerprint reference banks + protocol/manifest metadata,
+ * frozen copies of data/fingerprint/*. The dock loads references from HERE
+ * (an in-repo import), never over the network: the fingerprint estimate must
+ * work fully offline and no remote host may swap a reference distribution.
+ *
+ * Regenerate with:  node scripts/gen-fingerprint-banks.mjs
+ * (that script re-reads data/fingerprint/* and rewrites this file verbatim).
+ *
+ * These are STARTING PRIORS from author-reported third-party channels, NOT
+ * calibrated current-Arena accuracy. Two protocols are kept strictly separate:
+ * their candidate probabilities must never be merged. */
+
+const FINGERPRINT_MANIFEST = {"schemaVersion":1,"updatedAt":"2026-10-01","note":"Reference banks for offline model fingerprinting. Versioned DISTRIBUTION SUMMARIES only — never raw replies, tokens or message text. Two protocols are kept strictly separate: their candidate probabilities must never be merged into one score.","targetFamilies":["opus","fable","gpt6"],"protocols":[{"id":"modeltrace-long-integers-v1","file":"protocols/modeltrace-long-integers-v1.json","reference":"references/modeltrace-summary-v1.json"},{"id":"fpverify-battery-v1","file":"protocols/fpverify-battery-v1.json","reference":"references/fpverify-summary-v1.json"}],"limits":{"fable51":"No same-protocol public reference for Fable 5.1 exists yet; must be enrolled before Fable-5.1-specific attribution.","calibration":"Bundled banks are STARTING PRIORS from author-reported third-party channels. Thresholds are uncalibrated until measured on real matched-channel Arena data."}};
+
+const FINGERPRINT_PROTOCOLS = {
+  "modeltrace-long-integers-v1": {"schemaVersion":1,"id":"modeltrace-long-integers-v1","title":"长整数序列探针（ModelTrace 协议）","kind":"histogram","range":[1,355],"dims":355,"minValidNumbers":80,"recommendedQueries":3,"description":"要求模型生成一长串 1..355 范围内的整数，解析最长数字串（字母分隔会断开），统计 355 维频率直方图，用平滑后的 Bhattacharyya 亲和度对比参考模型。单个数字（如 73）不构成分类依据，只比较整体分布。","prompt":{"note":"固定提示词在页面侧 allowlist 中托管；此处仅记录协议语义，不在仓库中内联可被远程配置替换的任意探针文本。","shape":"generate-long-integer-sequence"},"source":{"project":"ModelTrace","repo":"https://github.com/xqy2006/ModelTrace","license":"MIT","method":"Ordered-block + nuisance-Hellinger（本实现仅复用其数字直方图与 Bhattacharyya/Hellinger 思路，未复制其完整评分管线）"},"caveats":["参考分布为作者自述第三方渠道（Claude via oaipro，GPT via Codex），非当前 Arena 官方渠道。","无 Fable 覆盖；Fable 使用独立的 fpverify-battery-v1 协议。","该协议的候选概率不得与 fpverify-battery-v1 的候选概率相加或合并。"]},
+  "fpverify-battery-v1": {"schemaVersion":1,"id":"fpverify-battery-v1","title":"类别偏好套卷探针（fpverify 协议）","kind":"categorical","description":"一次全新实例回答同一套固定的偏好问题（随机数、颜色、动物、城市、硬币等），把每题的归一化答案聚成类别分布，用平滑后的几何平均似然对比参考模型。单题的众数答案（如 73 / teal）不作判定，必须比较整套回答向量。","questions":["random_1_100","random_color","animal","city","coin"],"samplesPerCell":11,"source":{"project":"fpverify","repo":"https://github.com/Mohamed7415/fpverify","license":"MIT","refCommit":"bcd60d955c92efdc6419a628f10de07a6d123ee5","channel":"cursor-harness","upstreamProtocol":"harness-battery","enrolledAt":"2026-07-21"},"caveats":["原始样本极少（每格 11 次），仅作启动先验与管线验证，不是校准准确率。","无 Fable 5.1、无 GPT‑6；需要同协议补采。","协议敏感：套卷与冷单题结果可显著不同（如 Fable thinking 套卷硬币 heads 11/11，冷单题 tails 5/6）。","该协议候选概率不得与 modeltrace-long-integers-v1 合并。","Fable 的安全路由（部分任务回退到 Opus）是混淆因素，应避免用敏感题的拒答/路由作为唯一身份依据。"]},
+};
+
+const FINGERPRINT_REFERENCES = {
+  "modeltrace-long-integers-v1": {"schemaVersion":1,"referenceVersion":"modeltrace-summary-v1","protocolId":"modeltrace-long-integers-v1","range":[1,355],"dims":355,"source":{"project":"ModelTrace","repo":"https://github.com/xqy2006/ModelTrace","license":"MIT","upstreamBuiltAt":"2026-09-30T22:05:57.774800+00:00","upstreamSchema":"robust-number-fingerprint-bank","providers":["codex","oaipro"],"note":"Per-model integer histograms (counts over 1..355) extracted from the MIT ModelTrace bank. Claude samples are author-reported third-party channel (oaipro); GPT via author-reported Codex subscription. Cross-validation numbers are NOT independent current-Arena accuracy. No Fable coverage here — Fable lives in a separate protocol."},"targetFamilies":["opus","fable","gpt6"],"models":[{"id":"gpt-5.4","family":"gpt5","samples":36,"validNumbers":10743,"counts":[19,20,23,28,32,37,36,35,35,27,35,39,36,37,30,37,39,37,35,27,35,33,32,38,30,33,40,36,31,28,35,29,30,34,31,33,30,26,33,26,36,34,35,35,28,34,37,33,35,30,30,37,36,41,27,36,40,42,37,30,36,33,39,36,32,36,35,33,37,27,37,34,34,35,29,35,29,31,32,28,35,34,34,40,27,32,34,37,34,30,34,34,33,36,35,32,40,30,29,22,30,29,22,34,19,25,36,28,36,30,35,31,31,30,34,30,33,38,35,32,35,27,31,31,28,34,31,27,32,25,28,33,32,33,23,33,25,30,32,34,34,31,34,32,35,36,37,29,36,26,36,33,33,38,25,31,35,32,31,31,27,26,29,31,26,27,30,29,31,31,38,33,35,33,29,33,32,27,27,15,30,27,24,36,32,33,32,31,17,32,24,30,33,33,20,28,30,34,35,20,36,20,31,23,34,30,28,27,24,29,24,28,25,37,21,33,25,22,33,27,30,20,29,29,31,22,31,25,23,29,30,28,31,31,27,31,24,21,35,31,30,29,31,32,24,26,31,33,26,23,26,30,24,22,26,21,34,27,20,29,28,19,22,31,21,33,25,13,25,24,38,30,29,37,26,25,19,28,30,30,33,28,36,31,25,34,41,32,37,35,32,28,30,38,28,32,28,26,36,28,34,32,31,28,25,25,31,30,20,22,31,31,26,32,33,28,31,32,32,30,33,17,29,32,31,30,25,15,18,28,19,29,32,33,25,21,33,32,31,26,33,22,31,37,29,29,33,27,30,29,25,30,20,23,35]},{"id":"gpt-5.5","family":"gpt5","samples":36,"validNumbers":10681,"counts":[20,25,32,29,34,38,38,33,35,30,35,38,34,34,37,33,33,36,31,28,32,30,30,36,31,34,35,29,33,34,35,27,34,32,33,36,31,34,39,32,32,29,32,36,35,32,31,30,33,30,31,32,33,33,35,32,35,38,33,32,33,30,35,36,26,32,36,35,34,37,33,38,35,33,33,35,30,27,31,31,26,31,31,32,24,32,29,35,35,29,37,28,30,33,27,29,36,30,35,33,34,28,21,30,32,18,23,34,32,35,30,34,21,20,26,34,30,34,36,30,33,28,27,32,28,26,15,25,24,29,29,32,19,32,26,30,33,26,29,21,30,31,27,20,36,26,35,31,33,22,30,33,28,35,19,33,27,33,22,31,29,15,18,30,24,28,32,24,34,16,25,30,26,29,30,26,30,17,19,15,29,13,28,27,33,31,32,27,22,37,27,14,24,29,30,33,30,34,34,10,34,26,31,32,35,22,27,25,23,10,27,26,24,36,29,31,28,31,33,22,30,23,29,27,25,31,17,29,35,20,32,32,33,27,29,31,23,31,33,28,26,27,20,32,18,32,33,24,31,28,30,31,21,28,26,18,24,31,29,35,20,25,26,29,29,33,31,29,29,34,35,17,15,37,30,37,22,30,26,25,31,22,24,26,20,26,33,31,28,28,36,31,19,30,32,30,26,25,34,33,42,34,34,34,36,29,37,32,35,34,31,32,22,34,35,34,35,38,36,32,36,31,22,34,32,36,31,18,25,34,33,34,35,34,33,29,36,35,40,40,38,36,34,37,38,39,43,41,41,43,38,37,37,37,38]},{"id":"gpt-5.6-sol","family":"gpt5","samples":36,"validNumbers":10651,"counts":[10,13,24,22,31,29,33,30,35,27,36,34,26,36,28,30,30,34,31,32,33,23,22,34,26,27,36,32,28,23,35,29,29,31,29,31,25,26,31,24,33,35,31,33,34,35,35,32,33,28,27,32,34,34,26,33,34,32,32,20,34,30,32,35,30,29,35,35,35,31,31,31,36,36,27,35,30,26,32,26,30,31,35,33,29,33,34,29,33,32,36,29,28,31,30,33,35,30,33,32,34,30,26,34,32,27,29,31,34,31,31,29,25,27,31,34,35,30,33,30,34,14,27,32,31,28,32,31,28,34,32,27,20,31,26,32,34,23,28,20,27,28,35,18,35,28,24,34,33,22,31,33,27,36,28,31,34,27,33,34,26,23,20,32,25,30,29,25,36,16,34,31,36,31,32,29,33,29,31,15,33,15,29,36,29,32,35,31,24,35,23,21,30,29,30,32,31,33,31,29,36,31,31,30,36,8,29,20,27,25,25,32,28,33,24,30,28,29,35,21,27,25,16,33,35,24,23,29,31,32,31,28,26,33,21,27,28,27,36,24,18,29,30,28,30,23,32,25,25,27,29,25,32,25,20,30,31,22,32,35,30,15,36,26,29,28,27,32,27,36,30,22,28,38,33,35,32,31,33,30,34,27,32,22,32,38,26,33,34,29,33,35,27,33,31,33,35,29,26,34,35,31,25,31,34,33,29,35,32,36,33,26,31,34,29,29,33,32,35,36,35,25,33,31,36,36,33,29,30,35,34,35,33,29,34,31,34,27,33,35,35,34,31,37,30,37,34,32,35,34,30,34,35,36,31]},{"id":"gpt-5.6-terra","family":"gpt5","samples":36,"validNumbers":11289,"counts":[1,4,8,16,22,35,32,27,33,19,40,37,32,43,38,45,30,38,41,29,35,35,30,42,31,31,37,34,30,35,41,31,32,33,40,38,27,31,40,35,36,30,34,35,27,40,35,36,38,30,23,42,36,42,34,35,41,42,36,26,36,38,37,42,32,32,34,43,37,40,36,36,41,39,36,36,34,25,36,28,34,32,42,43,24,35,27,36,31,37,37,32,32,38,34,41,42,38,31,19,33,40,32,41,33,30,40,37,47,33,33,32,27,31,35,44,36,43,44,33,38,29,20,40,26,41,28,29,31,36,24,35,24,37,25,38,34,26,31,30,28,33,34,22,39,41,35,21,37,24,37,33,30,44,27,37,27,34,34,30,28,19,25,26,25,32,26,20,22,23,35,29,40,38,29,38,27,23,13,16,28,12,24,36,32,28,40,28,7,35,30,28,28,29,27,38,27,33,27,14,53,16,33,32,30,18,28,23,29,18,22,27,18,36,21,34,36,29,34,26,19,24,32,31,35,26,20,20,17,41,30,24,17,30,31,35,20,31,31,32,32,25,25,32,33,32,44,30,31,20,42,25,28,30,26,19,28,34,27,38,23,16,43,28,25,44,39,28,23,35,39,24,39,43,35,38,19,48,28,35,28,28,39,38,38,40,39,32,39,21,33,25,23,41,36,30,36,29,40,29,39,42,24,46,33,34,43,23,32,38,18,24,19,37,53,42,26,43,41,34,33,22,31,31,27,45,32,22,28,29,25,19,31,38,31,28,40,32,25,32,47,29,23,46,29,43,50,36,30,39,32,46,19,38,27]},{"id":"gpt-5.6-luna","family":"gpt5","samples":36,"validNumbers":12775,"counts":[2,10,28,30,34,42,47,44,44,43,42,41,41,49,37,40,43,50,42,33,34,35,34,42,35,46,40,41,43,39,45,30,36,43,44,37,40,29,41,21,30,34,37,40,40,45,47,40,38,40,23,43,40,43,28,37,50,50,40,34,44,38,44,39,39,37,40,48,40,40,37,36,43,37,39,50,28,34,34,27,39,22,38,39,35,43,44,46,40,35,41,31,33,30,37,32,38,40,30,36,44,37,29,39,27,29,36,45,44,40,29,31,39,39,41,39,34,39,43,35,45,41,42,34,28,35,41,25,32,39,17,45,14,43,35,39,40,29,22,33,33,27,33,21,42,29,33,24,19,9,31,38,35,41,38,34,38,32,44,38,32,29,32,30,31,32,14,21,24,34,27,33,46,31,36,23,38,32,18,34,37,38,31,24,38,30,36,43,17,38,35,26,33,38,18,37,18,45,25,28,45,26,34,34,37,24,25,34,9,23,13,31,30,41,25,45,44,44,32,27,31,28,42,28,36,42,34,38,37,23,40,36,33,50,36,33,37,40,42,40,27,31,39,30,33,52,41,36,49,28,23,38,20,39,33,22,32,26,15,41,24,12,38,37,29,28,29,35,34,45,49,27,45,48,37,50,30,56,55,37,32,28,43,35,27,45,35,29,55,38,34,37,31,33,31,24,28,42,50,39,34,44,36,33,33,61,46,38,49,48,34,45,21,36,45,51,38,49,61,39,36,29,15,33,31,55,51,43,34,37,41,34,55,40,35,37,41,48,36,52,34,41,39,47,38,68,62,38,49,50,40,36,21,32,23]},{"id":"gpt-6-astra","family":"gpt6","samples":36,"validNumbers":10585,"counts":[3,7,24,17,24,32,36,34,34,13,32,35,28,35,23,31,34,35,33,19,30,27,23,35,22,31,17,33,30,21,33,25,24,30,29,28,29,26,34,22,35,29,35,33,31,36,35,35,35,10,33,34,35,34,31,35,35,35,36,24,34,33,34,34,35,33,31,33,35,24,31,33,34,35,32,36,29,20,31,31,34,26,34,33,30,33,32,34,34,29,36,35,35,34,33,31,35,35,33,17,34,32,33,33,26,32,26,34,35,21,29,32,33,34,30,31,32,33,34,28,34,28,30,27,27,31,27,26,22,21,23,35,25,32,18,25,33,34,30,21,27,29,34,30,33,35,28,29,37,23,34,33,32,35,31,31,31,33,29,24,32,32,35,29,26,26,33,27,27,20,31,31,34,34,28,31,33,34,30,29,35,27,39,35,32,30,31,32,17,29,24,27,36,34,26,34,31,33,32,19,35,33,33,34,29,24,26,28,24,23,33,19,32,29,23,28,28,35,30,20,32,15,30,35,29,30,28,30,33,31,33,26,28,35,24,26,31,32,33,27,30,24,25,34,21,34,34,28,30,28,33,29,34,33,19,19,32,30,30,33,30,21,31,33,18,32,34,26,34,22,25,20,32,34,27,21,27,34,32,34,35,31,34,34,19,30,35,28,30,27,33,27,29,33,28,30,31,35,34,20,34,37,28,35,34,27,34,37,33,30,27,29,23,28,33,36,24,24,36,33,35,29,30,34,17,33,28,23,32,26,30,19,34,31,33,27,30,23,28,30,33,32,32,32,32,31,30,33,30,33,34,36,30,36,34]},{"id":"gpt-6-sol","family":"gpt6","samples":36,"validNumbers":10642,"counts":[4,12,24,29,27,33,34,31,34,19,39,37,33,36,33,32,35,33,36,24,35,26,29,34,31,33,38,33,36,26,35,36,34,36,33,34,34,31,39,30,37,33,35,36,33,36,35,35,34,20,29,37,39,39,34,35,35,39,38,22,34,31,35,35,27,35,31,38,37,32,37,35,36,32,28,36,24,27,33,26,35,30,37,31,25,35,35,33,36,20,37,35,26,34,27,31,36,31,34,7,32,26,29,35,28,28,29,34,34,25,33,29,31,30,27,35,33,32,34,21,34,26,25,30,31,24,20,24,22,19,36,29,18,38,22,32,30,23,31,14,29,27,32,27,26,28,32,29,32,21,37,24,31,31,27,26,26,27,28,22,25,20,31,26,28,30,24,22,31,14,31,30,32,34,34,31,32,25,29,17,37,18,33,31,35,34,32,29,21,21,27,20,33,31,26,27,32,37,26,11,36,34,31,26,29,17,27,30,24,9,36,26,28,30,20,32,17,29,30,20,28,24,28,34,33,19,14,26,37,25,38,29,32,31,31,26,25,12,33,22,30,23,29,30,26,25,34,24,34,20,35,30,34,29,29,17,24,27,35,27,33,17,33,33,22,33,29,23,29,30,33,27,26,41,29,36,27,33,32,30,39,25,30,33,25,33,34,20,21,27,35,30,27,33,31,33,30,31,33,24,39,30,31,33,36,31,32,32,34,35,33,36,22,37,32,33,27,29,39,31,34,33,32,36,31,33,23,25,27,31,33,26,31,34,33,33,33,30,30,31,40,34,36,32,37,38,39,35,32,39,39,37,37,40,31]},{"id":"gpt-6-luna","family":"gpt6","samples":36,"validNumbers":11139,"counts":[17,28,41,33,57,49,43,47,47,33,52,52,38,43,38,48,42,53,36,28,34,35,30,38,40,34,31,36,33,34,48,27,35,37,31,34,29,27,36,30,35,40,36,35,34,41,43,33,29,23,26,42,37,44,26,37,45,40,35,23,37,33,43,38,21,30,34,42,31,28,30,30,47,33,28,35,23,16,30,30,27,29,34,40,27,29,33,32,30,26,38,36,32,38,28,30,43,35,33,20,33,32,32,38,28,29,34,36,42,22,30,28,20,33,33,41,38,38,34,26,25,36,26,29,23,37,24,30,24,30,22,37,20,34,27,32,25,26,27,29,29,25,46,25,38,22,34,28,29,16,39,30,30,35,32,32,35,29,30,41,20,20,23,27,27,23,24,15,20,19,23,26,28,28,19,27,25,24,16,22,33,20,24,32,27,36,35,32,18,35,23,13,45,35,22,31,35,29,37,13,40,31,28,28,30,23,24,23,17,16,14,25,22,36,21,30,29,29,29,14,31,25,24,28,28,31,24,16,39,34,31,26,26,33,25,29,23,33,44,35,25,21,39,23,26,32,25,27,23,28,22,26,21,23,21,19,30,23,22,31,23,12,40,28,31,29,30,27,26,15,43,17,29,30,25,39,22,32,39,31,37,26,33,32,15,34,30,26,34,27,32,24,27,32,30,27,34,41,35,20,37,31,39,33,33,28,45,23,28,41,32,42,25,40,39,42,36,45,60,40,41,23,29,29,35,47,32,40,39,36,45,30,46,39,35,31,43,30,38,44,47,44,34,40,35,31,46,33,45,49,29,42,17,27,31]},{"id":"claude-haiku-4-5-20251001","family":"haiku","samples":36,"validNumbers":9994,"counts":[3,0,3,3,7,13,11,20,26,10,32,25,19,23,24,21,26,32,44,26,24,26,33,27,29,16,37,33,34,20,32,37,28,26,26,43,43,38,47,28,37,31,25,48,34,28,45,38,13,35,37,47,27,36,34,30,39,41,18,25,51,40,40,49,32,31,44,48,57,25,31,53,40,58,32,39,46,19,40,12,43,30,23,43,29,34,52,37,45,16,39,34,24,24,24,23,34,44,34,25,17,40,41,36,19,22,43,18,46,19,22,41,15,20,29,16,9,39,39,28,23,29,17,26,15,28,25,47,20,27,15,26,8,20,55,14,47,34,45,35,29,41,22,35,39,14,43,15,20,11,40,36,33,19,29,41,20,37,24,23,30,37,35,25,35,19,38,37,35,42,18,22,29,32,48,34,30,22,21,23,19,30,16,23,19,39,23,19,60,13,37,19,15,25,30,27,31,43,23,20,37,17,31,32,19,19,29,6,31,15,37,21,21,33,25,34,29,34,25,41,23,19,20,26,30,22,27,18,25,10,21,15,15,32,13,15,24,26,32,17,30,25,33,24,22,12,34,19,19,17,50,17,19,22,17,33,19,16,25,28,28,18,21,47,46,24,70,48,32,31,27,32,26,17,33,44,25,28,19,21,38,27,24,13,17,28,31,25,70,15,26,25,30,6,30,17,31,54,22,15,33,22,26,26,28,20,30,20,31,39,26,51,26,28,33,18,10,46,38,33,30,28,14,17,33,15,32,23,17,25,20,17,32,31,32,18,35,20,17,35,35,17,21,32,17,23,10,23,13,14,20,42,8,32,48]},{"id":"claude-sonnet-4-6","family":"sonnet","samples":36,"validNumbers":10755,"counts":[0,0,3,3,4,3,8,4,8,7,27,15,24,33,20,27,41,29,41,12,25,39,28,25,19,27,35,35,41,15,40,22,34,41,32,33,51,72,39,18,48,42,57,55,38,40,60,49,38,23,31,41,55,30,53,39,58,46,44,22,52,39,51,37,25,42,65,45,35,20,46,44,58,61,31,52,47,44,42,26,27,46,62,59,41,31,51,67,40,15,50,34,60,39,39,35,45,28,32,11,36,35,41,28,23,28,44,52,35,11,20,32,30,23,29,34,42,41,42,13,30,26,9,15,8,28,40,26,12,23,35,15,30,25,14,32,22,30,31,14,38,35,51,24,15,10,36,34,22,4,14,25,31,21,42,33,26,24,27,14,16,33,31,25,18,19,52,31,26,17,28,35,27,42,37,53,23,46,22,9,21,20,54,18,25,25,30,46,45,2,28,17,37,36,34,37,30,30,30,10,37,9,29,40,7,9,47,30,27,18,32,18,40,43,29,13,30,50,38,18,24,28,26,36,19,26,18,37,39,14,41,17,34,38,11,24,33,29,23,15,46,12,48,33,16,21,46,43,21,4,23,16,38,15,13,16,14,30,15,12,46,19,41,25,19,18,53,26,25,12,51,17,23,39,24,27,17,36,18,17,34,15,24,44,29,21,43,29,41,12,32,17,30,24,26,21,13,40,28,11,40,38,31,28,31,15,46,44,32,12,48,58,22,26,45,37,35,44,42,13,30,32,30,20,18,19,29,15,29,22,23,14,36,22,26,22,39,40,30,27,58,32,24,51,38,21,54,47,39,26,29,30,24,41,48]},{"id":"claude-sonnet-5","family":"sonnet","samples":36,"validNumbers":10688,"counts":[2,11,41,38,49,42,40,79,60,22,25,52,29,41,68,26,49,39,55,36,33,42,18,34,40,25,49,14,48,38,26,18,70,34,11,19,22,18,48,28,48,44,21,54,81,23,58,22,27,15,32,36,29,18,74,44,26,57,16,36,36,47,88,25,33,61,28,49,15,17,67,29,28,35,14,39,23,66,41,18,12,34,12,62,11,13,32,83,51,37,61,37,17,18,32,50,39,18,41,34,32,27,22,18,30,15,11,34,21,22,26,14,18,3,8,33,8,42,14,14,43,20,28,13,6,7,19,39,24,45,18,46,48,14,11,8,26,33,6,19,26,12,65,18,65,12,14,31,41,31,14,33,15,16,38,37,11,47,42,18,21,12,41,13,40,24,41,58,13,8,22,41,17,24,38,42,23,102,19,18,20,31,34,16,7,9,42,9,54,58,25,24,29,25,35,19,53,24,119,22,35,26,27,14,46,17,9,40,20,54,10,8,40,41,10,32,33,30,35,44,13,12,7,57,24,25,24,12,29,8,45,25,69,44,14,31,6,35,13,47,18,17,11,50,23,40,24,21,39,47,33,10,24,62,28,19,12,33,40,38,30,32,9,67,44,9,63,49,22,17,48,11,22,19,52,6,8,24,17,16,17,6,27,12,18,11,6,42,83,26,41,11,31,7,10,77,35,25,33,53,43,66,11,29,73,48,11,24,27,28,21,31,34,18,41,26,21,38,9,70,19,22,9,5,13,14,13,20,7,11,46,21,17,16,28,28,28,25,13,62,53,21,5,31,10,4,19,22,60,28,29,18,32,6,32]},{"id":"claude-opus-4-6","family":"opus","samples":36,"validNumbers":10588,"counts":[10,23,31,27,32,34,44,41,37,36,47,32,38,39,42,42,41,37,41,34,32,38,41,31,34,40,34,37,43,35,36,29,42,35,37,38,45,46,39,34,42,37,54,40,35,43,51,45,36,37,34,45,41,36,43,44,54,41,36,33,38,36,44,36,32,39,35,34,35,36,41,36,39,36,34,36,35,35,33,22,34,41,34,34,33,33,40,37,26,24,36,12,35,21,34,30,32,18,33,21,25,29,32,25,28,27,34,34,33,22,22,31,31,26,30,24,19,30,36,17,24,15,15,11,11,27,24,35,10,27,28,17,29,32,12,28,31,26,30,9,26,31,37,32,31,29,24,38,32,19,18,31,35,16,33,32,30,26,23,17,30,31,28,24,23,23,29,35,27,32,32,25,31,31,31,34,32,33,30,21,29,32,39,27,26,31,27,34,41,24,35,20,26,27,35,32,33,33,33,19,36,23,28,29,24,25,23,28,23,33,25,26,25,26,37,18,26,26,27,10,30,29,32,13,27,33,9,25,26,18,23,18,27,21,14,29,33,31,28,28,38,24,36,30,23,16,32,28,22,19,27,23,33,21,24,26,31,33,19,29,24,24,31,31,24,16,31,24,36,23,36,19,28,26,32,30,19,33,20,29,32,19,34,21,30,27,33,27,38,26,30,28,26,15,32,30,23,30,36,14,35,32,37,23,35,28,32,33,32,32,33,37,16,31,32,33,18,29,31,15,22,35,9,11,13,29,33,21,23,29,26,24,27,23,31,33,26,29,35,33,35,31,33,35,35,38,39,38,43,36,31,33,28,27,25]},{"id":"claude-opus-4-7","family":"opus","samples":36,"validNumbers":10441,"counts":[1,0,10,5,4,2,14,27,4,2,6,17,3,16,30,2,29,7,26,15,16,27,11,25,36,40,26,14,42,12,21,47,29,50,11,20,22,36,52,10,60,72,40,50,58,30,79,19,39,18,62,30,38,34,75,7,31,61,20,19,37,36,67,24,37,50,30,84,15,5,87,29,29,93,13,57,20,33,64,24,11,65,29,82,27,49,67,69,70,20,57,56,22,34,35,71,24,28,10,11,24,29,14,18,72,15,16,64,34,16,47,17,43,10,11,59,19,74,16,19,35,31,6,31,16,4,41,64,47,20,32,64,47,17,6,14,44,55,9,13,51,26,61,20,49,25,19,64,50,10,10,52,19,37,59,56,19,72,23,4,22,22,39,22,45,19,42,61,20,7,23,41,37,32,58,38,18,78,23,10,25,15,39,22,10,16,83,10,56,26,26,38,16,32,45,31,71,19,47,8,30,18,21,22,48,14,25,62,34,12,8,9,63,29,31,27,38,45,45,31,18,15,16,56,35,41,36,10,40,5,55,38,17,26,31,39,9,29,30,22,27,7,8,45,36,33,29,5,32,9,46,3,41,46,16,10,15,59,26,15,31,29,11,46,36,13,57,51,42,12,60,18,36,28,55,10,5,29,25,2,29,11,37,8,41,19,12,24,66,15,33,9,29,7,13,47,55,9,19,8,40,45,5,14,32,31,7,22,29,6,17,17,34,26,33,27,25,31,13,25,23,36,12,8,20,19,8,42,7,5,53,13,3,6,37,21,23,15,9,27,44,30,13,40,6,16,13,24,34,9,15,11,9,16,9]},{"id":"claude-opus-4-8","family":"opus","samples":36,"validNumbers":10880,"counts":[2,4,31,23,35,30,37,43,37,18,26,50,34,32,57,35,41,28,54,33,34,53,20,46,40,43,49,30,47,32,36,22,58,42,29,31,31,49,47,31,46,64,38,59,48,35,63,42,44,28,65,32,45,33,71,15,52,51,24,49,50,43,66,36,36,67,32,82,23,29,80,33,48,63,10,50,25,38,76,21,18,57,34,73,31,18,57,97,38,43,61,45,33,38,47,55,32,24,17,29,19,30,13,14,59,22,18,53,25,19,43,16,37,18,15,43,20,59,28,21,42,31,13,40,5,13,32,58,36,30,25,29,55,16,14,18,45,39,10,13,43,22,60,15,40,20,18,49,47,18,13,58,10,24,46,49,13,57,37,26,19,13,40,24,41,17,40,55,21,19,21,39,26,30,35,58,21,65,26,11,13,17,43,24,23,11,59,21,39,36,38,16,19,31,33,22,52,16,51,13,30,27,18,23,63,12,21,38,32,28,18,6,54,25,19,26,33,31,29,28,17,17,10,44,15,31,39,14,23,1,57,26,32,24,29,30,12,27,14,53,19,16,9,42,23,28,31,10,24,25,35,2,30,35,12,15,13,49,22,25,20,26,12,42,23,16,51,39,24,7,53,10,19,15,37,16,15,18,41,6,25,10,33,14,50,14,17,46,50,18,45,12,38,11,8,46,47,23,23,30,26,33,9,22,40,22,11,22,17,13,23,19,28,25,38,26,14,39,12,43,13,27,4,10,19,12,14,35,14,10,50,14,16,8,28,18,32,15,6,34,33,29,8,46,13,8,26,37,31,20,35,7,21,6,30]},{"id":"claude-opus-5","family":"opus","samples":36,"validNumbers":10609,"counts":[0,10,31,25,31,32,33,39,33,19,34,37,33,30,35,33,35,27,36,31,35,34,29,32,34,32,35,25,36,37,34,28,39,36,38,33,32,38,36,36,35,40,44,36,43,33,45,37,28,27,50,27,35,28,43,25,50,40,43,38,44,41,47,34,33,54,33,54,32,36,48,34,35,49,21,45,32,37,42,28,25,35,30,45,38,32,52,53,36,30,41,51,24,36,32,61,32,32,37,28,25,21,35,23,42,34,28,45,20,27,39,32,28,17,28,39,24,49,31,17,48,37,22,29,17,24,20,43,58,47,17,40,36,36,24,25,43,32,16,32,48,16,58,21,49,13,34,32,42,17,16,52,21,35,36,38,16,46,32,31,34,16,40,14,41,26,27,48,13,22,34,41,25,34,35,37,21,42,26,25,29,21,31,21,28,34,47,13,43,43,42,11,24,40,34,27,39,22,40,27,17,31,32,16,63,13,26,36,41,26,21,23,39,21,13,26,34,34,25,37,14,32,15,33,8,43,32,13,28,24,37,29,37,24,33,46,12,27,15,55,29,7,17,49,20,28,26,20,42,26,27,6,45,32,6,34,13,30,37,36,14,41,13,38,32,8,44,36,25,1,60,15,20,17,45,19,24,9,36,21,25,9,35,13,38,14,26,38,37,2,41,23,33,19,9,38,32,27,20,30,15,40,14,11,29,33,18,12,24,28,22,18,30,22,19,33,20,30,9,38,6,40,8,13,23,13,19,38,16,18,37,11,15,16,26,15,34,8,14,36,36,24,9,45,16,16,21,42,25,33,37,8,41,8,30]},{"id":"claude-opus-5-5","family":"opus","samples":36,"validNumbers":10621,"counts":[32,28,36,31,36,32,37,36,37,35,36,38,35,36,35,34,37,34,37,32,31,29,30,24,31,35,35,26,34,30,34,21,28,29,29,35,31,36,33,30,29,34,31,35,33,29,32,33,30,26,24,33,31,27,33,23,39,36,35,35,34,36,33,34,28,35,37,29,33,36,36,36,27,34,23,34,30,27,34,25,35,28,35,31,37,31,37,36,29,32,30,31,34,34,31,25,37,33,38,26,32,30,24,30,20,31,34,23,24,29,31,27,26,24,31,31,30,36,33,30,30,14,28,31,35,28,33,35,25,22,35,28,24,32,25,31,36,30,36,32,32,32,34,31,33,29,33,27,29,34,20,25,31,31,24,25,32,34,34,36,31,34,22,33,17,34,36,28,33,34,27,33,34,25,28,35,28,33,33,22,34,29,28,32,35,34,34,30,30,34,34,30,30,23,34,33,36,28,38,25,29,25,30,23,28,33,27,33,28,19,32,25,30,30,27,31,23,28,35,16,28,27,30,12,27,29,33,14,34,23,27,31,25,29,18,33,23,31,34,28,30,17,34,32,31,27,33,29,29,32,26,23,26,31,27,31,33,30,28,31,31,37,30,26,24,32,33,36,22,31,30,28,20,32,24,30,26,27,29,32,23,23,37,28,29,34,31,28,29,31,20,30,29,25,22,28,35,26,32,26,33,32,32,10,34,31,29,24,34,19,36,29,31,28,27,30,23,35,34,25,21,32,18,27,28,25,35,16,26,26,31,22,23,27,19,33,32,28,36,35,29,32,27,36,30,27,36,31,29,35,31,27,36,21,37]},{"id":"claude-sonnet-5-5","family":"sonnet","samples":36,"validNumbers":10575,"counts":[11,11,13,27,35,24,37,35,34,19,34,34,34,34,34,26,28,33,34,22,23,32,24,25,23,31,29,27,34,18,32,6,33,26,37,27,28,36,27,28,28,33,23,24,30,28,33,28,34,25,22,29,32,32,30,28,34,38,32,33,31,34,26,36,30,36,32,33,34,33,37,34,31,30,29,32,33,21,34,19,25,34,33,35,30,33,28,41,30,23,38,35,37,30,30,29,40,30,37,21,40,16,29,26,28,24,31,28,31,23,13,33,42,25,28,28,35,27,33,38,31,34,31,18,30,26,29,30,19,32,36,22,30,26,25,28,19,38,24,32,32,25,27,26,29,37,33,32,38,26,22,30,27,36,30,19,30,35,13,37,18,35,34,33,24,27,26,35,34,27,32,35,30,31,33,29,35,24,32,20,38,29,35,29,37,27,39,12,34,32,28,29,18,25,35,36,24,22,41,18,29,15,41,28,34,20,33,28,31,37,20,28,32,31,41,12,28,27,38,16,39,35,22,27,23,40,29,27,36,27,30,32,29,22,33,25,33,34,16,40,25,30,35,28,25,20,30,27,31,13,32,30,28,28,35,26,33,19,35,31,19,33,27,37,34,29,34,30,27,21,32,33,31,33,17,19,24,13,27,22,36,27,31,23,28,36,28,25,21,34,20,27,32,14,29,34,26,35,34,22,34,40,24,34,34,33,25,41,35,32,38,36,32,29,37,33,28,36,36,22,31,38,18,35,32,35,36,28,33,38,31,28,32,43,30,31,36,37,30,35,37,32,38,34,40,40,39,34,43,45,37,38,43,29,28]}]},
+  "fpverify-battery-v1": {"schemaVersion":1,"referenceVersion":"fpverify-summary-v1","protocolId":"fpverify-battery-v1","kind":"categorical","source":{"project":"fpverify","repo":"https://github.com/Mohamed7415/fpverify","license":"MIT","refCommit":"bcd60d955c92efdc6419a628f10de07a6d123ee5","channel":"cursor-harness","enrolledAt":"2026-07-21","note":"Partial category counts transcribed from the public fpverify reference (small sample: 11 instances/cell). Fable 5 cells are the fully documented ones; Opus-4.8-thinking and gpt-5.6-sol carry only the modal answers recorded in research, so their distributions are intentionally sparse and marked partial:true. These are STARTING PRIORS, not calibrated accuracy. Fable 5.1 and GPT-6 are NOT covered and must be enrolled."},"targetFamilies":["opus","fable","gpt6"],"models":[{"id":"claude-fable-5","family":"fable","samples":11,"partial":false,"questions":{"random_1_100":{"47":2,"73":9},"random_color":{"teal":11},"animal":{"otter":10,"octopus":1},"city":{"kyoto":7,"lisbon":4},"coin":{"heads":11}}},{"id":"claude-opus-4-8-thinking","family":"opus","samples":11,"partial":true,"questions":{"random_1_100":{"73":6},"random_color":{"blue":7},"animal":{"fox":7},"city":{"tokyo":7}}},{"id":"gpt-5.6-sol","family":"gpt5","samples":11,"partial":true,"questions":{"coin":{"tails":11}}}]},
+};
+
+/* loadReference(protocolId) → the frozen reference bank for that protocol, or
+ * null if unknown. Pure, synchronous; the runner wraps it in a Promise. */
+function fingerprintReference(protocolId) {
+  return FINGERPRINT_REFERENCES[protocolId] || null;
+}
+
+/* The protocol metadata (kind / questions / channel) the runner surfaces as
+ * advisory compatibility info. Never carries probe PROMPT text — those live in
+ * the page-side allowlist (injected/probe.js FINGERPRINT_PROMPTS). */
+function fingerprintProtocolMeta(protocolId) {
+  return FINGERPRINT_PROTOCOLS[protocolId] || null;
+}
+
+
+__exports.FINGERPRINT_MANIFEST = FINGERPRINT_MANIFEST; __exports.FINGERPRINT_PROTOCOLS = FINGERPRINT_PROTOCOLS; __exports.FINGERPRINT_REFERENCES = FINGERPRINT_REFERENCES; __exports.fingerprintReference = fingerprintReference; __exports.fingerprintProtocolMeta = fingerprintProtocolMeta;
+});
 __define("dock.js", function (__exports, __require) {
 'use strict';
 /* ArenaKit native side dock logic.
@@ -3391,6 +4258,9 @@ const { initialState: watchdogInitialState, parseStatus: watchdogParse, decide: 
 const { accountLabel, accountEmail, initialOf, hasSession, canLogin, loginStageText, sessionAgeText } = __require("lib/accounts.js");
 const { createAccountFlow } = __require("lib/account-flow.js");
 const { resolveModel, SOURCE_TEXT } = __require("lib/model-resolve.js");
+const { createFingerprintRunner, FP_FEATURE_POLL_MS, FP_FEATURE_WAIT_MS } = __require("lib/fingerprint-runner.js");
+const { classify: fingerprintClassify } = __require("lib/fingerprint.js");
+const { fingerprintReference, fingerprintProtocolMeta } = __require("lib/fingerprint-banks.js");
 
 // Embedded (Android) mode: the dock markup lives in a shadow root inside the
 // arena page; otherwise this is the dock webview's own document.
@@ -3481,7 +4351,10 @@ const state = {
   // on its own yet (the fingerprint-runner + classify wiring arrives in PR4).
   // samples: the reduced features received so far this session (counts /
   // normalized picks / parse-error codes only — never any reply text).
-  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null },
+  // runner: the active createFingerprintRunner() instance (set in boot once the
+  // RPC channel exists); it sends FIXED allowlisted probes only after an
+  // explicit user click + a confirmed max-message budget.
+  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null, runner: null },
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
   // header + status-pill display state: model/routed/pending, the running
@@ -3655,7 +4528,7 @@ function wireSettings() {
       if (flag === 'capture') setStatus(el.checked ? '已开启截获会话流' : '已关闭截获会话流：不再识别模型，直到重新开启');
       if (flag === 'pulse') { setStatus(el.checked ? '已开启额度轮询' : '已关闭额度轮询（可手动刷新）'); if (el.checked) dispatchToPage('pulse-refresh', null); }
       if (flag === 'monitor') { setStatus(el.checked ? '已开启回复监控' : '已关闭回复监控'); renderMonitor(); }
-      if (flag === 'fingerprint') setStatus(el.checked ? '已开启模型指纹（统计估计·非真名·需手动运行）' : '已关闭模型指纹');
+      if (flag === 'fingerprint') { setStatus(el.checked ? '已开启模型指纹（统计估计·非真名·需手动运行）' : '已关闭模型指纹'); setFingerprintRunningUi(state.fingerprint.runner ? state.fingerprint.runner.isRunning : false); renderFingerprintState(); }
     });
   }
   // 悬浮窗显示刷新按钮 (Android pill ⟳ zone; the row is hidden in the desktop dock via CSS)
@@ -4508,9 +5381,10 @@ function wireProbe() {
 // A STATISTICAL guess over three families (opus / fable / gpt6) from the
 // reduced features the page emits for FIXED probe prompts — never a confirmed
 // model name, never overwrites a server-confirmed model, never renames a
-// conversation. Thresholds are UNCALIBRATED. PR3 wires only the page→dock
-// feature channel + a de-identified diagnostic view; the active probe runner
-// and the classify() call arrive in PR4, so the start button stays disabled.
+// conversation. Thresholds are UNCALIBRATED. The page→dock feature channel +
+// de-identified diagnostic view are read-only; the active probe runner
+// (createFingerprintRunner) + the classify() call send FIXED allowlisted probes
+// only after an explicit user click + a confirmed max-message budget.
 const FP_PROTO_LABEL = {
   'modeltrace-long-integers-v1': '长整数序列直方图',
   'fpverify-battery-v1': '分类问答组（五问）',
@@ -4530,10 +5404,13 @@ function persistFingerprintPanel() {
 function setFingerprintRunningUi(running) {
   const start = root.querySelector('[data-action="fingerprint-start"]');
   const stop = root.querySelector('[data-action="fingerprint-stop"]');
-  // The active runner lands in PR4; until then start stays disabled regardless
-  // (the feature is still useful read-only: it shows the features the page
-  // emits for a probe the USER sends by hand).
-  if (start) start.disabled = true;
+  // Start is enabled only when: the feature toggle is on, a runner exists
+  // (RPC channel is up), and no fingerprint run is already in flight. The hard
+  // guards (page/mode, ≥2 candidates, budget confirm) are re-checked in the
+  // runner's preflight; this is just the first gate so a disabled button never
+  // auto-sends. When running, start is disabled and stop is enabled.
+  const canStart = !running && !!state.fingerprint.runner && state.prefs.fingerprintOn !== false;
+  if (start) start.disabled = !canStart;
   if (stop) stop.disabled = !running;
 }
 function fingerprintLog(line) {
@@ -4661,6 +5538,102 @@ function wireFingerprint() {
   if (budget) budget.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
   setFingerprintRunningUi(false);
   renderFingerprintState();
+}
+
+// A sync page snapshot the runner uses to detect a page / mode change mid-run.
+// state.nav is kept current by onPage('nav'); the dock webview is always on the
+// arena origin, so the hard signal is the agent composer path. (The runner also
+// relies on the page-side send guard, which re-checks origin + agent mode and
+// the human draft before every send.)
+function fingerprintPageState() {
+  const path = String(state.nav.path || '').replace(/\/+$/, '');
+  return { onArena: true, agentPath: path === '/agent' || path === '', session: state.nav.sessionId || null };
+}
+// Probe ids per protocol — must mirror injected/probe.js FINGERPRINT_PROMPTS
+// (the page-side allowlist). The runner only ever passes an id; the prompt text
+// lives on the page so a remote config can never swap the probe body.
+const FP_PROBE_IDS = {
+  'modeltrace-long-integers-v1': ['seq-1-355'],
+  'fpverify-battery-v1': ['random_1_100', 'random_color', 'animal', 'city', 'coin'],
+};
+// Wait for the page reducer to emit the structured feature for a specific
+// (sessionId, probeId). onPage('fingerprint-sample') pushes clean features into
+// state.fingerprint.samples; poll it for a match and consume it so the next
+// probe can't re-read a stale sample. Resolves null on timeout.
+function takeFingerprintFeature(sessionId, probeId, { timeoutMs = FP_FEATURE_WAIT_MS } = {}) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const seen = new Set();
+    const tick = () => {
+      const samples = state.fingerprint.samples || [];
+      for (let i = samples.length - 1; i >= 0; i--) {
+        const s = samples[i];
+        if (!s || seen.has(s)) continue;
+        if (s.sessionId === sessionId && (!s.probeId || s.probeId === probeId)) {
+          seen.add(s);
+          const feature = s.kind === 'categorical'
+            ? { questionId: probeId, value: s.value ?? null, parseError: s.parseError || 0, frames: s.frames || 0 }
+            : { counts: Array.isArray(s.counts) ? s.counts : null, n: s.n || 0, dims: s.dims || 0, parseError: s.parseError || 0, frames: s.frames || 0 };
+          resolve(feature);
+          return;
+        }
+      }
+      if (Date.now() - started >= timeoutMs) { resolve(null); return; }
+      setTimeout(tick, FP_FEATURE_POLL_MS);
+    };
+    tick();
+  });
+}
+// Build the active fingerprint runner. Every side effect is injected so the
+// controller stays DOM/IPC-free and unit-testable. loadReference reads the
+// BUNDLED banks (fingerprint-banks.js) — never the network — so the estimate
+// works fully offline and no remote host can swap a reference distribution.
+function createDockFingerprint() {
+  return createFingerprintRunner({
+    rpc: state.rpc,
+    dispatchToPage,
+    loadReference: async (protocolId) => fingerprintReference(protocolId),
+    classify: fingerprintClassify,
+    probeIdsForProtocol: (protocolId) => FP_PROBE_IDS[protocolId] || [],
+    takeFeature: (sessionId, probeId, opts) => takeFingerprintFeature(sessionId, probeId, opts),
+    // The trace pipeline already saw these models for the conversation; a verdict
+    // is a real discrimination only when ≥2 are plausible (gate in preflight).
+    candidateModelsForSession: (sid) => (state.sessions.get(conversationFor(sid))?.models || []).map((m) => m.model),
+    // Refuse to start while an arithmetic probe / cleanup / quick send or a
+    // rename is in flight — they share the same page surface and RPC channel.
+    otherRunActive: () => !!(state.probe?.isRunning || state.quickBusy || state.renaming),
+    pageState: fingerprintPageState,
+    protocolMeta: (protocolId) => {
+      const meta = fingerprintProtocolMeta(protocolId) || {};
+      return { kind: meta.kind, channel: meta.source?.channel, reasoningTier: meta.reasoningTier, language: meta.language, questions: meta.questions };
+    },
+    onProgress: fingerprintLog,
+    onResult: (r) => { state.fingerprint.lastResult = r; renderFingerprintState(); },
+    onFinished: (summary) => { fingerprintLog(summary); const el = q('ak-fingerprint-state'); if (el && summary) el.textContent = summary; },
+    onRunState: (round, max, active) => setFingerprintRunningUi(active),
+  });
+}
+// Explicit-click entry point: confirm the max-message budget (real messages that
+// consume quota), then start the runner. The runner's preflight re-checks every
+// hard gate (page/mode, ≥2 candidates, loadable bank, budget confirm).
+async function startFingerprint() {
+  if (!state.fingerprint.runner) { setStatus('指纹探测不可用（RPC 通道未就绪）'); return; }
+  if (state.fingerprint.runner.isRunning) { setStatus('指纹探测已在运行'); return; }
+  const protocolId = fingerprintProtocolId();
+  const maxRounds = fingerprintBudget();
+  const ok = await confirmDialog({
+    title: '开始模型指纹探测',
+    message: `本次最多发送 ${maxRounds} 条固定探针消息（会消耗额度）。结果为统计估计（非真名），阈值未完成 Arena 校准，不会覆盖服务端确认的模型，也不会重命名会话。确定继续？`,
+    ok: '发送探针',
+    cancel: '取消',
+  });
+  if (!ok) { setStatus('已取消指纹探测'); return; }
+  await state.fingerprint.runner.start({
+    protocolId,
+    sessionId: state.nav.sessionId || null,
+    maxRounds,
+    budgetConfirmed: true,
+  });
 }
 
 // ── module: quota gauge (pulse %) ───────────────────────────────────────
@@ -5144,9 +6117,10 @@ function wireControls() {
       } else if (a === 'acct-stop-login') {
         acct().stopLogin();
       } else if (a === 'fingerprint-start') {
-        // The active probe runner lands in PR4; the button stays disabled until
-        // then. Guard here too so a stray click can never auto-send a message.
-        setStatus('主动指纹探测将在后续版本启用（需单独确认最大消息数）');
+        // Explicit user click → confirm the max-message budget, then run. Real
+        // messages are sent only after the confirm; the runner's preflight
+        // re-checks every hard gate (page/mode, ≥2 candidates, bank).
+        startFingerprint();
       } else if (a === 'fingerprint-stop') {
         if (state.fingerprint.runner && typeof state.fingerprint.runner.stop === 'function') { state.fingerprint.runner.stop(); fingerprintLog('正在停止…'); }
       } else if (a === 'fingerprint-copy') {
@@ -5224,6 +6198,9 @@ async function boot() {
   wireFingerprint();
   wireAccounts();
   if (state.rpc) state.probe = createDockProbe();
+  // The fingerprint runner needs the RPC channel; create it once that exists and
+  // flip the start button on (setFingerprintRunningUi re-checks the toggle).
+  if (state.rpc) { state.fingerprint.runner = createDockFingerprint(); setFingerprintRunningUi(false); }
   // Status-pill gestures (reference MainActivity): tap → panel (the shell
   // opens it itself), tap on ⟳ → reload, long press → quick menu (below),
   // pull-up at the bottom of the conversation → reload.
