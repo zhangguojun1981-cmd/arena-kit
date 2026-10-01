@@ -81,8 +81,10 @@ function ringBand(percent) {
 
 /* The pill's one-line label + tone (reference HudFormat.pill). Priority:
  * transient flash → running task → model → pending → new chat → nothing
- * (ring only). Tones: 'active' (brand), 'routed' (warn), 'muted', 'normal'. */
-function pillLabel({ flash = '', task = null, model = '', strength = '', routed = false, pending = false, newChat = false } = {}) {
+ * (ring only). Tones: 'active' (brand), 'routed' (warn), 'muted', 'normal'.
+ * `estimate` marks a statistical fingerprint guess: it is prefixed with "≈"
+ * and shown muted so the ball never presents a guess like a confirmed name. */
+function pillLabel({ flash = '', task = null, model = '', strength = '', routed = false, pending = false, newChat = false, estimate = false } = {}) {
   if (flash) return { text: String(flash), tone: 'active' };
   if (task && task.kind === 'probe') {
     const verb = task.draw ? '抽卡' : '探针';
@@ -91,7 +93,10 @@ function pillLabel({ flash = '', task = null, model = '', strength = '', routed 
   }
   if (task && task.kind === 'cleanup') return { text: `清理中 · 已归档 ${task.archived || 0}`, tone: 'active' };
   if (task && task.kind === 'recovery') return { text: '回复异常 · 自动刷新…', tone: 'active' };
-  if (model) return { text: String(model) + (strength ? ' · ' + strength : ''), tone: routed ? 'routed' : 'normal' };
+  if (model) {
+    if (estimate) return { text: '≈' + String(model), tone: 'muted' };
+    return { text: String(model) + (strength ? ' · ' + strength : ''), tone: routed ? 'routed' : 'normal' };
+  }
   if (pending) return { text: '识别中…', tone: 'muted' };
   if (newChat) return { text: '新对话', tone: 'muted' };
   return { text: '', tone: 'muted' };
@@ -1344,6 +1349,77 @@ function isRecord(r) {
   try { return r?.schemaVersion === 1 && Array.isArray(r.observations) && r.url === conversationUrl(r.sessionId); } catch { return false; }
 }
 
+/* ---- fingerprint estimate (statistical, NOT a confirmed observation) -----
+ *
+ * A record may carry ONE `fingerprint` field: the sanitised result of an
+ * offline fingerprint classification (src/lib/fingerprint.js → sanitizeResult).
+ * It is kept STRICTLY separate from `observations` (server-confirmed models) so
+ * that a statistical guess can never masquerade as — or overwrite — a real
+ * trace label. The display layer always shows it as 指纹推断, never as 真名.
+ *
+ * Only an allowlist of scalar fields is persisted; by construction the sanitised
+ * result carries no raw answer text, token or header, and we re-assert that here
+ * by copying field-by-field rather than spreading. */
+const FP_STATUS = ['attributed', 'unresolved', 'failed'];
+const FP_FAMILIES = ['opus', 'fable', 'gpt6', 'unknown'];
+function sanitizeFingerprintForRecord(estimate) {
+  const e = estimate && typeof estimate === 'object' ? estimate : null;
+  if (!e) return null;
+  const str = (v, n) => (v == null ? '' : String(v).slice(0, n));
+  const num = (v) => (Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : 0);
+  const p = e.protocol && typeof e.protocol === 'object' ? e.protocol : {};
+  return {
+    family: FP_FAMILIES.includes(e.family) ? e.family : 'unknown',
+    estimatedModel: e.estimatedModel ? str(e.estimatedModel, 120) : null,
+    confidence: num(Number(e.confidence)),
+    margin: num(Number(e.margin)),
+    status: FP_STATUS.includes(e.status) ? e.status : 'failed',
+    source: 'fingerprint',
+    protocol: {
+      id: str(p.id, 120), version: str(p.version, 120), promptSetHash: str(p.promptSetHash, 120),
+      channel: str(p.channel, 120), reasoningTier: str(p.reasoningTier, 120), language: str(p.language, 120),
+    },
+    referenceBankVersion: e.referenceBankVersion ? str(e.referenceBankVersion, 120) : null,
+    probeCount: Number.isInteger(e.probeCount) && e.probeCount >= 0 ? e.probeCount : 0,
+    createdAt: str(e.createdAt || new Date().toISOString(), 40),
+  };
+}
+
+/* A record carrying a fingerprint estimate but (optionally) no confirmed model
+ * yet — the common Agent-mode case. Preserves existing observations/usage. */
+function mergeFingerprintRecord(previous, input) {
+  const url = conversationUrl(input.sessionId);
+  const fingerprint = sanitizeFingerprintForRecord(input.estimate);
+  if (!fingerprint) throw new Error('没有有效的指纹估计');
+  const old = previous?.sessionId === input.sessionId && isRecord(previous) ? previous : null;
+  const time = fingerprint.createdAt || new Date().toISOString();
+  const title = String(input.title || old?.title || 'Arena 会话').slice(0, 300);
+  const pageIds = addPageId(old?.pageIds, input.pageId, input.sessionId);
+  return {
+    schemaVersion: 1,
+    sessionId: input.sessionId,
+    url,
+    title,
+    firstSeen: old?.firstSeen || time,
+    lastSeen: time,
+    observations: old?.observations || [],
+    runs: old?.runs || [],
+    totals: old?.totals || summarizeUsage(old?.runs || []),
+    fingerprint,
+    ...(pageIds.length ? { pageIds } : {}),
+  };
+}
+
+/* The model a record's fingerprint estimate points at, ONLY when it is an
+ * attributed guess with a concrete model. Returns '' otherwise. */
+function recordFingerprintModel(record) {
+  const fp = record?.fingerprint;
+  if (!fp || typeof fp !== 'object') return '';
+  if (fp.status !== 'attributed' || !fp.estimatedModel) return '';
+  return fp.estimatedModel;
+}
+
+
 /* Unique models of a record, latest run first (for the restore-on-switch display). */
 function recordModels(record) {
   const obs = [...(record?.observations || [])].sort((a, b) => String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
@@ -1446,6 +1522,16 @@ function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
       await store.set(key(sessionId), record);
       return record;
     }),
+    /* Attach / replace a statistical fingerprint estimate on a conversation.
+     * Creates a record if none exists (common in Agent mode: a guess arrives
+     * before any confirmed trace). Never touches observations/runs. */
+    saveFingerprint: (input) => enqueue(async () => {
+      const old = await store.get(key(input.sessionId));
+      const record = mergeFingerprintRecord(isRecord(old) ? old : null, input);
+      await store.set(key(record.sessionId), record);
+      if (!isRecord(old)) await evict();
+      return record;
+    }),
     /* Remember a page id for an existing record (alias learned later). */
     linkPage: (sessionId, pageId) => enqueue(async () => {
       const old = await store.get(key(sessionId));
@@ -1464,7 +1550,7 @@ function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
   };
 }
 
-__exports.HISTORY_PREFIX = HISTORY_PREFIX; __exports.CARRY_KEY = CARRY_KEY; __exports.MAX_ENTRIES = MAX_ENTRIES; __exports.conversationUrl = conversationUrl; __exports.MAX_PAGE_IDS = MAX_PAGE_IDS; __exports.addPageId = addPageId; __exports.mergeRecord = mergeRecord; __exports.isRecord = isRecord; __exports.recordModels = recordModels; __exports.recordTurns = recordTurns; __exports.searchRecords = searchRecords; __exports.addToCarry = addToCarry; __exports.grandTotals = grandTotals; __exports.exportHistory = exportHistory; __exports.createHistoryStore = createHistoryStore;
+__exports.HISTORY_PREFIX = HISTORY_PREFIX; __exports.CARRY_KEY = CARRY_KEY; __exports.MAX_ENTRIES = MAX_ENTRIES; __exports.conversationUrl = conversationUrl; __exports.MAX_PAGE_IDS = MAX_PAGE_IDS; __exports.addPageId = addPageId; __exports.mergeRecord = mergeRecord; __exports.isRecord = isRecord; __exports.sanitizeFingerprintForRecord = sanitizeFingerprintForRecord; __exports.mergeFingerprintRecord = mergeFingerprintRecord; __exports.recordFingerprintModel = recordFingerprintModel; __exports.recordModels = recordModels; __exports.recordTurns = recordTurns; __exports.searchRecords = searchRecords; __exports.addToCarry = addToCarry; __exports.grandTotals = grandTotals; __exports.exportHistory = exportHistory; __exports.createHistoryStore = createHistoryStore;
 });
 __define("lib/turns.js", function (__exports, __require) {
 'use strict';
@@ -3133,11 +3219,15 @@ __define("lib/model-resolve.js", function (__exports, __require) {
  *             that lists the page id in `pageIds` (saved since 0.4.9)
  *   runs      the record / live runs' span labels when observations are empty
  *   turns     the turn tracker's last identified model for this conversation
+ *   finger    a stored, ATTRIBUTED fingerprint estimate — statistical, not a
+ *             confirmed trace label. Ranks below every confirmed source above
+ *             and above the title guess; shown as 指纹推断 · 统计估计, never 真名,
+ *             and never written back into `observations`.
  *   title     last resort: a known model name (or the probe's
  *             "<prefix><model>-NNN" pattern) inside the conversation title —
  *             shown as 标题推断, never saved as an observation
  */
-const { recordModels, addPageId, MAX_PAGE_IDS } = __require("lib/history.js");
+const { recordModels, recordFingerprintModel, addPageId, MAX_PAGE_IDS } = __require("lib/history.js");
 const { normalizeModel, sanitizePrefix } = __require("lib/rename.js");
 
 
@@ -3241,6 +3331,15 @@ function resolveModel({
   if (tracker && tracker.sessionId && (tracker.sessionId === sid || tracker.sessionId === pageId) && tracker.lastModel) {
     return { sid, models: [{ model: tracker.lastModel, provider: '' }], source: 'turns', record: null, pageMatch: false };
   }
+  // A stored ATTRIBUTED fingerprint estimate: statistical, below every
+  // confirmed source, above the title guess. Never promoted into observations.
+  if (record) {
+    const guessed = recordFingerprintModel(record);
+    if (guessed) {
+      const pageMatch = record.sessionId !== sid && record.sessionId !== pageId;
+      return { sid: record.sessionId, models: [{ model: guessed, provider: '' }], source: 'fingerprint', record, pageMatch };
+    }
+  }
   const guess = inferModelFromTitle(title || (record && record.title) || '', { vocabulary: knownModels(historyIndex, sessions), prefix });
   if (guess) return { sid: record ? record.sessionId : sid, models: [{ model: guess, provider: '' }], source: 'title', record, pageMatch: false };
   return { ...none, sid: record ? record.sessionId : sid, record };
@@ -3251,6 +3350,7 @@ const SOURCE_TEXT = {
   history: '本地记录 · 非重新验证',
   runs: '本地记录（运行标签）· 非重新验证',
   turns: '本轮追踪 · 最近识别',
+  fingerprint: '指纹推断 · 统计估计（非真名）',
   title: '标题推断 · 未验证',
 };
 
@@ -3631,7 +3731,8 @@ async function requestReload(source = 'panel') {
 function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '', source = 'live' } = {}) {
   const t = String(text || '');
   const hud = q('ak-hud-model');
-  const label = known && t ? t + (strength ? ' · ' + strength : '') + (source === 'title' ? '（标题推断）' : '') : '模型待确认';
+  const tag = source === 'title' ? '（标题推断）' : source === 'fingerprint' ? '（指纹推断）' : '';
+  const label = known && t ? t + (strength ? ' · ' + strength : '') + tag : '模型待确认';
   state.hud.source = known && t ? source : '';
   hud.textContent = label;
   hud.dataset.known = String(!!(known && t));
@@ -3657,7 +3758,7 @@ function showLastKnownModel() {
  * header is empty. Only fills an empty / weaker display; never overrides a
  * model identified in this run or the 识别中… state (unless forced by the
  * trace ending). Returns true when something is shown. */
-const SOURCE_RANK = { '': 0, title: 1, turns: 2, runs: 3, history: 4, live: 5 };
+const SOURCE_RANK = { '': 0, title: 1, fingerprint: 2, turns: 3, runs: 4, history: 5, live: 6 };
 function resolveCurrent() {
   return resolveModel({
     pageId: state.nav.sessionId,
@@ -3694,7 +3795,11 @@ function applyResolved(r, { rebuild = true } = {}) {
   if (r.models.length) {
     setModelDisplay(r.models.map((m) => m.model).join(' / '), { known: true, source: r.source, routed: r.source === 'live' && !!state.tracker.routed });
     q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', SOURCE_TEXT[r.source] || ''].filter(Boolean).join(' · ');
-    setHudStatus(r.source === 'live' ? (state.turnHead || SOURCE_TEXT.live) : r.source === 'title' ? '按会话标题推断的模型（未验证）· 发一条消息后识别' : '已恢复本地记录的模型（非重新验证）');
+    setHudStatus(
+      r.source === 'live' ? (state.turnHead || SOURCE_TEXT.live)
+      : r.source === 'title' ? '按会话标题推断的模型（未验证）· 发一条消息后识别'
+      : r.source === 'fingerprint' ? '指纹统计估计（非真名·未完成Arena校准）· 以服务端确认为准'
+      : '已恢复本地记录的模型（非重新验证）');
   } else {
     setModelDisplay('', { known: false });
     q('ak-model-sub').textContent = '此对话尚无本地记录';
@@ -3719,6 +3824,7 @@ function renderPill() {
     strength: state.hud.strength,
     routed: state.hud.routed,
     pending: state.hud.pending,
+    estimate: state.hud.source === 'fingerprint',
     newChat: !state.nav.sessionId && /^\/(agent\/?)?$/.test(state.nav.path || ''), // home / agent page without a conversation
   });
   EMBED.setPill({
@@ -4572,9 +4678,10 @@ function firstModelOf(sessionId) {
   const rec = state.sessions.get(sid);
   const live = rec?.models?.[0]?.model;
   if (live) return live;
-  // stored record by stream id / page id / pageIds (never a title guess: this names conversations)
+  // stored record by stream id / page id / pageIds (never a title or fingerprint
+  // guess: this names conversations, and only a confirmed model may do that)
   const r = resolveModel({ pageId: sessionId, conversationFor, sessions: state.sessions, historyIndex: state.historyIndex });
-  return r.source && r.source !== 'title' ? (r.models[0]?.model || '') : '';
+  return r.source && r.source !== 'title' && r.source !== 'fingerprint' ? (r.models[0]?.model || '') : '';
 }
 
 function renderRenamePreview() {

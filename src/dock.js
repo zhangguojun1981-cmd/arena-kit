@@ -371,7 +371,8 @@ async function requestReload(source = 'panel') {
 function setModelDisplay(text, { routed = false, known = true, pending = false, strength = '', source = 'live' } = {}) {
   const t = String(text || '');
   const hud = q('ak-hud-model');
-  const label = known && t ? t + (strength ? ' · ' + strength : '') + (source === 'title' ? '（标题推断）' : '') : '模型待确认';
+  const tag = source === 'title' ? '（标题推断）' : source === 'fingerprint' ? '（指纹推断）' : '';
+  const label = known && t ? t + (strength ? ' · ' + strength : '') + tag : '模型待确认';
   state.hud.source = known && t ? source : '';
   hud.textContent = label;
   hud.dataset.known = String(!!(known && t));
@@ -397,7 +398,7 @@ function showLastKnownModel() {
  * header is empty. Only fills an empty / weaker display; never overrides a
  * model identified in this run or the 识别中… state (unless forced by the
  * trace ending). Returns true when something is shown. */
-const SOURCE_RANK = { '': 0, title: 1, turns: 2, runs: 3, history: 4, live: 5 };
+const SOURCE_RANK = { '': 0, title: 1, fingerprint: 2, turns: 3, runs: 4, history: 5, live: 6 };
 function resolveCurrent() {
   return resolveModel({
     pageId: state.nav.sessionId,
@@ -434,7 +435,11 @@ function applyResolved(r, { rebuild = true } = {}) {
   if (r.models.length) {
     setModelDisplay(r.models.map((m) => m.model).join(' / '), { known: true, source: r.source, routed: r.source === 'live' && !!state.tracker.routed });
     q('ak-model-sub').textContent = [last ? 'run ' + last.runId.slice(0, 14) : '', last ? completion(last.spans) : '', SOURCE_TEXT[r.source] || ''].filter(Boolean).join(' · ');
-    setHudStatus(r.source === 'live' ? (state.turnHead || SOURCE_TEXT.live) : r.source === 'title' ? '按会话标题推断的模型（未验证）· 发一条消息后识别' : '已恢复本地记录的模型（非重新验证）');
+    setHudStatus(
+      r.source === 'live' ? (state.turnHead || SOURCE_TEXT.live)
+      : r.source === 'title' ? '按会话标题推断的模型（未验证）· 发一条消息后识别'
+      : r.source === 'fingerprint' ? '指纹统计估计（非真名·未完成Arena校准）· 以服务端确认为准'
+      : '已恢复本地记录的模型（非重新验证）');
   } else {
     setModelDisplay('', { known: false });
     q('ak-model-sub').textContent = '此对话尚无本地记录';
@@ -459,6 +464,7 @@ function renderPill() {
     strength: state.hud.strength,
     routed: state.hud.routed,
     pending: state.hud.pending,
+    estimate: state.hud.source === 'fingerprint',
     newChat: !state.nav.sessionId && /^\/(agent\/?)?$/.test(state.nav.path || ''), // home / agent page without a conversation
   });
   EMBED.setPill({
@@ -1312,9 +1318,10 @@ function firstModelOf(sessionId) {
   const rec = state.sessions.get(sid);
   const live = rec?.models?.[0]?.model;
   if (live) return live;
-  // stored record by stream id / page id / pageIds (never a title guess: this names conversations)
+  // stored record by stream id / page id / pageIds (never a title or fingerprint
+  // guess: this names conversations, and only a confirmed model may do that)
   const r = resolveModel({ pageId: sessionId, conversationFor, sessions: state.sessions, historyIndex: state.historyIndex });
-  return r.source && r.source !== 'title' ? (r.models[0]?.model || '') : '';
+  return r.source && r.source !== 'title' && r.source !== 'fingerprint' ? (r.models[0]?.model || '') : '';
 }
 
 function renderRenamePreview() {

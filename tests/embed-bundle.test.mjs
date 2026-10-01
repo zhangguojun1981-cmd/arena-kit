@@ -132,6 +132,8 @@ test('pillLabel priority: flash → task → model (routed = warn tone) → 识�
   assert.deepEqual(pillLabel({ task: { kind: 'recovery' } }), { text: '回复异常 · 自动刷新…', tone: 'active' });
   assert.deepEqual(pillLabel({ model: 'claude-opus-4-1' }), { text: 'claude-opus-4-1', tone: 'normal' });
   assert.deepEqual(pillLabel({ model: 'gpt-5', routed: true, strength: 'high' }), { text: 'gpt-5 · high', tone: 'routed' });
+  // a fingerprint estimate is prefixed ≈ and muted, never routed/normal
+  assert.deepEqual(pillLabel({ model: 'claude-opus-5', estimate: true, strength: 'high', routed: true }), { text: '≈claude-opus-5', tone: 'muted' });
   assert.deepEqual(pillLabel({ pending: true }), { text: '识别中…', tone: 'muted' });
   assert.deepEqual(pillLabel({ newChat: true }), { text: '新对话', tone: 'muted' });
   assert.deepEqual(pillLabel({}), { text: '', tone: 'muted' });

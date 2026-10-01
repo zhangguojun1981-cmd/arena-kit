@@ -59,8 +59,10 @@ export function ringBand(percent) {
 
 /* The pill's one-line label + tone (reference HudFormat.pill). Priority:
  * transient flash → running task → model → pending → new chat → nothing
- * (ring only). Tones: 'active' (brand), 'routed' (warn), 'muted', 'normal'. */
-export function pillLabel({ flash = '', task = null, model = '', strength = '', routed = false, pending = false, newChat = false } = {}) {
+ * (ring only). Tones: 'active' (brand), 'routed' (warn), 'muted', 'normal'.
+ * `estimate` marks a statistical fingerprint guess: it is prefixed with "≈"
+ * and shown muted so the ball never presents a guess like a confirmed name. */
+export function pillLabel({ flash = '', task = null, model = '', strength = '', routed = false, pending = false, newChat = false, estimate = false } = {}) {
   if (flash) return { text: String(flash), tone: 'active' };
   if (task && task.kind === 'probe') {
     const verb = task.draw ? '抽卡' : '探针';
@@ -69,7 +71,10 @@ export function pillLabel({ flash = '', task = null, model = '', strength = '', 
   }
   if (task && task.kind === 'cleanup') return { text: `清理中 · 已归档 ${task.archived || 0}`, tone: 'active' };
   if (task && task.kind === 'recovery') return { text: '回复异常 · 自动刷新…', tone: 'active' };
-  if (model) return { text: String(model) + (strength ? ' · ' + strength : ''), tone: routed ? 'routed' : 'normal' };
+  if (model) {
+    if (estimate) return { text: '≈' + String(model), tone: 'muted' };
+    return { text: String(model) + (strength ? ' · ' + strength : ''), tone: routed ? 'routed' : 'normal' };
+  }
   if (pending) return { text: '识别中…', tone: 'muted' };
   if (newChat) return { text: '新对话', tone: 'muted' };
   return { text: '', tone: 'muted' };

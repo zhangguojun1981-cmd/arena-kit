@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeRecord, createHistoryStore, conversationUrl, recordModels, recordTurns, searchRecords, grandTotals, addToCarry, exportHistory, MAX_ENTRIES } from '../src/lib/history.js';
+import { mergeRecord, createHistoryStore, conversationUrl, recordModels, recordTurns, searchRecords, grandTotals, addToCarry, exportHistory, MAX_ENTRIES, mergeFingerprintRecord, sanitizeFingerprintForRecord, recordFingerprintModel } from '../src/lib/history.js';
 import { usageFromReport } from '../src/lib/usage.js';
 
 const input = { sessionId: 'session-1', title: '测试会话', runId: 'run_one', checkedAt: '2026-09-15T10:00:00.000Z', models: [{ model: 'model-A', provider: 'provider', spanId: 'span1' }], token: 'NEVER_SAVE', body: 'NEVER_SAVE' };
@@ -129,4 +129,59 @@ test('retitle updates only the title of an existing record', async () => {
   assert.equal(r.observations.length, 1);
   assert.equal((await h.get('abc')).title, 'AK-m');
   assert.equal(await h.retitle('nope', 'x'), null);
+});
+
+/* ── fingerprint estimate: statistical, kept apart from confirmed models ── */
+
+const estimate = (over = {}) => ({
+  schemaVersion: 1, sessionId: 'fp-1', family: 'opus', estimatedModel: 'claude-opus-5',
+  candidates: [{ id: 'claude-opus-5', family: 'opus', score: 0.6, normalizedScore: 0.8, samples: 1, referenceVersion: 'modeltrace-summary-v1' }],
+  confidence: 0.91, margin: 2.3, status: 'attributed', source: 'fingerprint',
+  protocol: { id: 'modeltrace-long-integers-v1', version: '1', promptSetHash: 'abc', channel: 'arena-agent', reasoningTier: 'standard', language: 'zh' },
+  referenceBankVersion: 'modeltrace-summary-v1', probeCount: 3, createdAt: '2026-10-01T00:00:00.000Z',
+  rawAnswer: 'NEVER_SAVE 73 14 200', token: 'NEVER_SAVE', ...over,
+});
+
+test('sanitizeFingerprintForRecord: allowlist only, no raw answer / token', () => {
+  const s = sanitizeFingerprintForRecord(estimate());
+  assert.equal(s.source, 'fingerprint');
+  assert.equal(s.family, 'opus');
+  assert.equal(s.estimatedModel, 'claude-opus-5');
+  assert.equal(s.status, 'attributed');
+  assert.equal(s.protocol.id, 'modeltrace-long-integers-v1');
+  assert.equal(JSON.stringify(s).includes('NEVER_SAVE'), false, 'no raw answer / token survives');
+  assert.equal('candidates' in s, false, 'full candidate list is not persisted on the record');
+  // bad input is clamped, never thrown
+  const bad = sanitizeFingerprintForRecord({ family: 'martian', status: 'bogus', confidence: NaN, estimatedModel: 123 });
+  assert.equal(bad.family, 'unknown');
+  assert.equal(bad.status, 'failed');
+  assert.equal(bad.confidence, 0);
+  assert.equal(sanitizeFingerprintForRecord(null), null);
+});
+
+test('mergeFingerprintRecord keeps observations/runs empty but attaches the estimate; recordFingerprintModel reads it only when attributed', async () => {
+  // fresh record from a guess (no confirmed model yet — the Agent-mode case)
+  const rec = mergeFingerprintRecord(null, { sessionId: 'fp-1', estimate: estimate() });
+  assert.equal(rec.schemaVersion, 1);
+  assert.equal(rec.url, 'https://arena.ai/agent/fp-1');
+  assert.deepEqual(rec.observations, []);
+  assert.deepEqual(rec.runs, []);
+  assert.equal(rec.fingerprint.estimatedModel, 'claude-opus-5');
+  assert.equal(JSON.stringify(rec).includes('NEVER_SAVE'), false);
+  assert.equal(recordFingerprintModel(rec), 'claude-opus-5');
+  // an unresolved estimate is stored but yields no model
+  const un = mergeFingerprintRecord(null, { sessionId: 'fp-2', estimate: estimate({ sessionId: 'fp-2', status: 'unresolved', family: 'unknown', estimatedModel: null }) });
+  assert.equal(recordFingerprintModel(un), '');
+  assert.throws(() => mergeFingerprintRecord(null, { sessionId: 'fp-3', estimate: null }));
+  // store: saveFingerprint creates a record and preserves a later confirmed save
+  const h = createHistoryStore(memStore());
+  await h.saveFingerprint({ sessionId: 'fp-4', estimate: estimate({ sessionId: 'fp-4' }) });
+  const got = await h.get('fp-4');
+  assert.equal(got.fingerprint.estimatedModel, 'claude-opus-5');
+  assert.deepEqual(got.observations, []);
+  // a confirmed observation saved afterwards does not wipe the estimate… but
+  // mergeRecord (confirmed) builds a fresh record, so the estimate lives only
+  // through saveFingerprint; recordModels still reflects the confirmed label.
+  const confirmed = await h.save({ sessionId: 'fp-4', models: [{ model: 'claude-opus-5-5' }], runId: 'r' });
+  assert.deepEqual(recordModels(confirmed), [{ model: 'claude-opus-5-5', provider: '' }]);
 });
