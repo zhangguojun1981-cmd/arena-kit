@@ -164,9 +164,17 @@ jobs:
             grep -q "$name" "$gradle" || { echo "adding $dep"; printf '\ndependencies {\n    implementation("%s")\n}\n' "$dep" >> "$gradle"; }
           done
           grep -n "implementation(\|kotlin" "$gradle" src-tauri/gen/android/build.gradle.kts || true
+          # Force R8 code shrinking on the release buildType. The template only
+          # sets `optimization { enable = true }`; this adds isMinifyEnabled =
+          # true so unused classes/methods are actually removed/renamed. Keep
+          # rules for our JS bridges live in app/proguard-rules.pro (overlaid
+          # above); Wry's JNI classes are kept by its generated proguard-wry.pro.
+          node scripts/patch-android-gradle.mjs "$gradle"
+          grep -n "isMinifyEnabled\|optimization" "$gradle" || true
           cargo tauri icon src-tauri/icons/icon.png || true
           # Release profile (optimised + stripped; the --debug build shipped an
-          # unstripped ~190 MB .so). Gradle leaves it unsigned; we sign below.
+          # unstripped ~190 MB .so). R8 shrinking on (patch-android-gradle.mjs).
+          # Gradle leaves it unsigned; we sign below.
           cargo tauri android build --apk --target aarch64
       # Sign with the committed throwaway debug key (.github/android/debug.keystore,
       # password "android"), so every build has the SAME signature and installs
