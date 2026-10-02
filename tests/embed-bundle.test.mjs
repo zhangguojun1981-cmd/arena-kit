@@ -638,11 +638,6 @@ test('the whole bundle boots the dock inside a page without a Tauri runtime', as
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.equal(byId['ak-status'].textContent, '浏览器预览模式(无 Tauri 运行时)');
   assert.ok(byId['ak-history-list'].innerHTML.includes('暂无记录'));
-  assert.equal(byId['ak-unlock-opus'].checked, false); // DEFAULT_PREFS applied through the shadow root (unlock off since 0.4.5)
-  assert.equal(byId['ak-unlock-hidden'].checked, false);
-  // the one-time migration was persisted (so a later deliberate "on" sticks)
-  const savedPrefs = [...store.entries()].map(([k, v]) => { try { return JSON.parse(v); } catch { return null; } }).find((v) => v && typeof v === 'object' && 'unlockReset' in (v.prefs || v));
-  assert.ok(savedPrefs, 'prefs with the unlock reset marker persisted');
   // no platform stamp (Android / preview): nothing platform-specific to assert.
   // The dock is the same markup either way — only the runtime hint differs.
 });

@@ -30,7 +30,6 @@ use tauri::{Emitter, Manager, WebviewUrl};
 // MAIN-world, must run before arena.ai's own JS. Order matters: bridge first
 // (everything else talks through it), then the GM shim, then the hooks.
 const BRIDGE_JS: &str = include_str!("../../injected/bridge.js");
-const GM_SHIM_JS: &str = include_str!("../../injected/gm-shim.js");
 const SNOOP_JS: &str = include_str!("../../injected/snoop.js");
 // Reply monitor: reduces the SSE frames snoop.js taps to counts/flags in-page.
 const MONITOR_JS: &str = include_str!("../../injected/monitor.js");
@@ -41,7 +40,6 @@ const MONITOR_JS: &str = include_str!("../../injected/monitor.js");
 const FINGERPRINT_JS: &str = include_str!("../../injected/fingerprint.js");
 // Daily-quota poller: same-origin GET /api/me/pulse with the page's own cookies.
 const PULSE_JS: &str = include_str!("../../injected/pulse.js");
-const UNLOCK_JS: &str = include_str!("../../injected/unlock.js");
 const ENI_JS: &str = include_str!("../../injected/eni.js");
 // Page-side RPC layer for the dock orchestrator (probe / rename / archive /
 // session probe): stateless DOM actions, answered via bridge 'probe-result'.
@@ -58,9 +56,6 @@ const LINKS_JS: &str = include_str!("../../injected/links.js");
 // page of this webview — accounts.google.com included — so the Google side of
 // a re-login (account chooser → Continue) works where no IPC exists.
 const ACCOUNT_JS: &str = include_str!("../../injected/account.js");
-// document_idle UI scripts.
-const MANAGER_JS: &str = include_str!("../../injected/manager.js");
-const PLUS_JS: &str = include_str!("../../injected/plus.js");
 // The whole dock (dock.js + lib + embed/shell.js) as one classic script,
 // mounted inside the arena page after DOMContentLoaded: always on mobile, and
 // the default "pill" layout on desktop (same status pill + bottom sheet UI).
@@ -125,7 +120,6 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str, guard: &str) -
     s.push_str(&format!("window.__ARENAKIT_PLATFORM__={};\n", json!(platform)));
     // document_start scripts.
     guarded(&mut s, "bridge", BRIDGE_JS);
-    guarded(&mut s, "gm-shim", GM_SHIM_JS);
     // arena only (see ARENA_HOST_FLAG); bridge / account run on the sign-in
     // hosts too — the Google half of a re-login lives there.
     s.push_str(ARENA_HOST_FLAG);
@@ -133,19 +127,16 @@ fn build_init_script(embedded_dock: Option<&str>, platform: &str, guard: &str) -
     guarded_arena(&mut s, "monitor", MONITOR_JS);
     guarded_arena(&mut s, "fingerprint", FINGERPRINT_JS);
     guarded_arena(&mut s, "pulse", PULSE_JS);
-    guarded_arena(&mut s, "unlock", UNLOCK_JS);
     guarded_arena(&mut s, "eni", ENI_JS);
     guarded_arena(&mut s, "conversation-rename", CONVERSATION_RENAME_JS);
     guarded_arena(&mut s, "probe", PROBE_JS);
     guarded_arena(&mut s, "watchdog", WATCHDOG_JS);
     guarded_arena(&mut s, "links", LINKS_JS);
     guarded(&mut s, "account", ACCOUNT_JS);
-    // defer UI scripts until the DOM is ready — and only on arena itself: the
-    // same webview also shows sign-in pages (accounts.google.com …) where the
-    // pill / dock must not appear.
+    // defer the embedded dock until the DOM is ready — and only on arena
+    // itself: the same webview also shows sign-in pages (accounts.google.com …)
+    // where the pill / dock must not appear.
     s.push_str("(function(){if(!/(^|\\.)(arena\\.ai|lmarena\\.ai)$/.test(location.hostname||''))return;var run=function(){\n");
-    guarded(&mut s, "manager", MANAGER_JS);
-    guarded(&mut s, "plus", PLUS_JS);
     if let Some(dock) = embedded_dock {
         // The launch token exists only as this closure's argument: page scripts
         // cannot read it, and the embedded dock (mobile: it runs INSIDE the
@@ -637,7 +628,7 @@ fn handle_trace(
 /// names and caps the serialized payload size — a page cannot invent an event
 /// the dock does not expect, nor flood it with an oversized blob. This set is
 /// the exact union of the `__ARENAKIT__.send(name, …)` names the injected
-/// scripts use (snoop/account/pulse/monitor/watchdog/links/probe/unlock/
+/// scripts use (snoop/account/pulse/monitor/watchdog/links/probe/
 /// fingerprint) plus the two dock-bus names (openDock, menu) a page may relay.
 const ALLOWED_PAGE_EVENTS: &[&str] = &[
     "nav",
@@ -649,7 +640,6 @@ const ALLOWED_PAGE_EVENTS: &[&str] = &[
     "fingerprint-sample",
     "watch",
     "link-tab",
-    "unlock-report",
     "probe-result",
     "openDock",
     "menu",
@@ -1368,8 +1358,8 @@ mod tests {
         // platform stamp, then bridge first, every module wrapped, UI scripts deferred.
         assert!(s.starts_with("window.__ARENAKIT_PLATFORM__=\"desktop\";\ntry{\n"));
         assert!(build_init_script(None, "mobile", "").starts_with("window.__ARENAKIT_PLATFORM__=\"mobile\";\n"));
-        assert!(s.find("__ARENAKIT__").unwrap() < s.find("GM_getValue").unwrap());
-        for name in ["bridge", "gm-shim", "snoop", "monitor", "fingerprint", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links", "account", "manager", "plus"] {
+        assert!(s.find("__ARENAKIT__").unwrap() < s.find("[ArenaKit] snoop init failed").unwrap());
+        for name in ["bridge", "snoop", "monitor", "fingerprint", "pulse", "eni", "conversation-rename", "probe", "watchdog", "links", "account"] {
             assert!(s.contains(&format!("[ArenaKit] {} init failed", name)), "{}", name);
         }
         assert!(s.contains("DOMContentLoaded"));
@@ -1385,7 +1375,7 @@ mod tests {
         assert!(s.find("lmarena\\.ai)$/.test(location.hostname").unwrap() < deferred);
         // page hooks are gated to arena hosts; the login helper is not
         let flag = s.find("window.__ARENAKIT_ON_ARENA__=").unwrap();
-        for name in ["snoop", "monitor", "fingerprint", "pulse", "unlock", "eni", "conversation-rename", "probe", "watchdog", "links"] {
+        for name in ["snoop", "monitor", "fingerprint", "pulse", "eni", "conversation-rename", "probe", "watchdog", "links"] {
             let at = s.find(&format!("[ArenaKit] {} init failed", name)).unwrap();
             let gate = s[..at].rfind("if(window.__ARENAKIT_ON_ARENA__){").unwrap();
             assert!(flag < gate, "{}", name);
@@ -1486,7 +1476,6 @@ mod tests {
             "fingerprint-sample",
             "watch",
             "link-tab",
-            "unlock-report",
             "probe-result",
             "openDock",
             "menu",

@@ -23,21 +23,9 @@ export const PAGE_ACTIONS = {
     js: (url) => `location.assign(${jsString(url)})`,
     run: (w, url) => w.location.assign(String(url)),
   },
-  managerToggle: {
-    js: () => 'window.__AK_MANAGER_TOGGLE__ && window.__AK_MANAGER_TOGGLE__()',
-    run: (w) => (w.__AK_MANAGER_TOGGLE__ ? w.__AK_MANAGER_TOGGLE__() : undefined),
-  },
   eniSet: {
     js: (on, text) => `window.__AK_ENI_SET__ && window.__AK_ENI_SET__(${!!on}, ${jsString(text)})`,
     run: (w, on, text) => (w.__AK_ENI_SET__ ? w.__AK_ENI_SET__(!!on, String(text)) : undefined),
-  },
-  unlockSet: {
-    js: (kind, on) => `window.__AK_UNLOCK_SET__ && window.__AK_UNLOCK_SET__(${jsString(kind)}, ${!!on})`,
-    run: (w, kind, on) => (w.__AK_UNLOCK_SET__ ? w.__AK_UNLOCK_SET__(String(kind), !!on) : undefined),
-  },
-  plusSet: {
-    js: (on) => `window.__AK_PLUS_SET__ && window.__AK_PLUS_SET__(${!!on})`,
-    run: (w, on) => (w.__AK_PLUS_SET__ ? w.__AK_PLUS_SET__(!!on) : undefined),
   },
   // Feature flags read by the injected scripts (snoop capture / pulse polling /
   // reply monitor): window.__ARENAKIT_FLAGS__[name] = on.

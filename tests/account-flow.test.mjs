@@ -245,14 +245,11 @@ test('guest leftovers are purged from the store; a switch that lands in the gues
   assert.equal(app.flow.accounts.activeId, null);
   assert.ok(app.log.status.some((t) => /bob@example.com 的登录状态已失效（页面回到了游客状态），已清除失效的会话/.test(t)), app.log.status.join(' | '));
   assert.deepEqual(app.flow.find('bob').cookies, [], 'the rejected session is forgotten');
-  // no automatic login any more: the card shows 登录 and the user decides
-  assert.equal(app.flow.accounts.pending, null);
-  assert.equal(dev.rust.login, null);
-  assert.match(app.log.status.at(-1), /点该账号的「登录」即可自动重新登录/);
-  // the user taps 登录 → re-login runs on the guest page (no reload needed)
-  assert.equal((await app.flow.startLogin(app.flow.find('bob'))).ok, true);
+  // 0.4.11: the conversation's session died → the automated re-login starts by
+  // itself (the dropped account kept its email). It runs on the guest page.
   assert.deepEqual(app.flow.accounts.pending && { type: app.flow.accounts.pending.type, id: app.flow.accounts.pending.id }, { type: 'login', id: 'bob' });
   assert.deepEqual(Object.keys(dev.rust.login).sort(), ['accountId', 'email', 'startedAt'], 'only who — no credentials');
+  assert.ok(app.log.status.some((t) => /正在自动重新登录/.test(t)), app.log.status.join(' | '));
   assert.match(app.log.loginStatus.at(-1), /正在重新登录 bob@example.com/);
   assert.equal((await app.rpc.call('status', {})).running, true, 'page-side re-login running on the guest page');
   await app.flow.stopLogin();
@@ -281,9 +278,11 @@ test('post-switch verification: the site throwing the restored session away seco
   assert.deepEqual(app.flow.find('bob').cookies, [], 'rejected session forgotten');
   assert.equal(app.flow.accounts.activeId, null);
   assert.ok(app.log.status.some((t) => /Bob 的登录状态已失效（页面回到了游客状态），已清除失效的会话/.test(t)), app.log.status.join(' | '));
-  assert.match(app.log.status.at(-1), /点该账号的「登录」即可自动重新登录/, 'no auto-login, just the hint');
-  assert.equal(app.flow.accounts.pending, null);
+  // 0.4.11: lost inside the verification window → re-login starts by itself
+  assert.match(app.log.status.at(-1), /正在自动重新登录|正在重新登录 Bob/, 'auto re-login kicks in');
+  assert.deepEqual(app.flow.accounts.pending && { type: app.flow.accounts.pending.type, id: app.flow.accounts.pending.id }, { type: 'login', id: 'bob' });
   assert.equal(app.flow.accounts.list.length, 2, 'no guest record');
+  await app.flow.stopLogin();
 
   // the same guest snapshot AFTER the window is a plain logout: nothing is dropped
   await app.flow.save({ ...app.flow.accounts, list: app.flow.accounts.list.map((a) => (a.id === 'bob' ? { ...a, cookies: bobCookies } : a)) });
@@ -339,11 +338,11 @@ test('dead saved session → 需登录; one tap on 登录 runs the manual Google
   app = await start(dev);
   assert.ok(app.log.status.some((t) => /Carol 的登录状态已失效（页面回到了游客状态），已清除失效的会话/.test(t)), app.log.status.join(' | '));
   assert.deepEqual(app.flow.find('carol').cookies, [], 'dead session dropped from the record');
-  assert.equal(app.flow.accounts.pending, null, 'nothing starts by itself');
   assert.equal(app.flow.accounts.activeId, null, 'logged-out page → no current account');
 
-  // 登录 tapped
-  assert.equal((await app.flow.startLogin(app.flow.find('carol'))).ok, true);
+  // 0.4.11: the dead conversation session kicks off the automated re-login by
+  // itself — no tap needed.
+  assert.ok(app.log.status.some((t) => /正在自动重新登录/.test(t)), app.log.status.join(' | '));
   assert.equal(app.flow.accounts.pending.type, 'login');
   assert.deepEqual({ ...dev.rust.login, startedAt: 0 }, { accountId: 'carol', email: 'carol@gmail.com', startedAt: 0 }, 'login_set: who, not credentials');
   // arena: the stale (guest) session is dropped, then straight to the URL the

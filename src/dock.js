@@ -20,7 +20,7 @@ import { runsFor, buildRunView, runLabel, evidenceRows } from './lib/usage-view.
 import { createHistoryStore, recordModels, recordTurns, searchRecords, grandTotals, exportHistory } from './lib/history.js';
 import { createTurnTracker } from './lib/turns.js';
 import { createRpc } from './lib/rpc.js';
-import { buildTitle, sanitizePrefix, createRenameGate } from './lib/rename.js';
+import { buildTitle, sanitizePrefix } from './lib/rename.js';
 import { createReplyMonitor } from './lib/monitor.js';
 import { createPulseState } from './lib/pulse.js';
 import { pillLabel, turnHeadline } from './lib/pill-layout.js';
@@ -110,8 +110,6 @@ const state = {
   historyIndex: new Map(),  // sessionId → record (mirror of the store, newest first on render)
   historyCarry: null,       // evicted totals bucket
   rpc: null,                // createRpc() — dock → page probe.js actions
-  renameGate: null,         // createRenameGate() — auto-rename once per conversation
-  renaming: false,          // a rename dialog is being driven right now
   // 模型指纹: page-side fixed-probe reducer. It COLLECTS the structured features
   fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null, runner: null },
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
@@ -181,13 +179,9 @@ function conversationFor(id) {
 }
 
 const DEFAULT_PREFS = {
-  unlockOpus: false,        // off by default since 0.4.5 (see loadPrefs migration)
-  unlockHidden: false,
-  plus: true,
   eniOn: false,
   eniText: '',
   renamePrefix: '',   // optional title prefix: "<prefix><model>"
-  autoRename: false,  // rename the current conversation once its model is identified (from a CONFIRMED server model)
   // scheduleAgentDefaults still uses these: app open / account switch →
   // Agent Mode + GitHub on. The old arithmetic-probe project/branch inputs are
   // gone, so repo/branch stay '' (github-only default); the switch moved to the
@@ -240,12 +234,6 @@ const FLAG_PREFS = [['capture', 'capture', 'ak-capture-on'], ['pulse', 'pulseOn'
 function applyPageFlags() {
   for (const [flag, key] of FLAG_PREFS) page('flagSet', flag, state.prefs[key] !== false);
   page('flagSet', 'autoRefresh', state.prefs.autoRefresh !== false);
-  // unlock.js / plus.js read their switches from the page's localStorage at
-  // document_start; mirror the dock prefs there so the NEXT load agrees with
-  // the switches (a fresh profile / cleared site data starts from defaults).
-  page('unlockSet', 'opus', !!state.prefs.unlockOpus);
-  page('unlockSet', 'hidden', !!state.prefs.unlockHidden);
-  page('plusSet', state.prefs.plus !== false);
   // ENI prefs are pushed on every page load (and again on every change) so
   // the injected eni.js stays in sync with the dock even after a SPA
   // navigation that wipes page context.
@@ -535,14 +523,6 @@ function openConversation(sid) {
 async function loadPrefs() {
   const saved = await state.store.get('prefs').catch(() => null);
   state.prefs = { ...DEFAULT_PREFS, ...(saved && typeof saved === 'object' ? saved : {}) };
-  // 0.4.5: unlock.js had never run before 0.4.4 (its extension boot threw);
-  // 0.4.4 switched it on for everyone and its rewrite broke hydration (taps
-  // on the page did nothing). Both unlock switches start off once; the user
-  // turns them back on deliberately.
-  if (state.prefs.unlockReset !== 1) {
-    state.prefs = { ...state.prefs, unlockOpus: false, unlockHidden: false, unlockReset: 1 };
-    await state.store.set('prefs', state.prefs).catch(() => {});
-  }
 }
 async function savePrefs(patch) {
   state.prefs = { ...state.prefs, ...patch };
@@ -606,7 +586,6 @@ function onTrace(p) {
     if (models.length) saveHistory(p.sessionId, p.runId, models, usage, runKey);
     const providers = [...new Set(models.map((m) => m.provider).filter(Boolean))];
     const run = rec.runs.find((r) => r.runId === p.runId);
-    if (models.length && p.complete) maybeAutoRename(p.sessionId, models[0].model, run);
     // Per-turn model resolution (routed = differs from this conversation's first model).
     let turn = tracker.turnOf(runKey);
     if (!turn && models.length) turn = tracker.onToken(p.sessionId, runKey).turn; // model without a seen token stage
@@ -1160,9 +1139,9 @@ function wireFingerprint() {
   if (budget) budget.value = String(Math.min(24, Math.max(1, parseInt(state.prefs.fingerprintBudget, 10) || 3)));
   if (proto) proto.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
   if (budget) budget.addEventListener('change', () => { persistFingerprintPanel(); renderFingerprintState(); });
-  // Opt-in rename from the fingerprint estimate (SEPARATE from the confirmed-model
-  // auto-rename ak-auto-rename). A server-confirmed true name always wins; this
-  // only renames when the estimate's confidence clears the threshold below.
+  // Opt-in rename preview from the fingerprint estimate. A server-confirmed true
+  // name always wins; this only previews when the estimate's confidence clears the
+  // threshold below.
   const autoRename = q('ak-fingerprint-autorename');
   if (autoRename) {
     autoRename.checked = !!state.prefs.fingerprintAutoRename;
@@ -1262,11 +1241,8 @@ function createDockFingerprint() {
     // The trace pipeline already saw these models for the conversation; a verdict
     // is a real discrimination only when ≥2 are plausible (gate in preflight).
     candidateModelsForSession: (sid) => (state.sessions.get(conversationFor(sid))?.models || []).map((m) => m.model),
-    // Refuse to start while an arithmetic probe / cleanup / quick send or a
-    // rename is in flight — they share the same page surface and RPC channel.
-    // Refuse to start while a rename dialog is being driven — it shares the
-    // same page surface and RPC channel.
-    otherRunActive: () => !!state.renaming,
+    // No other page-surface driver competes for the RPC channel anymore.
+    otherRunActive: () => false,
     pageState: fingerprintPageState,
     protocolMeta: (protocolId) => {
       const meta = fingerprintProtocolMeta(protocolId) || {};
@@ -1404,11 +1380,6 @@ onPage('link-tab', (p) => {
   if (open && EMBED) EMBED.close();
 });
 
-onPage('unlock-report', (p) => {
-  const hits = Math.max(0, Math.trunc(Number(p?.hits) || 0));
-  if (hits) setStatus(`模型解锁重写已命中 ${hits} 次`);
-});
-
 // ── reply watchdog: auto refresh on error card / empty reply (reference ReplyWatchdog) ──
 /* injected/watchdog.js reports {k, path, generating, len, at, act} for the
  * open conversation; the pure policy (src/lib/watchdog.js) decides. The
@@ -1437,13 +1408,12 @@ onPage('watch', (payload) => {
   }
 });
 
-// ── module: rename conversation (prefix + manual / auto) ────────────────
-// Rename goes through Arena's own sidebar ⋯ → Rename dialog (probe.js →
-// conversation-rename.js), never a private endpoint. Auto-rename fires at most
-// once per conversation (gate persisted in the store), only for the
-// conversation currently open, and only once the trace is complete.
-const renameStatus = (t) => { q('ak-rename-status').textContent = t; };
-
+// ── module: 标题前缀预览 (fingerprint panel title prefix) ───────────────
+// The title "<prefix><model>" preview for the 指纹 panel. firstModelOf resolves
+// the model name to preview with: a CONFIRMED server model wins; otherwise, when
+// the user opted in AND the current fingerprint estimate clears the confidence
+// threshold, the estimate is previewed. This is preview only — nothing here
+// drives Arena's rename dialog.
 function firstModelOf(sessionId) {
   const sid = conversationFor(sessionId); // page id → stream id (/c/{evalId})
   const rec = state.sessions.get(sid);
@@ -1477,70 +1447,11 @@ function renderRenamePreview() {
   q('ak-rename-preview').textContent = text;
 }
 
-async function renameConversation(sessionId, title, { reason }) {
-  if (!state.rpc) throw new Error('无 Tauri 运行时');
-  if (state.renaming) throw new Error('上一次重命名尚未完成');
-  state.renaming = true;
-  try {
-    renameStatus(`${reason}重命名为「${title}」…`);
-    const res = await state.rpc.call('rename', { sessionId, title });
-    const rec = sessionRecord(sessionId);
-    rec.title = title;
-    if (state.nav.sessionId === sessionId) state.nav.title = title;
-    if (state.historyIndex.has(sessionId)) {
-      await state.history.retitle(sessionId, title).then((r) => { if (r) state.historyIndex.set(sessionId, r); }).catch(() => {});
-      renderHistory();
-    }
-    renameStatus(`${reason}已重命名为「${res?.title || title}」`);
-    setStatus('对话已重命名');
-    return true;
-  } finally {
-    state.renaming = false;
-  }
-}
-
-async function renameNow() {
-  const sid = state.nav.sessionId;
-  if (!sid) { renameStatus('请先打开一个已保存的 Arena 对话'); return; }
-  const model = firstModelOf(sid);
-  if (!model) { renameStatus('此对话尚未识别模型，请先发送一条消息'); return; }
-  try {
-    await renameConversation(sid, buildTitle({ prefix: state.prefs.renamePrefix, model }), { reason: '手动' });
-  } catch (e) {
-    renameStatus('重命名失败: ' + (e && e.message || e));
-  }
-}
-
-const autoRenameSeen = new Set(); // in-memory fast path in front of the persisted gate
-async function maybeAutoRename(sessionId, model, run) {
-  if (!state.prefs.autoRename || !state.rpc || !sessionId || !model) return;
-  if (state.fingerprint.runner?.isRunning) return;             // a fingerprint run names its own sessions
-  // Only the conversation on screen; the page id may alias the stream id
-  // (/c/{evalId}) and the page-side rename needs the PAGE id.
-  const pageId = state.nav.sessionId;
-  if (!pageId || conversationFor(pageId) !== sessionId) return;
-  if (run?.spans?.some((sp) => sp.partial)) return;           // wait for the usage to settle
-  if (autoRenameSeen.has(sessionId)) return;
-  autoRenameSeen.add(sessionId);
-  let title;
-  try { title = buildTitle({ prefix: state.prefs.renamePrefix, model }); } catch (e) { renameStatus(String(e.message || e)); return; }
-  if (state.nav.title && state.nav.title.trim() === title) return; // already named
-  try {
-    if (!(await state.renameGate.claim(sessionId))) return;     // renamed (or tried) in an earlier session
-    await renameConversation(pageId, title, { reason: '自动' });
-  } catch (e) {
-    renameStatus('自动重命名失败: ' + (e && e.message || e) + '（可点击“立即重命名”重试）');
-  }
-}
-
 function wireRename() {
   const prefix = q('ak-rename-prefix');
   prefix.value = state.prefs.renamePrefix || '';
   prefix.addEventListener('input', () => { state.prefs.renamePrefix = sanitizePrefix(prefix.value); renderRenamePreview(); });
   prefix.addEventListener('change', () => { prefix.value = sanitizePrefix(prefix.value); savePrefs({ renamePrefix: prefix.value }); renderRenamePreview(); });
-  const auto = q('ak-auto-rename');
-  auto.checked = !!state.prefs.autoRename;
-  auto.addEventListener('change', () => { savePrefs({ autoRename: auto.checked }); renameStatus(auto.checked ? '已开启：识别到模型后自动重命名当前对话（每个对话仅一次）' : '已关闭自动重命名'); });
   renderRenamePreview();
 }
 
@@ -1697,10 +1608,7 @@ function wireControls() {
   root.querySelectorAll('[data-action]').forEach((el) => {
     el.addEventListener('click', () => {
       const a = el.dataset.action;
-      if (a === 'manager') {
-        page('managerToggle');
-        if (EMBED) EMBED.close();
-      } else if (a === 'export-evidence') {
+      if (a === 'export-evidence') {
         exportCurrentEvidence();
       } else if (a === 'usage-back') {
         state.view = { sessionId: null, runId: null };
@@ -1711,8 +1619,6 @@ function wireControls() {
         clearHistory(el);
       } else if (a === 'archive-current') {
         archiveCurrent(el);
-      } else if (a === 'rename-now') {
-        renameNow();
       } else if (a === 'pulse-refresh') {
         refreshPulseNow();
       } else if (a === 'nav-back') {
@@ -1753,21 +1659,6 @@ function wireControls() {
     });
   });
 
-  // Unlock / plus toggles → persist + set the page-side config. Both page
-  // modules rewrite data while the page loads (unlock.js: the Next.js model
-  // payload; plus.js: the leaderboard table), so the page is reloaded to
-  // apply the change (requestReload asks first when a probe is running).
-  const bind = (id, key, fn) => {
-    q(id).checked = !!state.prefs[key];
-    q(id).addEventListener('change', async (e) => {
-      savePrefs({ [key]: e.target.checked });
-      await fn(e.target.checked);
-      requestReload('setting');
-    });
-  };
-  bind('ak-unlock-opus', 'unlockOpus', (v) => page('unlockSet', 'opus', v));
-  bind('ak-unlock-hidden', 'unlockHidden', (v) => page('unlockSet', 'hidden', v));
-  bind('ak-plus', 'plus', (v) => page('plusSet', v));
   q('ak-eni-on').checked = !!state.prefs.eniOn;
   q('ak-eni-text').value = state.prefs.eniText || '';
   // Push on every toggle so the page hook flips immediately (the textarea
@@ -1792,7 +1683,6 @@ async function boot() {
   state.tauri = getTauri();
   state.store = createStore(state.tauri);
   state.history = createHistoryStore(state.store);
-  state.renameGate = createRenameGate(state.store);
   state.monitor = createReplyMonitor({ tracker: state.tracker });
   if (state.tauri) {
     pageActions = EMBED

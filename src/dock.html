@@ -133,16 +133,6 @@
     <!-- ── 工具 (reference page_tools) ── -->
     <section class="ak-page" data-page="tools" data-active="false">
       <div class="ak-group">
-        <div class="ak-group-head"><span>重命名当前对话</span></div>
-        <div class="ak-sub">走 Arena 自带的「重命名」菜单，标题 = 前缀 + 模型名（前缀在「指纹」页设置）。此处为<b>服务端确认模型</b>的重命名，与指纹估计重命名相互独立。</div>
-        <label class="ak-switch"><span class="ak-switch-text">识别到模型后自动重命名当前对话</span><input type="checkbox" id="ak-auto-rename" /><i class="ak-switch-track"></i></label>
-        <div class="ak-btns">
-          <button class="ak-btn ak-btn-sm ak-tonal" data-action="rename-now">立即重命名为模型名</button>
-        </div>
-        <div id="ak-rename-status" class="ak-sub"></div>
-      </div>
-      <hr class="ak-divider" />
-      <div class="ak-group">
         <div class="ak-group-head"><span>页面</span></div>
         <div class="ak-nav">
           <button class="ak-btn ak-btn-sm" data-action="nav-back">‹ 后退</button>
@@ -211,17 +201,8 @@
       <div class="ak-note">切换账号 = 用保存的登录 Cookie 替换页面里的 Cookie 后刷新；不会点「退出登录」，所以其他账号的登录状态不受影响。应用不保存任何密码。</div>
     </section>
 
-    <!-- ── 更多: feature modules, prompt injection, settings ── -->
+    <!-- ── 更多: prompt injection, settings ── -->
     <section class="ak-page" data-page="more" data-active="false">
-      <div class="ak-group">
-        <div class="ak-group-head"><span>功能模块</span></div>
-        <button class="ak-btn ak-tonal" data-action="manager">模型筛选 / 管理面板</button>
-        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系<small>把模型列表里被标为不可选的 Claude Opus 系列恢复为可选</small></span><input type="checkbox" id="ak-unlock-opus" /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">解锁隐藏 / 盲测模型<small>所有 userSelectable=false 的模型（含盲测 / 未公开）都出现在直选列表</small></span><input type="checkbox" id="ak-unlock-hidden" /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">排行榜性价比列<small>排行榜加「性价比」、价格、模型年龄、模态图标列（价格来自 OpenRouter）</small></span><input type="checkbox" id="ak-plus" checked /><i class="ak-switch-track"></i></label>
-        <div class="ak-note">这三项改动后会自动刷新页面生效。两个「解锁」会改写页面加载时的数据，默认关闭；打开后若页面点击没反应，请关掉再用。</div>
-      </div>
-      <hr class="ak-divider" />
       <div class="ak-group">
         <div class="ak-group-head"><span>提示词注入</span></div>
         <label class="ak-switch"><span class="ak-switch-text">每新对话注入系统提示词</span><input type="checkbox" id="ak-eni-on" /><i class="ak-switch-track"></i></label>
@@ -252,7 +233,6 @@
         <label class="ak-switch"><span class="ak-switch-text">模型指纹<small>页面侧固定探针归约；默认关闭，开启后仅上报计数，绝不传回复文本</small></span><input type="checkbox" id="ak-fingerprint-on" /><i class="ak-switch-track"></i></label>
         <button class="ak-link" data-action="pulse-refresh" title="额度接口每 60 秒读取一次；点此立即刷新">立即刷新额度</button>
       </div>
-      <div class="ak-about">ArenaKit · 界面参考 arena-trace-android</div>
     </section>
   </main>
   <script type="module" src="dock.js"></script>

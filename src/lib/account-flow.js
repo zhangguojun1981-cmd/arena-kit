@@ -99,9 +99,16 @@ export function createAccountFlow(deps) {
       await invoke('login_clear', {});
       flow.verify = outcome.status === 'switched' && outcome.account ? { id: outcome.account.id, until: d.now() + VERIFY_MS } : null;
     } else if (outcome.status === 'lost') {
-      // the user decides: 登录 on the card runs the automated re-login
       d.toast(outcome.message);
-      d.status(outcome.message + '。点该账号的「登录」即可自动重新登录');
+      // the conversation's session died: start the automated re-login right
+      // away (the dropped account kept its email, so canLogin is still true).
+      // A card without an email can't be driven — fall back to the hint.
+      if (outcome.account && canLogin(outcome.account)) {
+        d.status(outcome.message + '，正在自动重新登录…');
+        await flow.startLogin(outcome.account, { snap });
+      } else {
+        d.status(outcome.message + '。点该账号的「登录」即可自动重新登录');
+      }
     }
   }
 
