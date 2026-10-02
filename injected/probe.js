@@ -596,6 +596,9 @@
     if (location.origin !== ARENA) throw Error('已离开 Arena');
     const id = session();
     if (!id) throw Error('请先打开一个旧对话');
+    // The previous turn's feedback popup must be dismissed through its own
+    // "继续工作" control before the composer can accept the next probe.
+    if (dismissTaskFeedback()) await waitFor(() => !taskFeedbackVisible(), '无法关闭上一轮完成弹窗', 5000);
     if (isGenerating()) throw Error('当前回复仍在生成，已停止');
     noDraft(false);
     const editor = composer();
@@ -605,6 +608,37 @@
     if (editorText(editor) !== prompt || session() !== id) throw Error('输入或对话已变化；未发送');
     button.click();
     return { session: id, probeId };
+  }
+
+  // Wait for Arena's definitive Agent completion UI. Stream EOF is too early:
+  // it also occurs between thinking/tool/final phases. The feedback popup has
+  // only "此任务成功了吗？ / 是 / 否 / 继续工作" (or the English equivalent).
+  function taskFeedbackNode() {
+    const nodes = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [data-radix-portal] > div, [class*="fixed"]')].filter(visible);
+    return nodes.find((e) => {
+      const t = clean(e.textContent).replace(/\s+/g, ' ');
+      const question = /此任务成功了吗|任务成功了吗|was this task successful|did this task succeed/i.test(t);
+      const yes = /是|\byes\b/i.test(t);
+      const no = /否|\bno\b/i.test(t);
+      const cont = /继续工作|continue working/i.test(t);
+      return question && yes && no && cont;
+    }) || null;
+  }
+  const taskFeedbackVisible = () => !!taskFeedbackNode();
+  function dismissTaskFeedback() {
+    const host = taskFeedbackNode();
+    if (!host) return false;
+    const b = [...host.querySelectorAll('button,[role="button"]')].find((x) => visible(x) && /^(继续工作|continue working)$/i.test(clean(x.textContent)));
+    if (b) { b.click(); return true; }
+    return false;
+  }
+  async function waitFingerprintComplete(args) {
+    const id = String(args?.session || session() || '');
+    if (!id) throw Error('未拿到会话 id');
+    await waitFor(taskFeedbackVisible, '等待任务完成弹窗超时；本轮不评分', 240000);
+    const reducer = globalThis.__ARENAKIT_FINGERPRINT__;
+    if (!reducer || typeof reducer.complete !== 'function' || !reducer.complete(id)) throw Error('指纹归约器未绑定本轮；本轮不评分');
+    return { session: id, completed: true };
   }
 
   // Sidebar snapshot for title-based cleanup: [{sessionId, title}].
@@ -735,7 +769,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sendFingerprintProbe, sendFingerprintProbeCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sendFingerprintProbe, sendFingerprintProbeCurrent, waitFingerprintComplete, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;

@@ -88,7 +88,7 @@ export function createFingerprintRunner({
     return Promise.race([p, tok.promise]);
   }
   const wait = (tok, ms) => guarded(tok, sleep(ms));
-  const call = (tok, action, args) => guarded(tok, rpc.call(action, args));
+  const call = (tok, action, args, opts) => guarded(tok, rpc.call(action, args, opts));
 
   function stop() {
     if (!token) return false;
@@ -227,7 +227,11 @@ export function createFingerprintRunner({
           sessionId = String(sendData?.session || '');
           if (!sessionId) throw new Error('未拿到会话 id');
           sent += 1;
-          // 3) wait for the page to emit the structured feature for THIS probe.
+          // Stream EOF can be only the end of a thinking/tool phase. Wait for
+          // Arena's definitive "此任务成功了吗？ 是/否/继续工作" popup; that RPC
+          // then tells the page reducer to seal and emit the complete feature.
+          await call(tok, 'waitFingerprintComplete', { session: sessionId }, { timeout: 250_000 });
+          // 3) consume the feature emitted only after definitive completion.
           feature = await guarded(tok, takeFeature(sessionId, step.probeId, { timeoutMs: featureWaitMs }));
         } catch (e) {
           if (isCancelled(e)) throw e;
@@ -268,7 +272,17 @@ export function createFingerprintRunner({
           onProgress(`本条解析：${featureErrorText(feature.parseError)}`);
         }
 
-        // Re-classify with everything so far.
+        // A categorical battery is ONE verdict made from the complete five-question
+        // set, not five one-question verdicts. Scoring each isolated answer hits
+        // the minimum-signal gate and misleadingly displays confidence 0.
+        const categoricalAnswered = step.kind === 'categorical' ? Object.keys(answers[0] || {}).length : 0;
+        if (step.kind === 'categorical' && categoricalAnswered < plan.length) {
+          onProgress(`已收集分类题 ${categoricalAnswered}/${plan.length} · 等待完整题组后统一评分`);
+          await wait(tok, roundPacingMs);
+          continue;
+        }
+
+        // Re-classify with the complete evidence collected so far.
         try {
           lastResult = classify({
             sessionId: sessionId || cfg.sessionId || null,

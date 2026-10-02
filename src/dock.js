@@ -1000,7 +1000,10 @@ function fingerprintProtocolId() {
 }
 function fingerprintBudget() {
   const n = parseInt(q('ak-fingerprint-budget') && q('ak-fingerprint-budget').value, 10);
-  return Math.min(24, Math.max(1, Number.isFinite(n) ? n : 3));
+  const chosen = Math.min(24, Math.max(1, Number.isFinite(n) ? n : 3));
+  // fpverify is an indivisible five-question battery: never run/score a partial
+  // set merely because the generic budget input was left at its default 3.
+  return fingerprintProtocolId() === 'fpverify-battery-v1' ? 5 : chosen;
 }
 function persistFingerprintPanel() {
   return savePrefs({ fingerprintProtocol: fingerprintProtocolId(), fingerprintBudget: fingerprintBudget() });
@@ -1312,6 +1315,7 @@ async function collectFingerprintSamples() {
       const featureP = takeFingerprintFeature(streamSession, probeId, { timeoutMs: FP_FEATURE_WAIT_MS });
       const traceP = waitFingerprintTrace(streamSession, startedAt, FP_FEATURE_WAIT_MS);
       await state.rpc.call('sendFingerprintProbeCurrent', { protocolId, probeId });
+      await state.rpc.call('waitFingerprintComplete', { session: streamSession }, { timeout: 250_000 });
       const [feature, trace] = await Promise.all([featureP, traceP]);
       await dispatchToPage('fingerprint-disarm', null);
       if (!feature || feature.parseError) { fingerprintLog('未入库：回复特征解析失败'); continue; }

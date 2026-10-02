@@ -158,6 +158,8 @@
       boundFrames: 0,
       startedAt: Date.now(),
       lastAt: Date.now(),
+      opened: false,
+      lastEnd: null,
     };
   }
 
@@ -202,11 +204,16 @@
     // Once bound, every other session remains ignored as before.
     if (!armed.sessionId) armed.sessionId = String(sessionId || '').slice(0, 128);
     if (!armed.sessionId || armed.sessionId !== sessionId) return;
-    // a fresh stream for the armed probe: clear any partial accumulation
-    armed.buf = '';
-    armed.frames = 0;
-    armed.boundFrames = 0;
-    armed.startedAt = Date.now();
+    // Agent replies may open/end several streams (thinking, tool work, final
+    // answer). Initialise only the first one; never erase earlier/final chunks
+    // merely because another stream phase opened for the same turn.
+    if (!armed.opened) {
+      armed.buf = '';
+      armed.frames = 0;
+      armed.boundFrames = 0;
+      armed.startedAt = Date.now();
+      armed.opened = true;
+    }
     armed.lastAt = Date.now();
   }
 
@@ -224,14 +231,23 @@
 
   function onEnd(sessionId, how) {
     if (!armed || armed.sessionId !== sessionId) return;
-    if (how === 'retry') return; // transient reconnect: keep accumulating
-    finish(armed, how === 'abort' ? 'abort' : 'done');
+    // SSE ending is NOT reply completion in Agent Mode: thinking/tool/final
+    // phases can end separately. Keep accumulating until probe.js observes the
+    // platform's task-feedback popup and explicitly calls complete().
+    armed.lastEnd = how || 'stream-end';
+    armed.lastAt = Date.now();
+  }
+
+  function complete(sessionId) {
+    if (!armed || armed.sessionId !== sessionId) return false;
+    finish(armed, 'feedback-popup');
+    return true;
   }
 
   function onHttpError(sessionId, _status) {
     if (!armed || armed.sessionId !== sessionId) return;
-    // a failed request on the armed stream cannot be bound → report & stop
-    finish(armed, 'http-error');
+    armed.lastEnd = 'http-error';
+    armed.lastAt = Date.now();
   }
 
   // Housekeeping: drop a stale armed stream that never ended.
@@ -252,7 +268,7 @@
   } catch {}
 
   window.__ARENAKIT_FINGERPRINT__ = {
-    onOpen, onFrame, onEnd, onHttpError, check,
+    onOpen, onFrame, onEnd, onHttpError, check, complete,
     arm, disarm: reset,
     ERR, HISTOGRAM_DIMS, FORGET_MS,
     _state: () => armed,

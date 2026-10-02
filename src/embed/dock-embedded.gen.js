@@ -2883,7 +2883,7 @@ function createFingerprintRunner({
     return Promise.race([p, tok.promise]);
   }
   const wait = (tok, ms) => guarded(tok, sleep(ms));
-  const call = (tok, action, args) => guarded(tok, rpc.call(action, args));
+  const call = (tok, action, args, opts) => guarded(tok, rpc.call(action, args, opts));
 
   function stop() {
     if (!token) return false;
@@ -3022,7 +3022,11 @@ function createFingerprintRunner({
           sessionId = String(sendData?.session || '');
           if (!sessionId) throw new Error('未拿到会话 id');
           sent += 1;
-          // 3) wait for the page to emit the structured feature for THIS probe.
+          // Stream EOF can be only the end of a thinking/tool phase. Wait for
+          // Arena's definitive "此任务成功了吗？ 是/否/继续工作" popup; that RPC
+          // then tells the page reducer to seal and emit the complete feature.
+          await call(tok, 'waitFingerprintComplete', { session: sessionId }, { timeout: 250_000 });
+          // 3) consume the feature emitted only after definitive completion.
           feature = await guarded(tok, takeFeature(sessionId, step.probeId, { timeoutMs: featureWaitMs }));
         } catch (e) {
           if (isCancelled(e)) throw e;
@@ -3063,7 +3067,17 @@ function createFingerprintRunner({
           onProgress(`本条解析：${featureErrorText(feature.parseError)}`);
         }
 
-        // Re-classify with everything so far.
+        // A categorical battery is ONE verdict made from the complete five-question
+        // set, not five one-question verdicts. Scoring each isolated answer hits
+        // the minimum-signal gate and misleadingly displays confidence 0.
+        const categoricalAnswered = step.kind === 'categorical' ? Object.keys(answers[0] || {}).length : 0;
+        if (step.kind === 'categorical' && categoricalAnswered < plan.length) {
+          onProgress(`已收集分类题 ${categoricalAnswered}/${plan.length} · 等待完整题组后统一评分`);
+          await wait(tok, roundPacingMs);
+          continue;
+        }
+
+        // Re-classify with the complete evidence collected so far.
         try {
           lastResult = classify({
             sessionId: sessionId || cfg.sessionId || null,
@@ -4674,7 +4688,10 @@ function fingerprintProtocolId() {
 }
 function fingerprintBudget() {
   const n = parseInt(q('ak-fingerprint-budget') && q('ak-fingerprint-budget').value, 10);
-  return Math.min(24, Math.max(1, Number.isFinite(n) ? n : 3));
+  const chosen = Math.min(24, Math.max(1, Number.isFinite(n) ? n : 3));
+  // fpverify is an indivisible five-question battery: never run/score a partial
+  // set merely because the generic budget input was left at its default 3.
+  return fingerprintProtocolId() === 'fpverify-battery-v1' ? 5 : chosen;
 }
 function persistFingerprintPanel() {
   return savePrefs({ fingerprintProtocol: fingerprintProtocolId(), fingerprintBudget: fingerprintBudget() });
@@ -4986,6 +5003,7 @@ async function collectFingerprintSamples() {
       const featureP = takeFingerprintFeature(streamSession, probeId, { timeoutMs: FP_FEATURE_WAIT_MS });
       const traceP = waitFingerprintTrace(streamSession, startedAt, FP_FEATURE_WAIT_MS);
       await state.rpc.call('sendFingerprintProbeCurrent', { protocolId, probeId });
+      await state.rpc.call('waitFingerprintComplete', { session: streamSession }, { timeout: 250_000 });
       const [feature, trace] = await Promise.all([featureP, traceP]);
       await dispatchToPage('fingerprint-disarm', null);
       if (!feature || feature.parseError) { fingerprintLog('未入库：回复特征解析失败'); continue; }
