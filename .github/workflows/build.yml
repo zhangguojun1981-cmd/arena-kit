@@ -109,7 +109,10 @@ jobs:
   # Builds only for a tag push / manual dispatch (same gate as macos-dmg).
   android-apk:
     needs: [rust-test, node-test]
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    # Arena Agent branches cannot use workflow_dispatch with the integration
+    # token, so branch pushes also build an installable APK artifact. The
+    # release job below remains tag/manual-only (no PR and no branch release).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || startsWith(github.ref, 'refs/heads/arena/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
