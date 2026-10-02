@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-gist-token-set"
+description = "Enables the gist_token_set command without any pre-configured scope."
+commands.allow = ["gist_token_set"]
+
+[[permission]]
+identifier = "deny-gist-token-set"
+description = "Denies the gist_token_set command without any pre-configured scope."
+commands.deny = ["gist_token_set"]

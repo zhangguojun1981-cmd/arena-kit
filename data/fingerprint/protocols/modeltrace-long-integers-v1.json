@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "modeltrace-long-integers-v1",
+  "title": "长整数序列探针（ModelTrace 协议）",
+  "kind": "histogram",
+  "range": [1, 355],
+  "dims": 355,
+  "minValidNumbers": 80,
+  "recommendedQueries": 3,
+  "description": "要求模型生成一长串 1..355 范围内的整数，解析最长数字串（字母分隔会断开），统计 355 维频率直方图，用平滑后的 Bhattacharyya 亲和度对比参考模型。单个数字（如 73）不构成分类依据，只比较整体分布。",
+  "prompt": {
+    "note": "固定提示词在页面侧 allowlist 中托管；此处仅记录协议语义，不在仓库中内联可被远程配置替换的任意探针文本。",
+    "shape": "generate-long-integer-sequence"
+  },
+  "source": {
+    "project": "ModelTrace",
+    "repo": "https://github.com/xqy2006/ModelTrace",
+    "license": "MIT",
+    "method": "Ordered-block + nuisance-Hellinger（本实现仅复用其数字直方图与 Bhattacharyya/Hellinger 思路，未复制其完整评分管线）"
+  },
+  "caveats": [
+    "参考分布为作者自述第三方渠道（Claude via oaipro，GPT via Codex），非当前 Arena 官方渠道。",
+    "无 Fable 覆盖；Fable 使用独立的 fpverify-battery-v1 协议。",
+    "该协议的候选概率不得与 fpverify-battery-v1 的候选概率相加或合并。"
+  ]
+}

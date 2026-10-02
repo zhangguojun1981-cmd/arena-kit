@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "arena-page",
+  "description": "Scripts injected into the REMOTE arena.ai page on desktop (injected/*.js via bridge.js). The dock is its own webview there (WebviewUrl::App dock.html), so the page only needs to hand over run tokens, relay page events to the dock, do allowlisted proxy GETs / Gist calls, open link tabs and end a re-login (login_clear). No event subscription (nothing in the page listens; only the dock does), no login_set (only the dock starts a re-login), no store, no window/webview APIs and no arena_command (the page must never eval into itself via Rust). The embedded-dock grants live in arena-mobile.json.",
+  "windows": [
+    "main"
+  ],
+  "webviews": [
+    "arena"
+  ],
+  "local": false,
+  "remote": {
+    "urls": [
+      "https://arena.ai/*"
+    ]
+  },
+  "permissions": [
+    "allow-on-token",
+    "allow-page-event",
+    "allow-proxy-get",
+    "allow-gist-request",
+    "allow-gist-token-set",
+    "allow-gist-token-status",
+    "allow-open-tab",
+    "allow-login-clear"
+  ]
+}

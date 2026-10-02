@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-01",
+  "note": "Reference banks for offline model fingerprinting. Versioned DISTRIBUTION SUMMARIES only — never raw replies, tokens or message text. Two protocols are kept strictly separate: their candidate probabilities must never be merged into one score.",
+  "targetFamilies": ["opus", "fable", "gpt6"],
+  "protocols": [
+    {
+      "id": "modeltrace-long-integers-v1",
+      "file": "protocols/modeltrace-long-integers-v1.json",
+      "reference": "references/modeltrace-summary-v1.json"
+    },
+    {
+      "id": "fpverify-battery-v1",
+      "file": "protocols/fpverify-battery-v1.json",
+      "reference": "references/fpverify-summary-v1.json"
+    }
+  ],
+  "limits": {
+    "fable51": "No same-protocol public reference for Fable 5.1 exists yet; must be enrolled before Fable-5.1-specific attribution.",
+    "calibration": "Bundled banks are STARTING PRIORS from author-reported third-party channels. Thresholds are uncalibrated until measured on real matched-channel Arena data."
+  }
+}

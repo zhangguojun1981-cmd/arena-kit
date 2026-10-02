@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "fpverify-battery-v1",
+  "title": "类别偏好套卷探针（fpverify 协议）",
+  "kind": "categorical",
+  "description": "一次全新实例回答同一套固定的偏好问题（随机数、颜色、动物、城市、硬币等），把每题的归一化答案聚成类别分布，用平滑后的几何平均似然对比参考模型。单题的众数答案（如 73 / teal）不作判定，必须比较整套回答向量。",
+  "questions": [
+    "random_1_100",
+    "random_color",
+    "animal",
+    "city",
+    "coin"
+  ],
+  "samplesPerCell": 11,
+  "source": {
+    "project": "fpverify",
+    "repo": "https://github.com/Mohamed7415/fpverify",
+    "license": "MIT",
+    "refCommit": "bcd60d955c92efdc6419a628f10de07a6d123ee5",
+    "channel": "cursor-harness",
+    "upstreamProtocol": "harness-battery",
+    "enrolledAt": "2026-07-21"
+  },
+  "caveats": [
+    "原始样本极少（每格 11 次），仅作启动先验与管线验证，不是校准准确率。",
+    "无 Fable 5.1、无 GPT‑6；需要同协议补采。",
+    "协议敏感：套卷与冷单题结果可显著不同（如 Fable thinking 套卷硬币 heads 11/11，冷单题 tails 5/6）。",
+    "该协议候选概率不得与 modeltrace-long-integers-v1 合并。",
+    "Fable 的安全路由（部分任务回退到 Opus）是混淆因素，应避免用敏感题的拒答/路由作为唯一身份依据。"
+  ]
+}

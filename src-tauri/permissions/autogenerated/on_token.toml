@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-on-token"
+description = "Enables the on_token command without any pre-configured scope."
+commands.allow = ["on_token"]
+
+[[permission]]
+identifier = "deny-on-token"
+description = "Denies the on_token command without any pre-configured scope."
+commands.deny = ["on_token"]

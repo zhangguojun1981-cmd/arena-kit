@@ -1,0 +1,14 @@
+{
+  "name": "arena-kit-tests",
+  "private": true,
+  "version": "0.5.0",
+  "description": "Zero-dependency node:test suites for ArenaKit's pure JS logic (src/lib) and injected page scripts (injected/*.js). No bundler, no npm install needed.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "check": "node scripts/check-syntax.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

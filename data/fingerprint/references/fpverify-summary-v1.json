@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "referenceVersion": "fpverify-summary-v1",
+  "protocolId": "fpverify-battery-v1",
+  "kind": "categorical",
+  "source": {
+    "project": "fpverify",
+    "repo": "https://github.com/Mohamed7415/fpverify",
+    "license": "MIT",
+    "refCommit": "bcd60d955c92efdc6419a628f10de07a6d123ee5",
+    "channel": "cursor-harness",
+    "enrolledAt": "2026-07-21",
+    "note": "Partial category counts transcribed from the public fpverify reference (small sample: 11 instances/cell). Fable 5 cells are the fully documented ones; Opus-4.8-thinking and gpt-5.6-sol carry only the modal answers recorded in research, so their distributions are intentionally sparse and marked partial:true. These are STARTING PRIORS, not calibrated accuracy. Fable 5.1 and GPT-6 are NOT covered and must be enrolled."
+  },
+  "targetFamilies": ["opus", "fable", "gpt6"],
+  "models": [
+    {
+      "id": "claude-fable-5",
+      "family": "fable",
+      "samples": 11,
+      "partial": false,
+      "questions": {
+        "random_1_100": { "73": 9, "47": 2 },
+        "random_color": { "teal": 11 },
+        "animal": { "otter": 10, "octopus": 1 },
+        "city": { "kyoto": 7, "lisbon": 4 },
+        "coin": { "heads": 11 }
+      }
+    },
+    {
+      "id": "claude-opus-4-8-thinking",
+      "family": "opus",
+      "samples": 11,
+      "partial": true,
+      "questions": {
+        "random_1_100": { "73": 6 },
+        "random_color": { "blue": 7 },
+        "animal": { "fox": 7 },
+        "city": { "tokyo": 7 }
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "family": "gpt5",
+      "samples": 11,
+      "partial": true,
+      "questions": {
+        "coin": { "tails": 11 }
+      }
+    }
+  ]
+}
