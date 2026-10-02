@@ -1,9 +1,9 @@
 /* ArenaKit injected/probe.js
  * Source: arena-trace-android assets/probe.js (page-side discrete DOM actions,
  * ported from the extension's auto-draw.js + conversation-rename.js).
- * MAIN world, document_start. Stateless RPC layer: the dock (src/lib/probe-runner.js)
- * drives the loop the way the Android ProbeController does, one safe DOM step
- * per call, and gets model names from the snoop → Rust trace pipeline.
+ * MAIN world, document_start. Stateless RPC layer: the dock
+ * (src/lib/fingerprint-runner.js) drives the loop one safe DOM step per call,
+ * and gets model names from the snoop → Rust trace pipeline.
  *
  * Call:   window.ArenaProbe.call(action, argsJson, reqId)      (dock → arena_command eval)
  * Result: __ARENAKIT__.send('probe-result', {reqId, ok, data|error})  (page → dock)
@@ -530,6 +530,60 @@
     return { sent: true };
   }
 
+  // ---- model fingerprint: fixed-probe sender --------------------------------
+  // The dock's fingerprint-runner can only ask us to send a FIXED, built-in
+  // prompt chosen from this hard-coded allowlist. The runner passes a protocol
+  // id and probe id — NEVER a prompt string — so a compromised or malicious
+  // dock message can never make the page send arbitrary text to a real model.
+  // Each prompt is bare, model-neutral and matches the protocol's declared
+  // shape (ModelTrace long-integer sequence / fpverify categorical battery).
+  // Keep this table in sync with data/fingerprint/protocols/*.json; the repo
+  // JSON deliberately does NOT inline the prompt text (its `prompt.note` says it
+  // lives page-side in an allowlist) so remote config can't swap the probe body.
+  const FINGERPRINT_PROMPTS = {
+    'modeltrace-long-integers-v1': {
+      // One probe id; the runner may repeat it up to the user-confirmed budget.
+      // A long run of plain integers in [1,355]; parsed page-side into a
+      // histogram, never forwarded as text.
+      'seq-1-355': 'Output 120 random integers, each between 1 and 355 inclusive, separated by single spaces. Only the numbers, nothing else.',
+    },
+    'fpverify-battery-v1': {
+      // One fixed question per probe id; the runner walks the battery in order.
+      'random_1_100': 'Pick a random integer between 1 and 100. Reply with only the number.',
+      'random_color': 'Name a random color. Reply with only the single color word.',
+      'animal': 'Name a random animal. Reply with only the single animal word.',
+      'city': 'Name a random city. Reply with only the single city name.',
+      'coin': 'Flip a fair coin. Reply with only "heads" or "tails".',
+    },
+  };
+
+  // Send a built-in fingerprint probe. Params are ONLY {protocolId, probeId};
+  // the prompt comes from FINGERPRINT_PROMPTS, never from the caller. Clones
+  // send()'s guard chain (fresh /agent, Agent Mode, no draft overwrite, stable
+  // page) and returns {session, probeId} — never a cookie, token or reply text.
+  async function sendFingerprintProbe(args) {
+    const protocolId = String(args?.protocolId || '');
+    const probeId = String(args?.probeId || '');
+    const table = FINGERPRINT_PROMPTS[protocolId];
+    if (!table) throw Error('未知指纹协议；未发送');
+    const prompt = table[probeId];
+    if (typeof prompt !== 'string' || !prompt) throw Error('未登记的指纹探针；未发送');
+    // The caller must not smuggle a prompt in; we ignore any args.prompt field.
+    if (location.origin !== ARENA || !agentPath()) throw Error('页面已变化，未发送');
+    if (session()) throw Error('新聊天状态已变化，未发送');
+    if (isGenerating()) throw Error('当前回复仍在生成，已停止');
+    noDraft(true);
+    const editor = composer();
+    if (!editor) throw Error('输入框不可用');
+    if (!fillPrompt(editor, prompt)) throw Error('输入消息失败；未发送');
+    const button = await waitFor(() => findSend(editor), '发送按钮不可用；未发送');
+    if (editorText(editor) !== prompt || session()) throw Error('输入或页面已变化；未发送');
+    if (![...document.querySelectorAll('button[role="combobox"]')].some(b => visible(b) && isAgentLabel(b.textContent))) throw Error('模式已变化；未发送');
+    button.click();
+    const id = await waitFor(() => session(), '发送后未确认新会话；不重发', 30000);
+    return { session: id, probeId };
+  }
+
   // Sidebar snapshot for title-based cleanup: [{sessionId, title}].
   // The list is virtualized (only visible links exist in the DOM), so scroll it
   // to the bottom until the count stops growing before snapshotting.
@@ -658,7 +712,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sendFingerprintProbe, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;
@@ -679,5 +733,14 @@
     return res;
   }
 
-  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle: isOwnPrompt, fuzzyScore, pickRepo, listRepos };
+  // Expose the allowlisted protocol→probe ids (NOT the prompt text) so the dock
+  // runner and tests can enumerate the fixed plan without being able to inject a
+  // prompt. The values are the probe ids only.
+  const fingerprintProbeIds = () => {
+    const out = {};
+    for (const p of Object.keys(FINGERPRINT_PROMPTS)) out[p] = Object.keys(FINGERPRINT_PROMPTS[p]);
+    return out;
+  };
+
+  globalThis.ArenaProbe = { call, isOwnPrompt, isArithmeticTitle: isOwnPrompt, fuzzyScore, pickRepo, listRepos, fingerprintProbeIds };
 })();

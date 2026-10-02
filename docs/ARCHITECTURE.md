@@ -16,9 +16,9 @@
 │    gm-shim.js GM_* 垫片            │   使用额度 Token/费用(usage.js)   │
 │    snoop.js   截 SSE 运行令牌      │   额度 %(pulse.js 锚定倒计时)     │
 │    monitor.js 回复流帧归约         │   会话历史(history.js)            │
-│    pulse.js   /api/me/pulse 轮询   │   自动探针(probe-logic/runner)    │
-│    unlock.js / eni.js              │   自动清理(runner.cleanup)        │
-│    conversation-rename.js          │   会话探针(session-probe.js)      │
+│    pulse.js   /api/me/pulse 轮询   │   会话历史(history.js)            │
+│    unlock.js / eni.js              │   模型指纹(fingerprint-runner.js) │
+│    conversation-rename.js          │   指纹分类(fingerprint.js)        │
 │    probe.js   ArenaProbe RPC 动作  │   重命名对话(rename.js, rpc.js)   │
 │    account.js 会话 Cookie 快照/恢复│   账号切换(accounts.js,          │
 │               + 一键重新登录       │     account-flow.js)             │
@@ -37,7 +37,7 @@
 
 ## 编排模型:dock 是大脑,页面是手
 
-探针 / 清理 / 重命名 / 会话探针都是 dock 里的 JS 循环(`src/lib/probe-runner.js`,安卓 `ProbeController` 的移植):每一步通过 `arena_command` 在页面里执行 `window.ArenaProbe.call(action, argsJson, reqId)`,页面完成一个安全的 DOM 动作后用 `__ARENAKIT__.send('probe-result', {reqId, ok, data})` 回话,dock 的 `rpc.js` 按 `reqId` 兑现 Promise(35s 超时)。模型名不从 DOM 猜,而是等 snoop → Rust trace 管线按 `sessionId` 给出。显示时(表头 / 胶囊 / 服务端模型模块)由 `src/lib/model-resolve.js` 按可信度依次查:本次运行 → 本地历史记录(流会话 id / 页面 id / 记录里的 `pageIds`)→ 运行 span 标签 → 轮次追踪 → 最后才按会话标题推断(标「标题推断」,不写入记录);历史加载完成、标题稍后到达、trace 结束无标签时重新解析。停止是即时的:每个 await 都与取消令牌竞速。
+指纹探测 / 重命名都是 dock 里的 JS 循环(`src/lib/fingerprint-runner.js`):每一步通过 `arena_command` 在页面里执行 `window.ArenaProbe.call(action, argsJson, reqId)`,页面完成一个安全的 DOM 动作后用 `__ARENAKIT__.send('probe-result', {reqId, ok, data})` 回话,dock 的 `rpc.js` 按 `reqId` 兑现 Promise(35s 超时)。模型名不从 DOM 猜,而是等 snoop → Rust trace 管线按 `sessionId` 给出。显示时(表头 / 胶囊 / 服务端模型模块)由 `src/lib/model-resolve.js` 按可信度依次查:本次运行 → 本地历史记录(流会话 id / 页面 id / 记录里的 `pageIds`)→ 运行 span 标签 → 轮次追踪 → 最后才按会话标题推断(标「标题推断」,不写入记录);历史加载完成、标题稍后到达、trace 结束无标签时重新解析。停止是即时的:每个 await 都与取消令牌竞速。
 
 这样页面脚本保持无状态、随时可被 SPA 导航冲掉重新注入,而进度、计数、历史都活在不刷新的 dock 里。
 
@@ -50,6 +50,29 @@
 5. 逐阶段 `arenakit://trace` 事件(token/poll/model/error/done)到 dock:轮次追踪器记录「第 N 轮 → 模型」,用量模块累加,会话历史落库,自动重命名(若开启)只在当前对话、trace 完整、每对话一次的前提下触发。**盲测模型也能看出真实身份。**
 
 > 关键:令牌校验/解析/SSE 解析规则来自 `core.js`(扩展版)与 `ArenaProtocol.kt`(安卓版),两者已逐条对齐,移植到 Rust 时必须保持规则一致(见 DEVELOPMENT.md 的移植表)。
+
+## trace 失败时的指纹兜底(统计推测,不是真名)
+
+trace 管线依赖一枚**明确指定单一 run 的** Trigger.dev 公开令牌:令牌缺失 / 过期 / scope 不匹配 / Trigger.dev 事件不含模型标签时,`extract_models` 给不出服务端真名。此时 ArenaKit 可退回一条**完全独立、离线、统计性**的推测链——它给出的是「指纹推测」而非「已确认」,信任等级低于任何服务端信号。
+
+```
+服务端真名(trace / 历史记录)              ← 唯一可信「已确认」来源,SOURCE_RANK 最高
+      │  缺失时才启用 ↓
+指纹推测(fingerprint,source='fingerprint',SOURCE_RANK=2)
+      │
+      ├─ 被动:监控已有回复 → 页面侧归约成结构化特征(数字/类别,绝不出原文)
+      └─ 主动:fingerprint-runner 发固定探针(需用户再次确认 + 预算上限)→ 同样归约
+                        ↓
+      src/lib/fingerprint.js classify():判别式白化 + softmax,带 OOD / margin / confidence 三道门
+                        ↓
+      通过 → estimatedModel + family(opus/fable/gpt6);任一门不过 → unresolved / unknown(宁可无结论)
+```
+
+- **数据流**:页面侧(`injected/fingerprint.js` + `probe.js`)把回复**只归约成数字 / 类别特征**,经 flag 门控的 `fingerprint-sample` 安全事件通道传给 dock;**原文永不过桥**。dock 的 `fingerprint-runner.js` 按协议累积特征,`fingerprint.js` 的 `classify()` 对照离线 bank(`src/lib/fingerprint-banks.js`,`data/fingerprint/*` 的冻结副本,**不走网络**,远端配置无法替换参考分布)打分。
+- **信任顺序**(`src/lib/model-resolve.js`):指纹推测的 `SOURCE_RANK=2`,**低于**本次运行 / 历史记录里的服务端真名,**高于**标题推断;一旦服务端真名到达(trace 后续成功),**立即覆盖**指纹推测。指纹**绝不覆盖已确认的模型**。按估计重命名默认关闭:只有用户在「指纹」页显式打开「识别置信度达到阈值后重命名」开关、且本次估计 `status==='attributed'` 并且 `confidence ≥ 阈值`(懒人默认 `fingerprintRenameThreshold=0.85`)时,才按估计模型重命名当前会话;服务端真名随时覆盖它。此开关与「服务端确认模型自动重命名」(`prefs.autoRename`)相互独立。
+- **两协议严格分离**:ModelTrace 长整数直方图(`modeltrace-long-integers-v1`)与 fpverify 类别电池(`fpverify-battery-v1`)各自独立评分,**候选概率永不跨协议合并**。
+- **诚实边界**:bank 是作者自述第三方渠道的**起始先验**,未经真实匹配渠道的 Arena 盲测标定(`DEFAULT_THRESHOLDS.calibrated=false`,UI 标注「未完成 Arena 校准」);family ≠ 精确版本;softmax 不是标定后的正确概率。离线评估脚手架(`scripts/fingerprint-calibrate.mjs`)只公布内部可分性上界,不等于 Arena 真实准确率。详见 `docs/FINGERPRINT.md`。
+- **门禁**:缺 bank 不发送;未确认不发探针、不新建会话、不消耗额度;取消即时生效且不超预算重发。主动探针这条路**默认关闭**,只在用户单独确认后小规模受控启用。
 
 ## 安全边界
 

@@ -86,81 +86,52 @@
       </section>
     </section>
 
-    <!-- ── 探针 (reference page_probe) ── -->
+    <!-- ── 指纹 (model fingerprint — statistical estimate) ── -->
     <section class="ak-page" data-page="probe" data-active="false">
       <div class="ak-group">
-        <label class="ak-field"><span>目标模型（逗号分隔；别名 opus5 / fable5 / gpt6，或 /正则/）</span>
-          <input id="ak-probe-targets" class="ak-input" type="text" placeholder="opus5, fable5, gpt6" autocomplete="off" />
-        </label>
-        <label class="ak-field"><span>项目（可选 · 只填项目名，支持模糊匹配；第 1 轮新建对话后选 Agent 模式和该项目，后续轮次沿用）</span>
-          <input id="ak-probe-repo" class="ak-input" type="text" placeholder="例如 arena-kit（留空 = 不选项目）" autocomplete="off" autocapitalize="off" spellcheck="false" />
-        </label>
-        <label class="ak-field"><span>分支（可选，留空 = 仓库默认分支）</span>
-          <input id="ak-probe-branch" class="ak-input" type="text" placeholder="main" autocomplete="off" autocapitalize="off" spellcheck="false" />
-        </label>
-        <label class="ak-switch"><span class="ak-switch-text">打开应用 / 切换账号后：默认 Agent 模式 + 打开 GitHub 开关（填了项目则同时选中）</span><input type="checkbox" id="ak-agent-defaults" /><i class="ak-switch-track"></i></label>
-        <div class="ak-stepper-row">
-          <span class="ak-stepper-label">最多轮数</span>
-          <div class="ak-stepper">
-            <button type="button" class="ak-icon-btn" data-step="-1" aria-label="减少">−</button>
-            <input id="ak-probe-rounds" class="ak-input ak-stepper-num" type="number" min="1" max="100" step="1" inputmode="numeric" />
-            <button type="button" class="ak-icon-btn" data-step="1" aria-label="增加">+</button>
-          </div>
-        </div>
-        <label class="ak-switch"><span class="ak-switch-text">命中全部目标才停止</span><input type="checkbox" id="ak-probe-findall" /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">命中后自动重命名会话</span><input type="checkbox" id="ak-probe-rename" /><i class="ak-switch-track"></i></label>
-        <label class="ak-field"><span>标题前缀（可选，探针命中 / 重命名共用）</span>
-          <input id="ak-rename-prefix" class="ak-input" type="text" maxlength="40" placeholder="例如 AK- 或 【探针】" autocomplete="off" />
-        </label>
-        <div id="ak-rename-preview" class="ak-sub ak-mono"></div>
-        <div class="ak-btns">
-          <button class="ak-btn ak-btn-sm ak-filled" data-action="probe-start">开始探针</button>
-          <button class="ak-btn ak-btn-sm ak-tonal" data-action="draw-start" title="按「最多轮数」连抽：每轮新建对话、发一条算式、识别模型；勾选「命中后自动重命名会话」时每个对话都按模型名重命名（不加序号），不看目标、不提前停">自动抽卡</button>
-          <button class="ak-btn ak-btn-sm" data-action="probe-stop" disabled>停止</button>
-        </div>
-        <div class="ak-note">探针会新建对话并发送真实的算式消息（消耗额度），直到命中目标模型；命中的对话按「前缀 + 模型-序号」重命名。「自动抽卡」不看目标：固定抽满轮数，每个对话按「前缀 + 模型」命名。</div>
-        <label class="ak-switch"><span class="ak-switch-text">探针结束后自动清理算式标题</span><input type="checkbox" id="ak-cleanup-after" /><i class="ak-switch-track"></i></label>
-        <div id="ak-probe-state" class="ak-sub"></div>
-        <pre id="ak-probe-log" class="ak-log" hidden></pre>
+        <label class="ak-switch"><span class="ak-switch-text">打开应用 / 切换账号后：默认 Agent 模式 + 打开 GitHub 开关</span><input type="checkbox" id="ak-agent-defaults" /><i class="ak-switch-track"></i></label>
       </div>
       <hr class="ak-divider" />
       <div class="ak-group">
-        <div class="ak-group-head"><span>会话探针</span></div>
-        <div class="ak-sub">在当前打开的对话里发送一条探针消息（消耗额度，不新建对话），用本轮 trace 识别「这一轮」实际应答的模型。留空则发送随机算式。</div>
-        <label class="ak-field"><span>探针内容（可选）</span>
-          <input id="ak-quick-text" class="ak-input" type="text" maxlength="8000" placeholder="留空 = 随机算式，如 473×82=" autocomplete="off" />
+        <div class="ak-group-head"><span>模型指纹（统计估计 · 非真名）</span></div>
+        <div class="ak-sub">对<b>固定探针提示词</b>的回答做纯页面侧统计归约（长整数直方图 / 分类挑选），据此在 opus / fable / gpt6 三系列间给出<b>概率估计</b>。永远不覆盖服务端确认的模型；阈值尚未完成 Arena 校准，结果仅供参考，以服务端确认为准。</div>
+        <div class="ak-note">需先在「设置」中开启「模型指纹」开关。页面侧归约：只上报计数 / 单个归一化挑选，绝不传回复文本。</div>
+        <label class="ak-field"><span>协议</span>
+          <select id="ak-fingerprint-protocol" class="ak-input">
+            <option value="modeltrace-long-integers-v1">长整数序列（ModelTrace · 直方图）</option>
+            <option value="fpverify-battery-v1">分类问答组（fpverify · 五问）</option>
+          </select>
         </label>
-        <label class="ak-switch"><span class="ak-switch-text">识别后按模型名重命名当前对话</span><input type="checkbox" id="ak-quick-rename" /><i class="ak-switch-track"></i></label>
-        <div class="ak-btns">
-          <button class="ak-btn ak-btn-sm ak-tonal" data-action="quick-send">发送到当前对话</button>
+        <div class="ak-stepper-row">
+          <span class="ak-stepper-label">会话数 / 最多发送</span>
+          <div class="ak-stepper">
+            <button type="button" class="ak-icon-btn" data-step="-1" data-step-target="ak-fingerprint-budget" aria-label="减少">−</button>
+            <input id="ak-fingerprint-budget" class="ak-input ak-stepper-num" type="number" min="1" max="24" step="1" inputmode="numeric" value="3" />
+            <button type="button" class="ak-icon-btn" data-step="1" data-step-target="ak-fingerprint-budget" aria-label="增加">+</button>
+          </div>
         </div>
-        <div class="ak-note">也可以长按悬浮窗，选择「会话探针」</div>
-        <div id="ak-quick-state" class="ak-sub"></div>
+        <label class="ak-switch"><span class="ak-switch-text">识别置信度达到阈值后，按估计模型重命名当前会话<small>默认关闭；服务端确认的真名始终优先。开启后仅在置信度 ≥ 下方阈值时才改名</small></span><input type="checkbox" id="ak-fingerprint-autorename" /><i class="ak-switch-track"></i></label>
+        <label class="ak-field"><span>重命名置信度阈值（0–1，默认 0.85）</span>
+          <input id="ak-fingerprint-threshold" class="ak-input" type="number" min="0" max="1" step="0.05" inputmode="decimal" placeholder="0.85" />
+        </label>
+        <label class="ak-field"><span>标题前缀（可选，重命名共用）</span>
+          <input id="ak-rename-prefix" class="ak-input" type="text" maxlength="40" placeholder="例如 AK- 或 【指纹】" autocomplete="off" />
+        </label>
+        <div id="ak-rename-preview" class="ak-sub ak-mono"></div>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-filled" data-action="fingerprint-start" disabled>开始指纹探测</button>
+          <button class="ak-btn ak-btn-sm" data-action="fingerprint-stop" disabled>停止</button>
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="fingerprint-copy" title="复制本次诊断（协议 / 概率 / 边距 / 样本数，不含任何回复文本）">复制诊断</button>
+          <button class="ak-btn ak-btn-sm" data-action="fingerprint-clear" title="清除本次收集的指纹样本与结果">清除</button>
+        </div>
+        <div class="ak-note">开始前会提示「本次最多发送 N 条固定探针消息（消耗额度）」。「会话数 / 最多发送」= 本次最多新建并发送的固定探针条数。固定提示词托管在页面侧 allowlist，不接受任意文本。低于判定阈值时结果为「未判定」而非强行归类。</div>
+        <div id="ak-fingerprint-state" class="ak-sub"></div>
+        <pre id="ak-fingerprint-log" class="ak-log" hidden></pre>
       </div>
     </section>
 
     <!-- ── 工具 (reference page_tools) ── -->
     <section class="ak-page" data-page="tools" data-active="false">
-      <div class="ak-group">
-        <div class="ak-group-head"><span>清理算式标题</span></div>
-        <div class="ak-sub">归档侧栏中标题为「纯算式」的对话（探针残留，如 1+1=），并删除它们的本地记录。只走 Arena 自带的归档菜单，仅归档不删除；当前打开的对话和人工命名的对话不会被触碰。</div>
-        <div class="ak-btns">
-          <button class="ak-btn ak-btn-sm ak-tonal" data-action="cleanup-start">开始清理</button>
-          <button class="ak-btn ak-btn-sm" data-action="cleanup-stop" disabled>停止清理</button>
-        </div>
-        <div id="ak-cleanup-state" class="ak-sub"></div>
-      </div>
-      <hr class="ak-divider" />
-      <div class="ak-group">
-        <div class="ak-group-head"><span>重命名当前对话</span></div>
-        <div class="ak-sub">走 Arena 自带的「重命名」菜单，标题 = 前缀 + 模型名（前缀在「探针」页设置）。</div>
-        <label class="ak-switch"><span class="ak-switch-text">识别到模型后自动重命名当前对话</span><input type="checkbox" id="ak-auto-rename" /><i class="ak-switch-track"></i></label>
-        <div class="ak-btns">
-          <button class="ak-btn ak-btn-sm ak-tonal" data-action="rename-now">立即重命名为模型名</button>
-        </div>
-        <div id="ak-rename-status" class="ak-sub"></div>
-      </div>
-      <hr class="ak-divider" />
       <div class="ak-group">
         <div class="ak-group-head"><span>页面</span></div>
         <div class="ak-nav">
@@ -230,17 +201,8 @@
       <div class="ak-note">切换账号 = 用保存的登录 Cookie 替换页面里的 Cookie 后刷新；不会点「退出登录」，所以其他账号的登录状态不受影响。应用不保存任何密码。</div>
     </section>
 
-    <!-- ── 更多: feature modules, prompt injection, settings ── -->
+    <!-- ── 更多: prompt injection, settings ── -->
     <section class="ak-page" data-page="more" data-active="false">
-      <div class="ak-group">
-        <div class="ak-group-head"><span>功能模块</span></div>
-        <button class="ak-btn ak-tonal" data-action="manager">模型筛选 / 管理面板</button>
-        <label class="ak-switch"><span class="ak-switch-text">解锁 Opus 全系<small>把模型列表里被标为不可选的 Claude Opus 系列恢复为可选</small></span><input type="checkbox" id="ak-unlock-opus" /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">解锁隐藏 / 盲测模型<small>所有 userSelectable=false 的模型（含盲测 / 未公开）都出现在直选列表</small></span><input type="checkbox" id="ak-unlock-hidden" /><i class="ak-switch-track"></i></label>
-        <label class="ak-switch"><span class="ak-switch-text">排行榜性价比列<small>排行榜加「性价比」、价格、模型年龄、模态图标列（价格来自 OpenRouter）</small></span><input type="checkbox" id="ak-plus" checked /><i class="ak-switch-track"></i></label>
-        <div class="ak-note">这三项改动后会自动刷新页面生效。两个「解锁」会改写页面加载时的数据，默认关闭；打开后若页面点击没反应，请关掉再用。</div>
-      </div>
-      <hr class="ak-divider" />
       <div class="ak-group">
         <div class="ak-group-head"><span>提示词注入</span></div>
         <label class="ak-switch"><span class="ak-switch-text">每新对话注入系统提示词</span><input type="checkbox" id="ak-eni-on" /><i class="ak-switch-track"></i></label>
@@ -268,9 +230,9 @@
         <label class="ak-switch"><span class="ak-switch-text">截获会话流<small>识别模型的前提；关闭后不再上报运行令牌</small></span><input type="checkbox" id="ak-capture-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">额度轮询<small>每 60 秒读取一次 /api/me/pulse；关闭后仅手动刷新</small></span><input type="checkbox" id="ak-pulse-on" checked /><i class="ak-switch-track"></i></label>
         <label class="ak-switch"><span class="ak-switch-text">回复监控<small>空回复 / 报错 / 中断 / 停滞标记到对应轮次</small></span><input type="checkbox" id="ak-monitor-on" checked /><i class="ak-switch-track"></i></label>
+        <label class="ak-switch"><span class="ak-switch-text">模型指纹<small>页面侧固定探针归约；默认关闭，开启后仅上报计数，绝不传回复文本</small></span><input type="checkbox" id="ak-fingerprint-on" /><i class="ak-switch-track"></i></label>
         <button class="ak-link" data-action="pulse-refresh" title="额度接口每 60 秒读取一次；点此立即刷新">立即刷新额度</button>
       </div>
-      <div class="ak-about">ArenaKit · 界面参考 arena-trace-android</div>
     </section>
   </main>
   <script type="module" src="dock.js"></script>

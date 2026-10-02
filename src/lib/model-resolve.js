@@ -19,11 +19,15 @@
  *             that lists the page id in `pageIds` (saved since 0.4.9)
  *   runs      the record / live runs' span labels when observations are empty
  *   turns     the turn tracker's last identified model for this conversation
+ *   finger    a stored, ATTRIBUTED fingerprint estimate — statistical, not a
+ *             confirmed trace label. Ranks below every confirmed source above
+ *             and above the title guess; shown as 指纹推断 · 统计估计, never 真名,
+ *             and never written back into `observations`.
  *   title     last resort: a known model name (or the probe's
  *             "<prefix><model>-NNN" pattern) inside the conversation title —
  *             shown as 标题推断, never saved as an observation
  */
-import { recordModels, addPageId, MAX_PAGE_IDS } from './history.js';
+import { recordModels, recordFingerprintModel, addPageId, MAX_PAGE_IDS } from './history.js';
 import { normalizeModel, sanitizePrefix } from './rename.js';
 
 export { addPageId, MAX_PAGE_IDS };
@@ -127,6 +131,15 @@ export function resolveModel({
   if (tracker && tracker.sessionId && (tracker.sessionId === sid || tracker.sessionId === pageId) && tracker.lastModel) {
     return { sid, models: [{ model: tracker.lastModel, provider: '' }], source: 'turns', record: null, pageMatch: false };
   }
+  // A stored ATTRIBUTED fingerprint estimate: statistical, below every
+  // confirmed source, above the title guess. Never promoted into observations.
+  if (record) {
+    const guessed = recordFingerprintModel(record);
+    if (guessed) {
+      const pageMatch = record.sessionId !== sid && record.sessionId !== pageId;
+      return { sid: record.sessionId, models: [{ model: guessed, provider: '' }], source: 'fingerprint', record, pageMatch };
+    }
+  }
   const guess = inferModelFromTitle(title || (record && record.title) || '', { vocabulary: knownModels(historyIndex, sessions), prefix });
   if (guess) return { sid: record ? record.sessionId : sid, models: [{ model: guess, provider: '' }], source: 'title', record, pageMatch: false };
   return { ...none, sid: record ? record.sessionId : sid, record };
@@ -137,5 +150,6 @@ export const SOURCE_TEXT = {
   history: '本地记录 · 非重新验证',
   runs: '本地记录（运行标签）· 非重新验证',
   turns: '本轮追踪 · 最近识别',
+  fingerprint: '指纹推断 · 统计估计（非真名）',
   title: '标题推断 · 未验证',
 };

@@ -659,6 +659,10 @@
     if (clean.startedAt && now() - clean.startedAt > LOGIN_TTL_MS) return { started: false, reason: 'expired' };
     if (login && login.creds.startedAt === clean.startedAt && login.creds.email === clean.email) return { started: true, host: hostOf(), already: true };
     stopLogin(false);
+    // The tap / click that just started this login is ours, not the user
+    // guarding against a double OAuth round trip: clear the yield so the
+    // automation runs at once. A later real tap still pauses it for 10 s.
+    userAt = 0;
     login = { creds: clean, startedAt: clean.startedAt || now(), done: new Set(), timer: null, obs: null, stage: '', leaving: false };
     login.timer = setInterval(step, 700);
     try {

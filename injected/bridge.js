@@ -2,7 +2,7 @@
  * MAIN world, document_start — the FIRST script in the init bundle.
  *
  * The only page-side code that talks to Tauri. Every other injected module
- * (snoop, probe, pulse, monitor, gm-shim) goes through window.__ARENAKIT__:
+ * (snoop, probe, pulse, monitor) goes through window.__ARENAKIT__:
  *
  *   page → Rust : invoke(cmd, args)        Tauri IPC, gated by capabilities/arena.json
  *   page → dock : send(name, payload)      Rust re-emits it as the "arenakit://page" event

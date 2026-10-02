@@ -52,6 +52,77 @@ export function isRecord(r) {
   try { return r?.schemaVersion === 1 && Array.isArray(r.observations) && r.url === conversationUrl(r.sessionId); } catch { return false; }
 }
 
+/* ---- fingerprint estimate (statistical, NOT a confirmed observation) -----
+ *
+ * A record may carry ONE `fingerprint` field: the sanitised result of an
+ * offline fingerprint classification (src/lib/fingerprint.js → sanitizeResult).
+ * It is kept STRICTLY separate from `observations` (server-confirmed models) so
+ * that a statistical guess can never masquerade as — or overwrite — a real
+ * trace label. The display layer always shows it as 指纹推断, never as 真名.
+ *
+ * Only an allowlist of scalar fields is persisted; by construction the sanitised
+ * result carries no raw answer text, token or header, and we re-assert that here
+ * by copying field-by-field rather than spreading. */
+const FP_STATUS = ['attributed', 'unresolved', 'failed'];
+const FP_FAMILIES = ['opus', 'fable', 'gpt6', 'unknown'];
+export function sanitizeFingerprintForRecord(estimate) {
+  const e = estimate && typeof estimate === 'object' ? estimate : null;
+  if (!e) return null;
+  const str = (v, n) => (v == null ? '' : String(v).slice(0, n));
+  const num = (v) => (Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : 0);
+  const p = e.protocol && typeof e.protocol === 'object' ? e.protocol : {};
+  return {
+    family: FP_FAMILIES.includes(e.family) ? e.family : 'unknown',
+    estimatedModel: e.estimatedModel ? str(e.estimatedModel, 120) : null,
+    confidence: num(Number(e.confidence)),
+    margin: num(Number(e.margin)),
+    status: FP_STATUS.includes(e.status) ? e.status : 'failed',
+    source: 'fingerprint',
+    protocol: {
+      id: str(p.id, 120), version: str(p.version, 120), promptSetHash: str(p.promptSetHash, 120),
+      channel: str(p.channel, 120), reasoningTier: str(p.reasoningTier, 120), language: str(p.language, 120),
+    },
+    referenceBankVersion: e.referenceBankVersion ? str(e.referenceBankVersion, 120) : null,
+    probeCount: Number.isInteger(e.probeCount) && e.probeCount >= 0 ? e.probeCount : 0,
+    createdAt: str(e.createdAt || new Date().toISOString(), 40),
+  };
+}
+
+/* A record carrying a fingerprint estimate but (optionally) no confirmed model
+ * yet — the common Agent-mode case. Preserves existing observations/usage. */
+export function mergeFingerprintRecord(previous, input) {
+  const url = conversationUrl(input.sessionId);
+  const fingerprint = sanitizeFingerprintForRecord(input.estimate);
+  if (!fingerprint) throw new Error('没有有效的指纹估计');
+  const old = previous?.sessionId === input.sessionId && isRecord(previous) ? previous : null;
+  const time = fingerprint.createdAt || new Date().toISOString();
+  const title = String(input.title || old?.title || 'Arena 会话').slice(0, 300);
+  const pageIds = addPageId(old?.pageIds, input.pageId, input.sessionId);
+  return {
+    schemaVersion: 1,
+    sessionId: input.sessionId,
+    url,
+    title,
+    firstSeen: old?.firstSeen || time,
+    lastSeen: time,
+    observations: old?.observations || [],
+    runs: old?.runs || [],
+    totals: old?.totals || summarizeUsage(old?.runs || []),
+    fingerprint,
+    ...(pageIds.length ? { pageIds } : {}),
+  };
+}
+
+/* The model a record's fingerprint estimate points at, ONLY when it is an
+ * attributed guess with a concrete model. Returns '' otherwise. */
+export function recordFingerprintModel(record) {
+  const fp = record?.fingerprint;
+  if (!fp || typeof fp !== 'object') return '';
+  if (fp.status !== 'attributed' || !fp.estimatedModel) return '';
+  return fp.estimatedModel;
+}
+
+
 /* Unique models of a record, latest run first (for the restore-on-switch display). */
 export function recordModels(record) {
   const obs = [...(record?.observations || [])].sort((a, b) => String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
@@ -152,6 +223,16 @@ export function createHistoryStore(store, { max = MAX_ENTRIES } = {}) {
       if (!isRecord(old) || old.sessionId !== sessionId) return null;
       const record = { ...old, title: String(title || old.title).slice(0, 300) };
       await store.set(key(sessionId), record);
+      return record;
+    }),
+    /* Attach / replace a statistical fingerprint estimate on a conversation.
+     * Creates a record if none exists (common in Agent mode: a guess arrives
+     * before any confirmed trace). Never touches observations/runs. */
+    saveFingerprint: (input) => enqueue(async () => {
+      const old = await store.get(key(input.sessionId));
+      const record = mergeFingerprintRecord(isRecord(old) ? old : null, input);
+      await store.set(key(record.sessionId), record);
+      if (!isRecord(old)) await evict();
       return record;
     }),
     /* Remember a page id for an existing record (alias learned later). */

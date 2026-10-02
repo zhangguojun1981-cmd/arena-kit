@@ -132,6 +132,8 @@ test('pillLabel priority: flash → task → model (routed = warn tone) → 识�
   assert.deepEqual(pillLabel({ task: { kind: 'recovery' } }), { text: '回复异常 · 自动刷新…', tone: 'active' });
   assert.deepEqual(pillLabel({ model: 'claude-opus-4-1' }), { text: 'claude-opus-4-1', tone: 'normal' });
   assert.deepEqual(pillLabel({ model: 'gpt-5', routed: true, strength: 'high' }), { text: 'gpt-5 · high', tone: 'routed' });
+  // a fingerprint estimate is prefixed ≈ and muted, never routed/normal
+  assert.deepEqual(pillLabel({ model: 'claude-opus-5', estimate: true, strength: 'high', routed: true }), { text: '≈claude-opus-5', tone: 'muted' });
   assert.deepEqual(pillLabel({ pending: true }), { text: '识别中…', tone: 'muted' });
   assert.deepEqual(pillLabel({ newChat: true }), { text: '新对话', tone: 'muted' });
   assert.deepEqual(pillLabel({}), { text: '', tone: 'muted' });
@@ -636,11 +638,6 @@ test('the whole bundle boots the dock inside a page without a Tauri runtime', as
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.equal(byId['ak-status'].textContent, '浏览器预览模式(无 Tauri 运行时)');
   assert.ok(byId['ak-history-list'].innerHTML.includes('暂无记录'));
-  assert.equal(byId['ak-unlock-opus'].checked, false); // DEFAULT_PREFS applied through the shadow root (unlock off since 0.4.5)
-  assert.equal(byId['ak-unlock-hidden'].checked, false);
-  // the one-time migration was persisted (so a later deliberate "on" sticks)
-  const savedPrefs = [...store.entries()].map(([k, v]) => { try { return JSON.parse(v); } catch { return null; } }).find((v) => v && typeof v === 'object' && 'unlockReset' in (v.prefs || v));
-  assert.ok(savedPrefs, 'prefs with the unlock reset marker persisted');
   // no platform stamp (Android / preview): nothing platform-specific to assert.
   // The dock is the same markup either way — only the runtime hint differs.
 });
@@ -801,7 +798,7 @@ test('embedded dock: trace + pulse events drive the HUD header and the ball (per
   assert.equal(label.textContent, '新对话');
 
   // settings switches: page flags pushed on boot, 截获会话流 off gates the dock too
-  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, autoRefresh: true }));
+  assert.equal(JSON.stringify(sandbox.__ARENAKIT_FLAGS__), JSON.stringify({ capture: true, pulse: true, monitor: true, fingerprint: false, autoRefresh: true }));
   assert.equal(byId['ak-pill-refresh'].checked, true, 'pill ⟳ switch defaults on');
   assert.equal(byId['ak-auto-refresh'].checked, true, 'auto-refresh switch defaults on');
   assert.equal(sandbox.__ARENAKIT_EMBED__.host.dataset.embed, 'true');

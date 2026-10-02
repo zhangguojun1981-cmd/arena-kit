@@ -11,10 +11,7 @@ function fakeWin() {
     history: { back: () => log.push(['back']), forward: () => log.push(['forward']) },
     __ARENAKIT_FLAGS__: new Proxy({}, { set(t, k, v) { t[k] = v; log.push(['flag', k, v]); return true; } }),
     __ARENAKIT__: { dispatch: (n, p) => { log.push(['dispatch', n, p]); return 1; }, send: (n, p) => log.push(['send', n, p]) },
-    __AK_MANAGER_TOGGLE__: () => log.push(['manager']),
     __AK_ENI_SET__: (on, t) => log.push(['eni', on, t]),
-    __AK_UNLOCK_SET__: (k, on) => log.push(['unlock', k, on]),
-    __AK_PLUS_SET__: (on) => log.push(['plus', on]),
     ArenaProbe: { call: (a, g, r) => log.push(['probe', a, g, r]) },
     ArenaAccount: { call: (a, g, r) => log.push(['account', a, g, r]) },
   };
@@ -31,10 +28,7 @@ const CASES = [
   ['dispatch', ['pulse-refresh', null], ['dispatch', 'pulse-refresh', null]],
   ['dispatch', ['x', { a: 1, s: 'q"\u2028' }], ['dispatch', 'x', { a: 1, s: 'q"\u2028' }]],
   ['open', ['https://arena.ai/agent/abc'], ['assign', 'https://arena.ai/agent/abc']],
-  ['managerToggle', [], ['manager']],
   ['eniSet', [true, 'sys "prompt"\n</script>'], ['eni', true, 'sys "prompt"\n</script>']],
-  ['unlockSet', ['opus', false], ['unlock', 'opus', false]],
-  ['plusSet', [1], ['plus', true]],
   ['probeCall', ['rename', '{"sessionId":"s1"}', 'r7'], ['probe', 'rename', '{"sessionId":"s1"}', 'r7']],
   ['accountCall', ['restore', '{"cookies":[{"name":"arena-auth-prod-v1.0","value":"base64-x"}]}', 'r8'], ['account', 'restore', '{"cookies":[{"name":"arena-auth-prod-v1.0","value":"base64-x"}]}', 'r8']],
   ['flagSet', ['capture', false], ['flag', 'capture', false]],
@@ -84,17 +78,17 @@ test('accountCall without account.js answers the dock with an account-result err
 test('createPageActions: remote transport evals, embedded transport runs; failures reject alike', async () => {
   const evals = [];
   const remote = createPageActions({ evalInPage: (js) => { evals.push(js); return Promise.resolve(); } });
-  await remote('plusSet', true);
-  assert.deepEqual(evals, [PAGE_ACTIONS.plusSet.js(true)]);
+  await remote('eniSet', true, 'x');
+  assert.deepEqual(evals, [PAGE_ACTIONS.eniSet.js(true, 'x')]);
   await assert.rejects(remote('nope'), /未知页面动作/);
   const failing = createPageActions({ evalInPage: () => Promise.reject(new Error('webview gone')) });
-  await assert.rejects(failing('managerToggle'), /webview gone/);
+  await assert.rejects(failing('eniSet', true, 'x'), /webview gone/);
 
   const w = fakeWin();
   const embedded = createPageActions({ win: w });
-  await embedded('unlockSet', 'hidden', true);
-  assert.deepEqual(w.log, [['unlock', 'hidden', true]]);
-  w.__AK_PLUS_SET__ = () => { throw new Error('boom'); };
-  await assert.rejects(embedded('plusSet', true), /boom/);
-  await assert.rejects(createPageActions({})('plusSet', true), /没有可用的页面通道/);
+  await embedded('eniSet', true, 'y');
+  assert.deepEqual(w.log, [['eni', true, 'y']]);
+  w.__AK_ENI_SET__ = () => { throw new Error('boom'); };
+  await assert.rejects(embedded('eniSet', true, 'z'), /boom/);
+  await assert.rejects(createPageActions({})('eniSet', true, 'z'), /没有可用的页面通道/);
 });

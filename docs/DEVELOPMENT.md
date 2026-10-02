@@ -31,7 +31,7 @@
 - **JS**(`src/`):原生 **dock** 面板(独立 webview,ES module,不随 arena 页面刷新)+ `src/lib/*` 纯逻辑库(全部有 node:test 单测)。
 - 平台特定代码极少:仅 WebView 宿主创建与权限声明,由 Tauri 封装。
 
-> 设计要点:**dock 是编排者,arena 页面只做无状态的 DOM 动作**。探针/清理/重命名循环都在 dock 里跑(`src/lib/probe-runner.js`),每一步通过 `arena_command` 调页面的 `window.ArenaProbe.call(...)`,结果经桥以 `probe-result` 页面事件回到 dock。Rust 只做薄中继。
+> 设计要点:**dock 是编排者,arena 页面只做无状态的 DOM 动作**。指纹探测/重命名循环都在 dock 里跑(`src/lib/fingerprint-runner.js`),每一步通过 `arena_command` 调页面的 `window.ArenaProbe.call(...)`,结果经桥以 `probe-result` 页面事件回到 dock。Rust 只做薄中继。
 
 ---
 
@@ -64,8 +64,8 @@
 - `src/lib/pulse.js` 移植安卓 `PulseTiming`:`resetTimeFromRefreshedAt` + `anchorReset`(倒计时不再每次刷新回跳 24h)、`<10%` 红 / `<20%` 黄。
 - 验收:dock「额度」模块显示百分比 + 三色条 + `H:MM:SS 后重置` 每秒走字;切账号刷新;429 时显示限流并退避。**待真机确认。**
 
-### M5 — 探针 / 清理 / 历史 / 轮次 / 重命名 / 会话探针 / 回复监控 ✅ 代码就位
-全部从 arena-trace-android(及其参考的 arena-trace-inspector)移植,对应关系:
+### M5 — 指纹 / 历史 / 轮次 / 重命名 / 回复监控 ✅ 代码就位
+大多从 arena-trace-android(及其参考的 arena-trace-inspector)移植;模型指纹为 ArenaKit 自研(非上游移植)。对应关系:
 
 | 功能 | dock 模块 | 逻辑库(单测) | 页面侧 | 来源 |
 |---|---|---|---|---|
@@ -73,9 +73,7 @@
 | **使用额度(Token / 费用,非百分比)**;覆盖率 / 查看运行 / 证据来源 | 使用额度 | `src/lib/usage.js` + `src/lib/usage-view.js` + `src-tauri/src/usage.rs` | — | inspector `core.js` span 用量标签、`view-model.js` / `popup.js` 运行视图 |
 | **会话历史**(搜索/分页/打开/查看运行/删除/导出/清空,累计不因淘汰丢失;**归档当前对话并删除记录**) | 会话历史 | `src/lib/history.js`、`dock.js archiveCurrent` | `conversation-rename.js` archive | inspector `history.js` / `hud.js` 归档聊天及删除记录、android `HistoryLogic.kt` |
 | **重命名对话(可加前缀)** | 重命名对话 | `src/lib/rename.js`、`src/lib/rpc.js` | `injected/conversation-rename.js`、`injected/probe.js` | android `conversation-rename.js` / `probe.js` |
-| **自动探针(抽卡)** + **自动抽卡**(`mode:'draw'`:无目标,每轮命名为模型名,不消耗序号) | 自动探针 | `src/lib/probe-logic.js`、`src/lib/probe-runner.js` | `injected/probe.js` | android `ProbeLogic.kt` / `ProbeController.kt`、inspector `auto-draw.js` |
-| **自动清理**(归档算式标题残留,`onArchived` 钩子同步删本地记录) | 自动清理 | `probe-runner.cleanup` | `probe.js` sidebarList/revealSidebarItem/archive | android `ProbeController.cleanup`、inspector 归档后删记录 |
-| **会话探针**(向当前对话发探针,识别本轮模型) | 会话探针 | `src/lib/session-probe.js` | `probe.js` sendToCurrent | android `quickSend` + TurnTracker |
+| **模型指纹探测**(发固定探针 → 页面侧归约为数字/类别特征 → 统计归类;可选按置信度阈值重命名) | 指纹 | `src/lib/fingerprint-runner.js`、`src/lib/fingerprint.js` | `injected/fingerprint.js` + `probe.js` sendFingerprintProbe | ArenaKit 新增(统计推测,非真名) |
 | **回复监控**(空回复/报错/中断/停滞 自动标记轮次) | 回复监控 | `src/lib/monitor.js` | `injected/monitor.js`(snoop 帧钩子) | ArenaKit 新增(用户需求) |
 | **回复出错或空白时自动刷新**(页面出现「Something went wrong…please try again / 出现了一些问题…请重试」错误卡,或已发送、流已结束但页面没有任何新输出 → 自动刷新;只在最近 2 分钟有对话活动时评估;同一问题两次观察(≥2 s)才动手,最多自动刷新 2 次(同路径间隔 ≥30 s),再异常只在活动行提醒;链接页 / 加载中 / 探针·清理·会话探针开始 2 分钟内不刷新) | 工具 → 回复监控 开关(`prefs.autoRefresh`,默认开) | `src/lib/watchdog.js`(纯策略,`decide`/`applied`,单测对齐参考 `ReplyWatchdogTest`)+ `dock.js onPage('watch')` → `requestReload('watchdog')` + 悬浮球任务 `recovery` | `injected/watchdog.js`(600 ms 轮询 DOM,仅上报 `{k,path,generating,len,at,act}`;`__ARENAKIT_FLAGS__.autoRefresh===false` 时不扫描) | android `assets/watchdog.js` v3 + `web/ReplyWatchdog.kt` |
 | **安卓状态胶囊 + 底部面板**(参考 v0.6.4:扁平胶囊 36 dp = 额度环(% 在环内,忙碌时 80° 弧旋转)+ 13 sp 标签(模型 / 新对话 / 探针·清理进度 / 闪现「已发送 ✓」)+ 可选 ⟳ 区;单击 → 面板(触点抖动 ≤12 px 仍算单击;WebView 没送到指针事件时按随后的 click 兜底,700 ms 内去重),⟳ 区单击 → 刷新,长按 500 ms → 快捷菜单(开始 / 停止探针、会话探针、清理算式标题、刷新页面、切换账号、打开面板;触摸长按后安卓补发的 contextmenu 只拦截不再切换菜单),拖动后 180 ms 贴最近一侧(位置以「边 + 高度比例」记忆,默认右侧 18%);面板为贴底 Bottom Sheet(抓手横条 + 右上 ✕、最大 560 宽 / 85% 高、遮罩、下滑 / 遮罩 / 返回键关闭,表头无刷新按钮)) | 内嵌壳 | `src/embed/shell.js`(mount / setPill / setLoading / confirm / handleBack / pull-up)+ `src/lib/pill-layout.js`(`clampPos` / `ringPalette` / `pillPlacement` / `snapSide` / `pillLabel` / `turnHeadline` 单测)+ `dock.js renderPill / flashPill / setTask` | — | android `StatusPillView.kt` / `FloatingDragHelper.kt` / `ControlPanel.kt` / `panel_sheet.xml` |
@@ -104,6 +102,19 @@
 - **macOS 仅分栏**:桌面唯一布局是分栏——`lib.rs` 启动时 `desktop_layout()` 直接返回 `Dock`,起一个 `Window "main"`(1360×900)装两个子 webview:左 `arena`(`https://arena.ai`,init 脚本只含 bridge/snoop/... 等注入,平台标记 `__ARENAKIT_PLATFORM__="desktop"`),右 `dock`(`dock.html`,与安卓同一份前端,通过 WebviewUrl::App 加载)。`prefs.desktopLayout` 已废弃——历史值被忽略,旧 dock 不会读取它。`shell.js` 桌面补齐:window 捕获阶段 `keydown`:Esc → `handleBack()`、⌘/Ctrl+R / F5 → `fire('refresh')`(dock `requestReload`)、⌘[ / ⌘] → `history.back/forward`(编辑框内不拦截);`@media (hover: hover)` 悬停样式。桌面 `capabilities/arena.json` **不**授予 `core:event:*` 与 `login_set`:桌面 dock 是独立 webview(`default.json`,`core:default` 自带事件订阅),页面里没有任何脚本调用 `listen()`;只有安卓的 `arena-mobile.json`(dock 内嵌在页面里)才需要 `core:event:allow-listen/unlisten` 和 `login_set`(AUDIT-2 §2.3)。
 - **桌面菜单栏「页面」**(`src-tauri/src/menu.rs`,`Menu::default` + 追加子菜单,保留 Edit 复制粘贴 / Window ⌘W 关窗):刷新 ⌘R、后退 ⌘[、前进 ⌘]、在浏览器中打开 ⌘⇧O、复制链接 ⌘⇧C —— 安卓链接页工具栏(⟳ / 在浏览器中打开 / 复制 / ✕)的桌面对应。分发:焦点在 `tab-*` 链接窗口 → 直接 `eval` / `url()` 处理;否则针对 arena 页面:刷新 / 前进 / 后退经 `arenakit://page` 事件 `menu` 交给 dock(与胶囊 ⟳ 同一条 `requestReload` 路径:防抖、忙碌确认、进度条),在浏览器中打开 / 复制链接用 `get_webview("arena").url()` 原生完成(macOS `pbcopy`,文本走 stdin 不经 shell)。macOS 上菜单快捷键先于网页 keydown,所以 ⌘R 由菜单处理;shell.js 里的 ⌘R / F5 是 Windows / Linux 与无菜单场景的兜底。
 - 验收:真机安装,登录、截令牌、额度、注入脚本、抽屉里的全部模块可用。
+
+### M7 — 指纹兜底(ArenaKit 自研,非上游移植)✅ 离线核心就位
+
+trace 拿不到服务端真名时的**统计性**退路。信任等级低于任何服务端信号,`source='fingerprint'` `SOURCE_RANK=2`:低于真名、高于标题推断;**绝不覆盖已确认模型**。按估计重命名默认关闭,仅在用户显式打开「指纹」页的重命名开关、且本次估计 `status==='attributed'` 且 `confidence ≥ fingerprintRenameThreshold`(懒人默认 0.85)时才触发;与服务端真名的自动重命名(`prefs.autoRename`)相互独立,服务端真名随时覆盖。分 PR 落地,全程零付费探针、不碰 trace 授权边界:
+
+- **PR1 判定内核**(`src/lib/fingerprint.js` + `data/fingerprint/*` + `tests/fingerprint.test.mjs`):`classify()` 判别式白化 + softmax(beta=12),三道门——OOD 比值门(histogram 主防线 `minUniformRatio=1.05`)、非目标家族即 unknown(sonnet/haiku/gpt5 作负类)、margin/confidence 门(`minMargin=1.2`/`minConfidence=0.6`,移植自 arena-local-bridge PR#29,**未标定**)。两协议(ModelTrace 长整数直方图 / fpverify 类别电池)严格分离,候选概率永不合并。宁可 `unresolved` 也不硬判。
+- **PR2 识别管线接入**:history 增 `estimatedModel`;`model-resolve.js` 把指纹推测排进信任顺序(低于 live/history 真名、高于标题猜测);dock 只读展示。
+- **PR3 页面侧归约 + 安全通道**:`injected/fingerprint.js` 把回复**只归约成数字 / 类别特征**,经 flag 门控的 `fingerprint-sample` 事件(Rust `ALLOWED_PAGE_EVENTS` 已含)传给 dock;**原文永不过桥**。
+- **PR4 主动探针编排**(`src/lib/fingerprint-runner.js` + `injected/probe.js` 的 `sendFingerprintProbe` probeCall 动作 + dock 接线):固定提示词 allowlist 住在页面侧(远端配置无法替换探针正文),runner 只传 id。**真实探针门禁**——默认关闭,需用户**再次明确确认 + 预算上限**才小规模受控发送;未校准 bank 永不提前短路(跑满计划);取消即时生效、不超预算重发。缺 bank 不发送,未确认不发探针 / 不新建会话 / 不消耗额度。
+- **PR5 评估/校准脚手架**(`src/lib/fingerprint-calibration.js` + `scripts/fingerprint-calibrate.mjs` + `tests/fingerprint-calibration.test.mjs`):确定性离线评估(带种子 PRNG 从各 bank 模型自身分布抽样合成回答,喂进真实 `classify()`),公布三系列混淆矩阵 / Opus↔Fable 互相误判率 / GPT-6 版本漂移 / 接受正确率 / 覆盖率 / unknown 拒识率 / 探针数(均值·P95·最大)+ bank 采样日期与版本;`--sweep` 暴露 coverage↔precision 权衡,但**不自动改阈值**(`DEFAULT_THRESHOLDS.calibrated` 仍 `false`)。零模型调用。
+- **离线 bank**:`data/fingerprint/*` 由 `scripts/gen-fingerprint-banks.mjs` 冻结进 `src/lib/fingerprint-banks.js`(CI `--check` 防过期),dock 从此 import,**不走网络**。
+- **诚实边界**:bank 是作者自述第三方渠道的**起始先验**,未经真实匹配渠道的 Arena 盲测标定(UI 标注「未完成 Arena 校准」);评估数字是内部可分性上界,不是 Arena 真实准确率;softmax 不是标定后的正确概率;family ≠ 精确版本。详见 `docs/FINGERPRINT.md`、`docs/ARCHITECTURE.md` 的指纹兜底节。
+- **数据阻塞项**:仍缺 Fable 5.1 同协议参考、GPT-6 fpverify 覆盖、以及任何真实匹配渠道盲测集;在它们到位前阈值保持未标定。
 
 ---
 
@@ -135,15 +146,14 @@
 | `src-tauri/src/trace.rs` | inspector `core.js` + android `ArenaProtocol.kt` `TraceClient.kt` | JS/Kotlin→Rust | validateToken / extractModels / 8×3s 轮询。**逐条对齐两版规则** |
 | `src-tauri/src/usage.rs` | inspector `core.js`(span 用量标签) | JS→Rust | 从 span 抽 Token / 费用;`partial` 时继续轮询补齐 |
 | `src-tauri/src/store.rs` | ArenaKit 新增 | Rust | `<app_data_dir>/arenakit-store.json`,`store_get/set/keys`;dock 的 prefs / 会话历史 / 重命名闸门都存这里 |
-| `src/dock.*` | inspector `hud.js` `panel.js` + android `ControlPanel.kt` / `panel_sheet.xml`(v0.6.4) | JS→JS | 原生 dock(桌面独立 webview / 安卓内嵌 Bottom Sheet)。表头按参考面板:模型(未知灰「模型待确认」;本轮与首轮不同时橙黄)+ 状态行 + 剩余额度 / 重置倒计时 + 4 dp 额度条 + ⟳;活动行 + 可展开日志;页签 对话 / 探针 / 工具 / 更多:轮次、探针(含会话探针)、清理 / 重命名 / 页面导航 / 刷新开关 / 自动刷新开关 / 会话历史、功能模块 / 提示词注入 / 设置(主题:跟随系统/亮色/暗色,`prefs.theme`,CSS 变量 + `[data-theme]`;开关:截获会话流 / 额度轮询 / 回复监控 / 自动刷新 —— 通过页面动作 `flagSet` 写入 `window.__ARENAKIT_FLAGS__`,`injected/snoop.js` `pulse.js` `monitor.js` `watchdog.js` 读取,每次页面加载(`nav` reason=init)重新下发) |
+| `src/dock.*` | inspector `hud.js` `panel.js` + android `ControlPanel.kt` / `panel_sheet.xml`(v0.6.4) | JS→JS | 原生 dock(桌面独立 webview / 安卓内嵌 Bottom Sheet)。表头按参考面板:模型(未知灰「模型待确认」;本轮与首轮不同时橙黄)+ 状态行 + 剩余额度 / 重置倒计时 + 4 dp 额度条 + ⟳;活动行 + 可展开日志;页签 对话 / 指纹 / 工具 / 更多:轮次、模型指纹(协议 / 会话数 / 可选按置信度阈值重命名 / 前缀)、重命名 / 页面导航 / 刷新开关 / 自动刷新开关 / 会话历史、功能模块 / 提示词注入 / 设置(主题:跟随系统/亮色/暗色,`prefs.theme`,CSS 变量 + `[data-theme]`;开关:截获会话流 / 额度轮询 / 回复监控 / 自动刷新 —— 通过页面动作 `flagSet` 写入 `window.__ARENAKIT_FLAGS__`,`injected/snoop.js` `pulse.js` `monitor.js` `watchdog.js` 读取,每次页面加载(`nav` reason=init)重新下发) |
 | `src/lib/turns.js` | android `TurnTracker.kt` | Kotlin→JS | 每轮 → 模型;`routed` = 与首轮模型不同;历史最多 6 条 |
 | `src/lib/history.js` | inspector `history.js` + android `HistoryLogic.kt` | JS/Kotlin→JS | `history.<sessionId>` 记录 + `history-carry` 淘汰累计桶;200 条上限 |
 | `src/lib/usage.js` | inspector `view-model.js` | JS→JS | 用量合并/汇总/格式化/证据导出 |
 | `src/lib/rename.js` | ArenaKit 新增(前缀) + android `nextSuffix` | JS | `buildTitle({prefix, model, suffix})` ≤100 字符;每对话一次的自动重命名闸门 |
 | `src/lib/rpc.js` | android `ProbeController.rpc()` | Kotlin→JS | 35s 超时、`deliver(probe-result)`、`cancelAll` |
-| `src/lib/probe-logic.js` | android `ProbeLogic.kt` | Kotlin→JS | 目标解析/别名/模糊匹配、算式标题判定、清理候选、随机算式 |
-| `src/lib/probe-runner.js` | android `ProbeController.kt` | Kotlin→JS | 探针循环、清理扫描、quickSend;停止即时生效(每个 await 与取消令牌竞速) |
-| `src/lib/session-probe.js` | android `quickSend` + TurnTracker | Kotlin→JS | 前置检查(草稿/生成中/对话框)、等待本会话新一轮被识别 |
+| `src/lib/fingerprint-runner.js` | ArenaKit 新增 | JS | 指纹探针循环:固定 allowlist 探针 → 页面侧特征 → classify();单运行闸、取消令牌、轮次节流、连续失败上限、页面/会话/模式变化即停 |
+| `src/lib/fingerprint.js` | ArenaKit 新增 | JS | `classify()`:判别式白化 + softmax,OOD / margin / confidence 三道门,两协议候选永不跨协议合并;阈值未校准 |
 | `src/lib/monitor.js` | ArenaKit 新增 | JS | `classifyReply` → 回复报错/中断/停滞/空回复,否则「无异常信号」;标记到当前会话最新一轮 |
 | `src/lib/pulse.js` | android `PulseTiming.kt` + inspector `pulse.js` | Kotlin/JS→JS | `resetTimeFromRefreshedAt`/`anchorReset`/`band`/`formatCountdown`/`createPulseState` |
 
@@ -231,6 +241,7 @@ Rust → dock 事件:
 | `probe-result` | probe.js | `{reqId, ok, data}` / `{reqId, ok:false, error}` |
 | `reply-monitor` | monitor.js | `{sessionId, ended:'done'|'abort'|'stalled'|'http', frames, bytes, textChars, errorFrames, lastError, durationMs, idleMs, generating, at}` |
 | `watch` | watchdog.js | `{k:'empty'|'error:<≤40 字>', path, generating, len, at, act}`(仅 `/agent*` `/c/*`;dock 侧再截到 24 字) |
+| `fingerprint-sample` | fingerprint.js(flag 门控) | 归约后的结构化特征:直方图 `{protocolId, probeId, counts, n, dims, parseError, frames}` / 类别 `{protocolId, probeId, questionId, value, parseError, frames}`——**只含数字 / 类别,绝无原文** |
 | `link-tab` | links.js(原生 LinkTab 经 `setOpen` 回写) | `{open}` |
 | `menu` | Rust `menu.rs`(桌面菜单栏「页面」,非页面发出) | `{action: 'reload' \| 'back' \| 'forward'}` → dock `requestReload('menu')` / `navBack` / `navForward` |
 | `pulse` | pulse.js | `{ok:true, percent, refreshedAt, at}` / `{ok:false, error, retryAfterMs, at}` |
@@ -240,7 +251,7 @@ Rust → dock 事件:
 
 dock → 页面:`arena_command` eval;约定入口 `window.__ARENAKIT__.dispatch(name, payload)`(如 `pulse-refresh`)、`window.ArenaProbe.call(action, argsJson, reqId)`(探针 RPC)、`__AK_*_SET__`(增强脚本开关)。
 
-探针 RPC 动作(probe.js):`precheck` `newChat` `ensureAgentMode` `send{prompt}`(仅算式、仅新对话、不覆盖草稿)`sendToCurrent{text}`(当前对话,生成中拒绝)`sidebarList{expand}` `collapseSidebar` `openConversation` `revealSidebarItem{sessionId}` `rename{sessionId,title}` `archive{sessionId,requireCurrentUrl,manageSidebar}`。
+探针 RPC 动作(probe.js):`precheck` `newChat` `ensureAgentMode` `send{prompt}`(仅算式、仅新对话、不覆盖草稿)`sendToCurrent{text}`(当前对话,生成中拒绝)`sidebarList{expand}` `collapseSidebar` `openConversation` `revealSidebarItem{sessionId}` `rename{sessionId,title}` `archive{sessionId,requireCurrentUrl,manageSidebar}` `sendFingerprintProbe{protocolId,probeId}`(**提示词只从页面侧固定 allowlist `FINGERPRINT_PROMPTS` 按 id 取,忽略任何传入 prompt**;复用 `send()` 的护栏,返回 `{session,probeId}`;指纹编排器专用)。`ArenaProbe.fingerprintProbeIds()` 返回 `{protocolId:[ids]}` 供 dock 核对。
 
 账号 RPC 动作(account.js,`window.ArenaAccount.call(action, argsJson, reqId)` → `account-result`,dock 经 `lib/page-actions.js` 的 `accountCall`):`snapshot`(含作用域探测)`restore{cookies, scope, expectSig?, navigate?}`(`expectSig` 与当前 Cookie 签名不符 → 原样返回 `{stale:true, previous}` 不动 Cookie;否则先删旧 auth 块及兄弟块,再按 host / Domain 作用域写入,核对无残留;应答里带 `previous`(换出去的会话)与 `storageCleared`(删掉的 web storage 会话副本数),`navigate:'/path'|true` 时应答发出后先冻结 auth Cookie 写入(`freezeAuthWrites`)、把期望会话写进 sessionStorage `arenakit.account.expect`,再立刻 `location.replace` 到本站该路径并打 `arenakit.reloading` 戳;下一个文档 document_start 复核该戳,不符则重写一次并再加载)`clear{navigate?}`(删所有 auth Cookie 含游客态,不调 signOut)`login{creds}`(启动页面侧一键重新登录)`stop` `status`。dock 侧状态存 store 键 `accounts`:`{list:[{id,userId,email,name,avatar,provider,label,cookies,sig,expiresAt,capturedAt,lastUsedAt}], activeId, pending:{type:'switch'|'add'|'login', id, at}|null}`(`src/lib/accounts.js` 归一化;`pending` 5 min 过期)。
 
@@ -251,12 +262,18 @@ node --test 'tests/**/*.test.mjs'   # 纯逻辑库直接 import;注入脚本用 
                                     # 账号:tests/account.test.mjs(account.js 单元)+ tests/account-flow.test.mjs
                                     # (真实 account.js + rpc + account-flow 走完整切换 / 添加 / 一键重新登录旅程,
                                     #  Cookie 罐懂 Domain / Max-Age;夹具 tests/account-fixture.mjs)+ accounts / model-resolve
+                                    # 指纹:tests/fingerprint.test.mjs(判定内核)+ tests/fingerprint-runner.test.mjs(探针编排)
+                                    #       + tests/fingerprint-calibration.test.mjs(种子确定性离线评估,零模型调用)
 node scripts/check-syntax.mjs       # 注入脚本按 script、dock 按 module 做语法检查
 cargo test --manifest-path src-tauri/Cargo.toml   # trace/usage/store/pulse 单测 + init 包隔离测试
 ```
 
 ```bash
 node scripts/bundle-dock.mjs          # 重新生成安卓内嵌 dock 包(src/embed/*.gen.js);--check 只校验
+node scripts/gen-fingerprint-banks.mjs # 把 data/fingerprint/* 冻结进 src/lib/fingerprint-banks.js;--check 只校验
+node scripts/fingerprint-calibrate.mjs # 离线评估/校准脚手架:混淆矩阵 / 覆盖率 / 接受正确率 / 拒识率 / 探针数等
+                                       # --json[ --out F] / --sweep(阈值扫描)/ --protocol PID / --holdout(留一泛化)
+                                       # 零模型调用、确定性;公布的是内部可分性上界,不是 Arena 真实准确率
 ```
 
 CI(`.github/workflows/build.yml`):`node-test`(含 bundler `--check`)→ `rust-test` → `macos-dmg`(矩阵:`aarch64-apple-darwin` + `x86_64-apple-darwin`,同一台 arm64 runner 交叉编译 Intel 包,产物 `*_aarch64.dmg` / `*_x64.dmg`)/ `android-apk` → `release`(把 `.dmg` / `.apk` 原文件作为预发布的附件发布,只保留最新一个 `build-*`,需 `permissions: contents: write`)。**触发规则(0.5.0 起)**:`main` 与 `arena/**` 分支推送**只跑测试**(不出包);**推送 `build-*` tag 才出包**,release 直接用该 tag(标题 `ArenaKit build #<tag号>`);`gh workflow run build.yml --ref <branch>` 手动触发同样出包(自建 `build-<run>` tag)。出包前先改 `tauri.conf.json` / `Cargo.toml` / `package.json` 的版本号。

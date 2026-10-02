@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeRecord, createHistoryStore, addPageId, MAX_PAGE_IDS } from '../src/lib/history.js';
+import { mergeRecord, createHistoryStore, addPageId, MAX_PAGE_IDS, mergeFingerprintRecord } from '../src/lib/history.js';
 import { resolveModel, findRecord, modelsFromRuns, inferModelFromTitle, knownModels, SOURCE_TEXT } from '../src/lib/model-resolve.js';
 
 /* 0.4.9 model-name hardening: every local source, in order of trust. */
@@ -70,6 +70,24 @@ test('resolveModel falls back to run span labels, then the turn tracker, then th
   assert.equal(SOURCE_TEXT.title.startsWith('标题推断'), true);
   // nothing at all
   assert.deepEqual(resolveModel({ pageId: 's5', title: 'How do I bake bread?' }).models, []);
+});
+
+test('resolveModel: a stored attributed fingerprint ranks below confirmed sources, above the title guess, flagged 指纹推断', () => {
+  const fp = (sessionId, model, over = {}) => mergeFingerprintRecord(null, { sessionId, estimate: { schemaVersion: 1, sessionId, family: 'opus', estimatedModel: model, status: 'attributed', source: 'fingerprint', confidence: 0.9, margin: 2, protocol: { id: 'modeltrace-long-integers-v1' }, referenceBankVersion: 'modeltrace-summary-v1', probeCount: 3, createdAt: '2026-10-01T00:00:00Z', ...over } });
+  // only a fingerprint estimate → source 'fingerprint'
+  const only = resolveModel({ pageId: 'f1', historyIndex: idx(fp('f1', 'claude-opus-5')) });
+  assert.deepEqual([only.source, only.models[0].model], ['fingerprint', 'claude-opus-5']);
+  assert.equal(SOURCE_TEXT.fingerprint.includes('统计估计'), true);
+  // a confirmed observation on the same record wins over the fingerprint
+  const confirmedRec = { ...fp('f2', 'claude-opus-5'), observations: [{ model: 'claude-opus-5-5', provider: 'p', runId: 'r', lastSeen: '2026-10-01T01:00:00Z' }] };
+  const beat = resolveModel({ pageId: 'f2', historyIndex: idx(confirmedRec) });
+  assert.deepEqual([beat.source, beat.models[0].model], ['history', 'claude-opus-5-5']);
+  // an unresolved estimate yields no model → falls through to title/none
+  const un = resolveModel({ pageId: 'f3', historyIndex: idx(fp('f3', null, { status: 'unresolved', family: 'unknown' })) });
+  assert.deepEqual(un.models, []);
+  // live still beats a fingerprint
+  const live = resolveModel({ pageId: 'f4', sessions: new Map([['f4', { models: [{ model: 'gemini-3-pro', provider: '' }], runs: [] }]]), historyIndex: idx(fp('f4', 'claude-opus-5')) });
+  assert.equal(live.source, 'live');
 });
 
 test('inferModelFromTitle: known names anywhere; the "<prefix><model>-NNN" pattern; ordinary titles give nothing', () => {

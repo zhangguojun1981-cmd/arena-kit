@@ -170,7 +170,6 @@ button, input, select, textarea { font-family: inherit; }
 .ak-divider { border: 0; border-top: 1px solid var(--ak-outline); margin: 4px 16px; }
 .ak-note { font-size: 11px; color: var(--ak-sub); margin: 6px 0; }
 .ak-empty { color: var(--ak-sub); font-size: 12px; padding: 8px 0; }
-.ak-about { padding: 12px 16px 4px; font-size: 11px; color: var(--ak-sub); text-align: center; }
 
 /* ── collapsible sections (usage / monitor / history) ── */
 .ak-mod { border-top: 1px solid var(--ak-outline); margin: 4px 16px 0; }
