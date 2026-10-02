@@ -584,6 +584,29 @@
     return { session: id, probeId };
   }
 
+  // Send a built-in fingerprint probe into the CURRENT, already identified
+  // conversation. Used by the automatic labelled-sample collector: every reply
+  // is paired with that same turn's server trace model before it is admitted to
+  // the local sample bank. Still allowlist-only; callers cannot supply text.
+  async function sendFingerprintProbeCurrent(args) {
+    const protocolId = String(args?.protocolId || '');
+    const probeId = String(args?.probeId || '');
+    const prompt = FINGERPRINT_PROMPTS[protocolId]?.[probeId];
+    if (typeof prompt !== 'string' || !prompt) throw Error('未登记的指纹探针；未发送');
+    if (location.origin !== ARENA) throw Error('已离开 Arena');
+    const id = session();
+    if (!id) throw Error('请先打开一个旧对话');
+    if (isGenerating()) throw Error('当前回复仍在生成，已停止');
+    noDraft(false);
+    const editor = composer();
+    if (!editor) throw Error('输入框不可用');
+    if (!fillPrompt(editor, prompt)) throw Error('输入消息失败；未发送');
+    const button = await waitFor(() => findSend(editor), '发送按钮不可用；未发送');
+    if (editorText(editor) !== prompt || session() !== id) throw Error('输入或对话已变化；未发送');
+    button.click();
+    return { session: id, probeId };
+  }
+
   // Sidebar snapshot for title-based cleanup: [{sessionId, title}].
   // The list is virtualized (only visible links exist in the DOM), so scroll it
   // to the bottom until the count stops growing before snapshotting.
@@ -712,7 +735,7 @@
     return r || { archived: true };
   }
 
-  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sendFingerprintProbe, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
+  const ACTIONS = { precheck, newChat, ensureAgentMode, ensureGithub, ensureProject, applyDefaults, send, sendToCurrent, sendFingerprintProbe, sendFingerprintProbeCurrent, sidebarList, collapseSidebar, openConversation, revealSidebarItem, rename, archive };
 
   async function call(action, argsJson, reqId) {
     let res;

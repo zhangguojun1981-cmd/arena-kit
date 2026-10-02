@@ -111,7 +111,7 @@ const state = {
   historyCarry: null,       // evicted totals bucket
   rpc: null,                // createRpc() — dock → page probe.js actions
   // 模型指纹: page-side fixed-probe reducer. It COLLECTS the structured features
-  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null, runner: null },
+  fingerprint: { samples: [], lastResult: null, protocolId: null, sessionId: null, runner: null, collecting: false, stopCollect: false, library: [], traceWaiters: [] },
   monitor: null,            // createReplyMonitor() — reply stream anomaly badges
   pulse: createPulseState(), // daily quota % + anchored reset countdown
   // header + status-pill display state: model/routed/pending, the running
@@ -592,6 +592,7 @@ function onTrace(p) {
     let head = '';
     if (turn && models.length) {
       head = tracker.record(turn, models[0].model, models.map((m) => m.model), p.strength || '');
+      deliverFingerprintTrace(p, models, turn, runKey);
       if (!p.complete) tracker.setStatus(turn, completion(run?.spans || []));
       else tracker.setStatus(turn, run?.spans?.length ? completion(run.spans) : '已识别');
     }
@@ -1235,6 +1236,110 @@ function takeFingerprintFeature(sessionId, probeId, { timeoutMs = FP_FEATURE_WAI
     tick();
   });
 }
+// ── labelled fingerprint sample library ---------------------------------
+const FP_LIBRARY_KEY = 'fingerprint-sample-library-v1';
+const FP_LIBRARY_MAX = 5000;
+function eligibleFingerprintModel(name) {
+  const s = String(name || '').toLowerCase();
+  let m = s.match(/(?:^|[-_])gpt[-_]?([0-9]+)(?:\D|$)/); if (m && Number(m[1]) >= 6) return true;
+  m = s.match(/opus[-_]?([0-9]+)(?:\D|$)/); if (m && Number(m[1]) >= 5) return true;
+  m = s.match(/fable[-_]?([0-9]+)(?:\D|$)/); return !!(m && Number(m[1]) >= 5);
+}
+function shortHash(value) {
+  let h = 2166136261;
+  for (const c of String(value || '')) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+function renderFingerprintLibrary() {
+  const el = q('ak-fingerprint-library-count');
+  if (!el) return;
+  const counts = new Map();
+  for (const s of state.fingerprint.library) counts.set(s.label.model, (counts.get(s.label.model) || 0) + 1);
+  el.textContent = `${state.fingerprint.library.length} 条` + (counts.size ? ` · ${counts.size} 个模型` : '');
+}
+async function loadFingerprintLibrary() {
+  const v = await state.store.get(FP_LIBRARY_KEY).catch(() => []);
+  state.fingerprint.library = Array.isArray(v) ? v.slice(-FP_LIBRARY_MAX) : [];
+  renderFingerprintLibrary();
+}
+async function saveFingerprintSample(sample) {
+  if (state.fingerprint.library.some((x) => x.sampleId === sample.sampleId)) return false;
+  state.fingerprint.library.push(sample);
+  if (state.fingerprint.library.length > FP_LIBRARY_MAX) state.fingerprint.library.splice(0, state.fingerprint.library.length - FP_LIBRARY_MAX);
+  await state.store.set(FP_LIBRARY_KEY, state.fingerprint.library);
+  renderFingerprintLibrary();
+  return true;
+}
+function waitFingerprintTrace(sessionId, startedAt, timeoutMs = 60000) {
+  return new Promise((resolve) => {
+    const waiter = { sessionId, startedAt, resolve, timer: 0 };
+    waiter.timer = setTimeout(() => {
+      state.fingerprint.traceWaiters = state.fingerprint.traceWaiters.filter((x) => x !== waiter);
+      resolve(null);
+    }, timeoutMs);
+    state.fingerprint.traceWaiters.push(waiter);
+  });
+}
+function deliverFingerprintTrace(p, models, turn, runKey) {
+  const now = Date.now();
+  for (const w of [...state.fingerprint.traceWaiters]) {
+    if (w.sessionId !== p.sessionId || now < w.startedAt) continue;
+    clearTimeout(w.timer);
+    state.fingerprint.traceWaiters = state.fingerprint.traceWaiters.filter((x) => x !== w);
+    w.resolve({ models, turn, runKey, runId: p.runId || '', provider: models[0]?.provider || '' });
+  }
+}
+async function collectFingerprintSamples() {
+  if (state.fingerprint.collecting) return;
+  const streamSession = state.current.sessionId || conversationFor(state.nav.sessionId);
+  if (!state.nav.sessionId || !streamSession) { setStatus('请先打开一个以前能逐轮识别模型的旧对话'); return; }
+  if (state.prefs.capture === false || state.prefs.fingerprintOn === false) { setStatus('请先开启“截获会话流”和“模型指纹”'); return; }
+  const protocolId = fingerprintProtocolId(), maxRounds = fingerprintBudget();
+  const plan = FP_PROBE_IDS[protocolId] || [];
+  if (!plan.length) return;
+  const ok = await confirmDialog({ title: '自动采集已确认样本', message: `将在当前旧对话连续发送最多 ${maxRounds} 条固定探针。每轮等待 Trace 真名，只自动保存 GPT-6+、Opus 5+、Fable 5+ 的唯一模型结果。会消耗额度，确定继续？`, ok: '开始采集', cancel: '取消' });
+  if (!ok) return;
+  state.fingerprint.collecting = true; state.fingerprint.stopCollect = false;
+  const startBtn = root.querySelector('[data-action="fingerprint-collect"]'), stopBtn = root.querySelector('[data-action="fingerprint-collect-stop"]');
+  if (startBtn) startBtn.disabled = true; if (stopBtn) stopBtn.disabled = false;
+  let saved = 0;
+  try {
+    for (let i = 0; i < maxRounds && !state.fingerprint.stopCollect; i++) {
+      const probeId = protocolId === 'fpverify-battery-v1' ? plan[i % plan.length] : plan[0];
+      const startedAt = Date.now();
+      fingerprintLog(`样本采集 ${i + 1}/${maxRounds} · ${probeId}`);
+      await dispatchToPage('fingerprint-arm', { sessionId: streamSession, probeId, protocolId, kind: protocolId === 'fpverify-battery-v1' ? 'categorical' : 'histogram', questionId: protocolId === 'fpverify-battery-v1' ? probeId : null });
+      const featureP = takeFingerprintFeature(streamSession, probeId, { timeoutMs: FP_FEATURE_WAIT_MS });
+      const traceP = waitFingerprintTrace(streamSession, startedAt, FP_FEATURE_WAIT_MS);
+      await state.rpc.call('sendFingerprintProbeCurrent', { protocolId, probeId });
+      const [feature, trace] = await Promise.all([featureP, traceP]);
+      await dispatchToPage('fingerprint-disarm', null);
+      if (!feature || feature.parseError) { fingerprintLog('未入库：回复特征解析失败'); continue; }
+      if (!trace || trace.models.length !== 1) { fingerprintLog('未入库：本轮没有唯一的服务端模型标签'); continue; }
+      const model = trace.models[0].model;
+      if (!eligibleFingerprintModel(model)) { fingerprintLog(`跳过 ${model}：不在 GPT-6+/Opus 5+/Fable 5+ 范围`); continue; }
+      const iso = new Date().toISOString();
+      const sidHash = shortHash(streamSession), runHash = shortHash(trace.runKey || trace.runId);
+      const sampleId = `fps_${iso.replace(/[-:.]/g, '').replace('Z', 'Z')}_${sidHash}_t${String(trace.turn || 0).padStart(3, '0')}_${runHash}`;
+      const sample = { schemaVersion: 1, sampleId, status: 'accepted', label: { model, family: /fable/i.test(model) ? 'fable' : /opus/i.test(model) ? 'opus' : 'gpt6', source: 'server-trace', provider: trace.models[0].provider || '', partial: false }, collection: { channel: 'arena', platform: EMBED ? 'android' : 'desktop', createdAt: iso, sessionHash: sidHash, turn: trace.turn || null, runKeyHash: runHash }, protocol: { id: protocolId, probeId, version: 1 }, feature: feature.counts ? { kind: 'histogram', dims: feature.dims, n: feature.n, counts: feature.counts } : { kind: 'categorical', questionId: probeId, value: feature.value }, quality: { valid: true, signal: feature.n >= 300 ? 'good' : feature.n >= 80 || feature.value ? 'usable' : 'low', labelConfirmed: true, ambiguousTrace: false } };
+      if (await saveFingerprintSample(sample)) { saved++; fingerprintLog(`已自动入库：${model} · ${sample.quality.signal} · ${sampleId}`); }
+      if (i + 1 < maxRounds) await new Promise((r) => setTimeout(r, 2500));
+    }
+  } catch (e) { fingerprintLog(`采集中断：${e?.message || e}`); }
+  finally {
+    state.fingerprint.stopCollect = false; state.fingerprint.collecting = false;
+    try { await dispatchToPage('fingerprint-disarm', null); } catch {}
+    if (startBtn) startBtn.disabled = false; if (stopBtn) stopBtn.disabled = true;
+    setStatus(`样本采集结束，本次自动入库 ${saved} 条`);
+  }
+}
+async function exportFingerprintLibrary() {
+  if (!state.fingerprint.library.length) { setStatus('样本库为空'); return; }
+  const text = state.fingerprint.library.map((x) => JSON.stringify(x)).join('\n');
+  const box = q('ak-export'); box.value = text; box.hidden = false;
+  try { await navigator.clipboard.writeText(text); setStatus(`已复制 ${state.fingerprint.library.length} 条 JSONL 样本`); } catch { setStatus('样本 JSONL 已生成，请手动复制'); }
+}
+
 // Build the active fingerprint runner. Every side effect is injected so the
 // controller stays DOM/IPC-free and unit-testable. loadReference reads the
 // BUNDLED banks (fingerprint-banks.js) — never the network — so the estimate
@@ -1664,6 +1769,17 @@ function wireControls() {
         copyFingerprintDiagnostic();
       } else if (a === 'fingerprint-clear') {
         clearFingerprint();
+      } else if (a === 'fingerprint-collect') {
+        collectFingerprintSamples();
+      } else if (a === 'fingerprint-collect-stop') {
+        state.fingerprint.stopCollect = true;
+        fingerprintLog('正在停止自动采集…');
+      } else if (a === 'fingerprint-library-export') {
+        exportFingerprintLibrary();
+      } else if (a === 'fingerprint-library-clear') {
+        confirmDialog({ title: '清空指纹样本库', message: `确定删除本机保存的 ${state.fingerprint.library.length} 条已确认样本？`, ok: '清空', cancel: '取消' }).then(async (ok) => {
+          if (!ok) return; state.fingerprint.library = []; await state.store.set(FP_LIBRARY_KEY, []); renderFingerprintLibrary(); setStatus('指纹样本库已清空');
+        });
       }
     });
   });
@@ -1701,6 +1817,7 @@ async function boot() {
   state.rpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('probeCall', action, argsJson, reqId) }) : null;
   state.accountRpc = state.tauri ? createRpc({ send: (action, argsJson, reqId) => pageActions('accountCall', action, argsJson, reqId) }) : null;
   await loadPrefs();
+  await loadFingerprintLibrary();
   const acctFlow = createAccounts();
   await acctFlow.load(); // before any page event can reach onSnapshot
   state.acct = acctFlow;

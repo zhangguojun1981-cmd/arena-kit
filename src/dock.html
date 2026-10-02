@@ -126,6 +126,15 @@
         </div>
         <div class="ak-note">开始前会提示「本次最多发送 N 条固定探针消息（消耗额度）」。「会话数 / 最多发送」= 本次最多新建并发送的固定探针条数。固定提示词托管在页面侧 allowlist，不接受任意文本。低于判定阈值时结果为「未判定」而非强行归类。</div>
         <div id="ak-fingerprint-state" class="ak-sub"></div>
+        <hr class="ak-divider" />
+        <div class="ak-group-head"><span>已确认样本库</span><span id="ak-fingerprint-library-count" class="ak-group-note">0 条</span></div>
+        <div class="ak-note">在当前旧对话中自动连续发送固定探针；每一轮只在 Trace 给出唯一且符合范围的真实模型时自动入库。仅收集 GPT-6 系及以上、Claude Opus 5 及以上、Claude Fable 5 及以上。模型按轮次标注，不沿用上一轮。</div>
+        <div class="ak-btns">
+          <button class="ak-btn ak-btn-sm ak-filled" data-action="fingerprint-collect">自动采集到样本库</button>
+          <button class="ak-btn ak-btn-sm" data-action="fingerprint-collect-stop" disabled>停止采集</button>
+          <button class="ak-btn ak-btn-sm ak-tonal" data-action="fingerprint-library-export">导出样本库</button>
+          <button class="ak-btn ak-btn-sm ak-danger" data-action="fingerprint-library-clear">清空样本库</button>
+        </div>
         <pre id="ak-fingerprint-log" class="ak-log" hidden></pre>
       </div>
     </section>
