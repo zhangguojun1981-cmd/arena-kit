@@ -79,6 +79,25 @@ class DeviceAcceptanceTest {
             } finally { store.clear() }
         }
     }
+    @Test fun privateKeyPickerUsesSystemSafWithoutSharedStorage() {
+        val intent = dev.vpsdeck.ui.PrivateKeyDocument().createIntent(app, arrayOf("*/*"))
+        assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, intent.action)
+        assertTrue(intent.hasCategory(android.content.Intent.CATEGORY_OPENABLE))
+        assertNull(intent.data)
+        val systemPicker = android.content.Intent(intent).setComponent(android.content.ComponentName(
+            "com.google.android.documentsui", "com.android.documentsui.picker.PickActivity"))
+        val platformPicker = android.content.Intent(intent).setComponent(android.content.ComponentName(
+            "com.android.documentsui", "com.android.documentsui.picker.PickActivity"))
+        val available = listOf(platformPicker, systemPicker).any {
+            val info = it.resolveActivityInfo(app.packageManager, 0)
+            info != null && info.enabled && info.exported &&
+                (info.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+        }
+        if (available) assertNotNull(intent.component)
+        intent.component?.let {
+            assertTrue(it.packageName in listOf("com.android.documentsui", "com.google.android.documentsui"))
+        }
+    }
     @Test fun addServerThroughNativeUiWithoutConnecting() {
         ui.onNodeWithContentDescription("添加服务器").performClick()
         ui.onNodeWithText("名称").performTextInput("UI Fixture")

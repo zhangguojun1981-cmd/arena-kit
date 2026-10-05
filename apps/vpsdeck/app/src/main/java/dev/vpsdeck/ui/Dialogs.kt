@@ -41,7 +41,7 @@ import java.io.ByteArrayOutputStream
     var key by remember { mutableStateOf("") }; var passphrase by remember { mutableStateOf("") }
     var resetPin by remember { mutableStateOf(false) }; var confirmReset by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val importKey = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if(uri != null) {
+    val importKey = rememberLauncherForActivityResult(PrivateKeyDocument()) { uri -> if(uri != null) {
         runCatching {
             context.contentResolver.openInputStream(uri).use { input ->
                 requireNotNull(input); val out = ByteArrayOutputStream(); val buffer = ByteArray(4096)

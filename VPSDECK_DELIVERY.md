@@ -14,7 +14,7 @@
 | Kotlin/Java 编译、debug/release APK、lint | 通过 | [构建 37330614349](https://github.com/zhangguojun1981-cmd/arena-kit/actions/runs/37330614349) |
 | 命令转义、参数/采样解析及本机 SSH/SFTP 夹具 | 23/23 通过（16 项核心 + 7 项 SSH/SFTP） | 同上 |
 | Android 34 模拟器：加密存储、Room、终端仿真、IME、原生添加服务器、编辑目标保护 | 6/6 通过 | [设备测试 37329358117](https://github.com/zhangguojun1981-cmd/arena-kit/actions/runs/37329358117) |
-| 用户手机同步/安装 | **待完成：设备代理离线** | 2026-10-05 再次检查仅 host/mac 在线 |
+| 用户手机同步/安装 | **已复制并校验；尚未安装** | 2026-10-06 安卓在线，89个文件逐项校验一致 |
 | 用户实际 VPS | **待验收** | 未取得、也未使用用户生产 SSH 凭据 |
 
 模拟器测试提交为 `f9d812e`；与构建提交 `2322582` 的差异仅为交付文档/归档工作流、`.gitignore` 及移除误入的 Python 字节码缓存，Android 源码与测试完全相同。模拟器通过不代表所有厂商手机及所有 Linux 发行版都已验证。
@@ -38,7 +38,7 @@ VPSDeck/
     SHA256SUMS.txt
 ```
 
-目标手机目录：`/storage/emulated/0/Download/VPSDeck/`。Mac 已实际保存于 `/Users/zhangguojun/Desktop/VPSDeck-0.1.0/`。手机代理离线，Mac ADB 设备列表也为空，尚未同步或安装到手机。私钥、密码、Android 签名密钥不进入上述交付目录。
+目标手机目录：`/storage/emulated/0/Download/VPSDeck/`。Mac 已实际保存于 `/Users/zhangguojun/Desktop/VPSDeck-0.1.0/`。2026-10-06 已复制到安卓下载目录并校验；尚未安装或进行真机/VPS功能验收。私钥、密码、Android 签名密钥不进入上述交付目录。
 
 ## 首次使用验收
 
@@ -69,3 +69,9 @@ f7ad243ac633980138c483db24bf2909833ea95bc8fef2259097f8f951405be6
 专用长期签名身份由 Mac 本地新建，RSA 3072 位。私密目录为 `/Users/zhangguojun/.vpsdeck-signing/`（目录0700、文件0600），没有上传到仓库或复制进交付目录。请将整个私密目录另行安全离线备份；后续版本必须使用相同密钥才能原位升级。不要把该目录复制到手机Download。
 
 交付保留最新构建的JUnit/lint XML、构建日志及模拟器报告；测试零失败、零错误、零跳过。未对用户生产VPS执行操作，未宣称真机或真实站点管理已经验收。
+
+## 安卓交付状态（2026-10-06）
+已保存到 `/storage/emulated/0/Download/VPSDeck/`。安装文件为 `releases/VPSDeck-0.1.0.apk`。89个交付文件均已比对，APK和源码ZIP的SHA256验证通过。本次没有执行安装或任何VPS操作。Termux编译时请先将project复制到Termux私有home，避免共享存储的noexec限制。
+
+## 补充交付（2026-10-06）
+根据用户要求，APK签名私钥库和密码文件已另行复制到安卓Termux私有 `~/.vpsdeck-signing/`（目录0700，文件0600）。安卓keytool确认签名证书指纹一致，Mac原件保留。它们不是SSH凭据，也未进入公共Download目录。卸载Termux可能删除私有目录，请另行安全备份。下载目录的VPSDeck文件夹新增 `00-先看这里.txt`。

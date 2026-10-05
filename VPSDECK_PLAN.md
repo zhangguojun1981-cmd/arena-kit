@@ -1,6 +1,6 @@
 # VPS Deck · 安卓 VPS 管理工具 — 方案与持续进度
 
-更新时间：2026-10-05。源码位于 `apps/vpsdeck/`，独立于原 ArenaKit 项目，不改动原客户端。
+更新时间：2026-10-06。源码位于 `apps/vpsdeck/`，独立于原 ArenaKit 项目，不改动原客户端。
 
 ## 已确认需求
 - Kotlin + Jetpack Compose 原生安卓应用，中文优先、深浅主题。
@@ -25,12 +25,13 @@
 
 ## 里程碑 / 验收
 - [x] 0. 保存方案、建立独立源码目录。
-- [ ] 1. Gradle/Compose 工程、安全存储、服务器列表/编辑、基础设计。
-- [ ] 2. 主机指纹校验、SSH认证、交互终端及连接生命周期。
-- [ ] 3. 实际监控采集、SFTP 浏览与传输、任务日志。
-- [ ] 4. systemd/Docker/Compose/Nginx/PHP/数据库操作计划与执行。
-- [ ] 5. 测试、编译 APK、签名及发布清单。
-- [ ] 6. 同步安卓下载目录、设备安装及真实 VPS 验收。
+- [x] 1. Gradle/Compose 工程、安全存储、服务器列表/编辑、基础设计。
+- [x] 2. 主机指纹校验、SSH认证、交互终端及连接生命周期。
+- [x] 3. 实际监控采集、SFTP 浏览与传输、任务日志。
+- [x] 4. systemd/Docker/Compose/Nginx/PHP/数据库操作计划与执行。
+- [x] 5. 测试、编译 APK、签名及发布清单。
+- [x] 6a. 同步安卓下载目录并校验文件。
+- [ ] 6b. 设备安装及真实 VPS 验收。
 
 ## 进度日志
 ### 2026-10-05 · 第0段：项目初始化
@@ -100,3 +101,21 @@
 - 已交付Mac桌面 `/Users/zhangguojun/Desktop/VPSDeck-0.1.0/`，包括project、docs、releases。APK SHA256：`19ce1cf97dcbb79d7761fe7efbdc84694cdd01df288fad972ad25ff519320e76`。
 - 交付说明与完整校验值见 `VPSDECK_DELIVERY.md`。旧Mac构建状态已更正，不再声称仍在下载构建。
 - 尚未完成：Android Download同步/真机安装（手机代理离线、Mac ADB设备列表为空）；真实VPS验收（未使用生产凭据）。源码开发、CI回归、签名制包完成不等于这两项已完成。
+
+### 2026-10-06 · 第10段：安卓下载目录交付完成
+- 安卓代理已上线；已将89个文件复制至 `/storage/emulated/0/Download/VPSDeck/`，逐文件与Mac交付ZIP比对一致。
+- APK与源码ZIP的SHA256均与原始清单一致；签名密钥和密码未复制。
+- 已同步完整project、docs、releases及README；本次仅复制文件，尚未安装或进行真实VPS验收。
+
+### 2026-10-06 · 第11段：签名身份私有交付与文件入口说明
+- 按用户要求，将本应用专用 `release.p12` 与 `store-password` 复制到安卓 Termux 私有 `~/.vpsdeck-signing/`；目录0700、文件0600，未放入公共Download或Git。
+- 使用安卓keytool成功读取PrivateKeyEntry，证书SHA256与已交付APK签名身份一致；未在聊天中展示密码或私钥内容。
+- 再次核查Download根目录只有相关VPSDeck文件夹，未发现project/docs/releases散落根目录；在VPSDeck内新增 `00-先看这里.txt`，说明安装包、源码、文档及签名文件位置。
+- APK签名身份不等于SSH服务器凭据；并未创建或持有用户VPS登录密码。尚未安装或验收真实VPS。
+
+### 2026-10-06 · 第12段：真实RackNerd SSH授权与手机私钥导入兼容修复
+- 用户授权自动配置后，使用其Mac上已有对应VPS SSH身份，通过已有known_hosts严格校验成功登录；未使用聊天中出现的root密码。
+- 安卓Termux私有目录新建专用Ed25519身份；服务器authorized_keys先备份再追加手机公钥，未删除旧密钥、未修改sshd配置或开启密码登录。
+- 手机已用新身份严格校验主机并成功登录root，确认Debian12与目标主机名；这是实际SSH登录验证，不等于App内导入已经完成。
+- 发现该手机OEM文件选择器不展示Termux私有文档Provider；尝试临时切换组件被系统拒绝，未绕过权限。正在修复App，使私钥导入优先使用已安装的系统SAF选择器；不把私钥放到Download。
+- 0.1.1/code2增加系统DocumentsUI查询和选择器回归测试；待构建/签名/覆盖安装后继续真实App连接验收。
