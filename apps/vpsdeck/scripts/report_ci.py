@@ -7,6 +7,8 @@ def escape(text):
 
 for line in pathlib.Path(sys.argv[1]).read_text(errors='replace').splitlines():
     m = re.match(r'e: file://(.+?):(\d+):(\d+) (.+)', line)
+    if 'files found with path' in line or 'Execution failed for task' in line:
+        print('::error::' + escape(line.strip()))
     if m:
         file, row, col, message = m.groups()
         relative = 'apps/vpsdeck/' + file.split('/apps/vpsdeck/', 1)[-1]

@@ -24,6 +24,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
       - name: Android SDK
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-34' 'build-tools;34.0.0'
@@ -31,7 +33,7 @@ jobs:
       - name: Tests, APK and lint
         run: |
           set +e
-          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug 2>&1 | tee build.log
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug 2>&1 | tee build.log
           result=${PIPESTATUS[0]}
           python3 scripts/report_ci.py build.log
           exit "$result"
@@ -39,6 +41,7 @@ jobs:
         run: |
           mkdir -p releases
           cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.1.0-debug.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk releases/VPSDeck-0.1.0-unsigned.apk
           git archive --format=zip HEAD:apps/vpsdeck > releases/VPSDeck-source.zip
           cp ../../VPSDECK_PLAN.md releases/PLAN.md
           cd releases && sha256sum *.apk *.zip > SHA256SUMS.txt

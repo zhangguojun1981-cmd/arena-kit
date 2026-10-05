@@ -68,3 +68,9 @@
 - GitHub Actions已跑真实Android构建。首次在 `FilesPage.kt` 发现缺少闭合括号，已修复，继续重跑。
 - 增加编译/测试错误注解与日志归档，避免只看最终退出码。
 - 当前仍未生成可交付APK；不将首次失败掩盖为成功。
+
+### 2026-10-05 · 第5段：编译修复与设备验收用例
+- 第二轮已通过Kotlin/Java源码编译；发现JSch与BouncyCastle多版本JAR的OSGI清单重复，已精确排除该非Android运行资源。
+- 增加release未签名APK构建，后续可使用用户独立持有的长期签名密钥。
+- 已保存Android设备测试：Keystore加密/篡改拒绝、Room持久化、VT UTF-8/ANSI/resize、原生UI添加服务器流程。
+- 提供API34模拟器工作流，区分模拟器通过和用户手机真实验收。

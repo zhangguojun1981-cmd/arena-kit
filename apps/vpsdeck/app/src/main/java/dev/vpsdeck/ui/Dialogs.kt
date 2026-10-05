@@ -40,7 +40,6 @@ import java.io.ByteArrayOutputStream
     var replace by remember { mutableStateOf(old == null) }; var password by remember { mutableStateOf("") }
     var key by remember { mutableStateOf("") }; var passphrase by remember { mutableStateOf("") }
     var resetPin by remember { mutableStateOf(false) }; var confirmReset by remember { mutableStateOf(false) }
-    var saving by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val importKey = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if(uri != null) {
         runCatching {
