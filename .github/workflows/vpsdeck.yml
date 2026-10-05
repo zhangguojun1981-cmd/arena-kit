@@ -42,7 +42,14 @@ jobs:
           mkdir -p releases
           cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.1.0-debug.apk
           cp app/build/outputs/apk/release/app-release-unsigned.apk releases/VPSDeck-0.1.0-unsigned.apk
-          git archive --format=zip HEAD:apps/vpsdeck > releases/VPSDeck-source.zip
+          git -C ../.. archive --format=zip HEAD:apps/vpsdeck > releases/VPSDeck-source.zip
+          python3 - <<'PYZIP'
+          import zipfile
+          with zipfile.ZipFile('releases/VPSDeck-source.zip') as archive:
+              required = {'gradlew', 'gradle/wrapper/gradle-wrapper.jar', 'app/src/main/AndroidManifest.xml', 'app/src/main/java/dev/vpsdeck/MainActivity.kt'}
+              assert required <= set(archive.namelist()), 'Source ZIP is empty or incomplete'
+              assert archive.testzip() is None, 'Corrupt source archive'
+          PYZIP
           cp ../../VPSDECK_PLAN.md releases/PLAN.md
           cd releases && sha256sum *.apk *.zip > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
