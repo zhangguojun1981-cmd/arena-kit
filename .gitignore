@@ -18,3 +18,10 @@ dist
 
 # Upstream source snapshots are NOT vendored here (see vendor/UPSTREAM.md)
 /vendor/upstream-src
+
+# VPS Deck Android local builds and credentials
+/apps/vpsdeck/.gradle/
+/apps/vpsdeck/**/build/
+/apps/vpsdeck/local.properties
+/apps/vpsdeck/releases/*.apk
+/apps/vpsdeck/releases/*.zip
