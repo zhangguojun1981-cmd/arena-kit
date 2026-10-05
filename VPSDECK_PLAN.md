@@ -92,3 +92,11 @@
 - Mac已取回631da95的未签名release APK（13,595,716字节）；分段读取规避慢速制品下载。
 - 交付校验发现CI的源码ZIP只有22字节：在子目录执行git archive时目录前缀影响归档。已改为仓库根目录执行，并强制校验wrapper、Manifest、MainActivity等条目；重新执行交付构建。
 - 手机代理再次确认离线；不是手机缺少SDK。尚未写入Download或安装。
+
+### 2026-10-05 · 第9段：首版可安装release与Mac交付完成
+- 最终构建 `37330614349`（2322582）通过：debug/release、lint、非空源码归档检查全部成功；归档87项、182,987字节。
+- 已解析实际JUnit XML：16项核心 + 7项SSH/SFTP + 6项Android34设备测试，均零失败、零错误、零跳过。设备测试提交与最终构建的Android源码一致。
+- 已在Mac新建专用RSA3072长期签名身份；私密目录 `~/.vpsdeck-signing/` 位于源码和交付目录之外，未上传。release APK已通过v2/v3签名验证。
+- 已交付Mac桌面 `/Users/zhangguojun/Desktop/VPSDeck-0.1.0/`，包括project、docs、releases。APK SHA256：`19ce1cf97dcbb79d7761fe7efbdc84694cdd01df288fad972ad25ff519320e76`。
+- 交付说明与完整校验值见 `VPSDECK_DELIVERY.md`。旧Mac构建状态已更正，不再声称仍在下载构建。
+- 尚未完成：Android Download同步/真机安装（手机代理离线、Mac ADB设备列表为空）；真实VPS验收（未使用生产凭据）。源码开发、CI回归、签名制包完成不等于这两项已完成。
