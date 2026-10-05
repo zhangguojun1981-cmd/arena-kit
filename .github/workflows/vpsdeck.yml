@@ -18,8 +18,8 @@ jobs:
       run:
         working-directory: apps/vpsdeck
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -29,7 +29,12 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-34' 'build-tools;34.0.0'
           printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
       - name: Tests, APK and lint
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+        run: |
+          set +e
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug 2>&1 | tee build.log
+          result=${PIPESTATUS[0]}
+          python3 scripts/report_ci.py build.log
+          exit "$result"
       - name: Prepare delivery
         run: |
           mkdir -p releases
@@ -42,6 +47,7 @@ jobs:
         with:
           name: VPSDeck-${{ github.sha }}
           path: |
+            apps/vpsdeck/build.log
             apps/vpsdeck/releases/
             apps/vpsdeck/app/build/reports/tests/
             apps/vpsdeck/app/build/test-results/

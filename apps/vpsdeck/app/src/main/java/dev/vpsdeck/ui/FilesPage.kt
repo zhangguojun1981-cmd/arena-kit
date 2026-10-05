@@ -53,7 +53,7 @@ import dev.vpsdeck.data.Server
             TextButton(onClick = { entry = ""; mkdir = true }) { Text("新建目录") }
             TextButton(onClick = { uploadLocation = vm.currentPath; pickDocument.launch(arrayOf("*/*")) }, enabled = vm.currentPath.startsWith('/') && vm.transfer == null) { Text("上传") }
         }
-        vm.transfer?.let { text -> Row(Modifier.padding(horizontal = 16.dp)) { Text(text, Modifier.weight(1f)); TextButton(onClick = { vm.cancelTransfer() }) { Text("取消") } }
+        vm.transfer?.let { text -> Row(Modifier.padding(horizontal = 16.dp)) { Text(text, Modifier.weight(1f)); TextButton(onClick = { vm.cancelTransfer() }) { Text("取消") } } }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if(vm.files.isEmpty() && !vm.busy) item { Panel { Text("此目录暂无条目"); Hint("也可能尚未完成读取，点击刷新获取实际结果。") } }
             items(vm.files, key = { it.path }) { file ->
