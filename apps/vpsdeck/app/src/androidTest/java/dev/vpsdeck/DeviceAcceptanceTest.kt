@@ -66,6 +66,19 @@ class DeviceAcceptanceTest {
             canvas.detach(); shell.close()
         }
     }
+    @Test fun staleEditorCannotSaveToAnotherServer() {
+        ui.runOnUiThread {
+            val vm = DeckViewModel(app)
+            val store = androidx.lifecycle.ViewModelStore(); store.put("fixture", vm)
+            try {
+                val original = Server(name = "Original", host = "original.invalid")
+                val edit = RemoteEdit(original, RemoteFile("config", "/tmp/config", false, false, 0, ""), "old", "fixture")
+                vm.choose(Server(name = "Other", host = "other.invalid"))
+                try { vm.saveEdit(edit, "new", false); fail("A stale editor must reject a different server") }
+                catch(e: IllegalArgumentException) { assertTrue(e.message!!.contains("服务器已切换")) }
+            } finally { store.clear() }
+        }
+    }
     @Test fun addServerThroughNativeUiWithoutConnecting() {
         ui.onNodeWithContentDescription("添加服务器").performClick()
         ui.onNodeWithText("名称").performTextInput("UI Fixture")

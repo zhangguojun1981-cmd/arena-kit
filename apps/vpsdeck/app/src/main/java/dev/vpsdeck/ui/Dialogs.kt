@@ -123,5 +123,5 @@ import java.io.ByteArrayOutputStream
             OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().weight(1f), textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
         }
     }
-    if(confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("保存远端文件？") }, text = { Text("${vm.selected?.name}\n${edit.file.path}\n\n创建同目录 .vpsdeck-时间戳.bak 备份。文件若被其他操作修改，将拒绝覆盖。") }, confirmButton = { TextButton(onClick = { runCatching { vm.saveEdit(edit, text, nginx) }.onFailure { vm.error = it.message }; confirm = false }) { Text("备份并保存") } }, dismissButton = { TextButton(onClick = { confirm = false }) { Text("取消") } })
+    if(confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("保存远端文件？") }, text = { Text("${edit.server.name}\n${edit.file.path}\n\n创建同目录 .vpsdeck-时间戳.bak 备份。文件若被其他操作修改，将拒绝覆盖。") }, confirmButton = { TextButton(onClick = { runCatching { vm.saveEdit(edit, text, nginx) }.onFailure { vm.error = it.message }; confirm = false }) { Text("备份并保存") } }, dismissButton = { TextButton(onClick = { confirm = false }) { Text("取消") } })
 }

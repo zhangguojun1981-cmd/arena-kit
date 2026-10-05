@@ -14,7 +14,7 @@ Kotlin / Compose，面向无面板 Linux VPS。**不会自动安装软件，也�
 - 输出 `app/build/outputs/apk/debug/app-debug.apk`。
 - Debug APK仅用于首次验收；正式发行需你掌控的长期签名密钥。密钥不要放下载目录或Git。
 
-Gradle wrapper固定8.7；依赖版本固定。首次构建需要联网获取依赖。Android Termux构建还需要与设备ABI匹配的aapt2：设置 `-Pandroid.aapt2FromMavenOverride=/绝对路径/aapt2`。本次会优先使用已就绪的Mac工具链交叉编译。
+Gradle wrapper固定8.7；依赖版本固定。首次构建需要联网获取依赖。Android Termux构建还需要与设备ABI匹配的aapt2：设置 `-Pandroid.aapt2FromMavenOverride=/绝对路径/aapt2`。CI使用GitHub Actions的Linux/Android工具链交叉编译；Mac也可按上述命令本地构建。
 
 ## 功能
 
@@ -49,3 +49,17 @@ Gradle wrapper固定8.7；依赖版本固定。首次构建需要联网获取依
 ## 测试边界
 
 单元测试覆盖命令转义、参数验证、采样解析。SSH集成测试只启动127.0.0.1临时MINA服务器，验证实际JSch握手/指纹/密码/exec/SFTP，不连接真实VPS、不使用你的密码。编译或这些测试通过不等于安卓真机验收。
+
+## 本地签名与后续升级
+
+CI输出debug APK与未签名release APK；正式安装优先使用你掌控的长期密钥签名release版本。
+
+```sh
+export JAVA_HOME=/你的/JDK17
+python3 scripts/sign_release.py app-release-unsigned.apk VPSDeck-0.1.0.apk \
+  --sdk /你的/android-sdk --create-key
+```
+
+首次显式传入 `--create-key` 时，脚本在 `~/.vpsdeck-signing/` 生成专用密钥及随机密码文件（目录0700、文件0600），不读取任何现有第三方签名密钥，不上传密钥。后续省略该参数即可复用；需要安全离线备份整个私有目录。丢失密钥不能原位升级。密码不会出现在命令行或日志中。源工程/交付目录不得存放该私有目录。
+
+debug与release签名不同，不能互相覆盖安装；不要为了切换版本贸然卸载含有未另行保管凭据的应用。卸载会删除Keystore与本地数据。CI每次生成的debug签名也可能不同。

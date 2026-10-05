@@ -19,7 +19,7 @@ import java.security.MessageDigest
 import java.util.UUID
 
 data class RemoteFile(val name: String, val path: String, val directory: Boolean, val link: Boolean, val size: Long, val mode: String)
-data class RemoteEdit(val file: RemoteFile, val original: String, val digest: String)
+data class RemoteEdit(val server: Server, val file: RemoteFile, val original: String, val digest: String)
 
 class DeckViewModel(application: Application) : AndroidViewModel(application) {
     val app = application as DeckApp
@@ -198,12 +198,13 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
                 val bytes = app.ssh.sftp(server) { s -> s.get(supportedPath(file.path)).use { input -> val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192); while(output.size() <= 512 * 1024) { val n = input.read(buffer, 0, minOf(buffer.size, 512 * 1024 + 1 - output.size())); if(n < 0) break; output.write(buffer, 0, n) }; output.toByteArray() } }
                 require(bytes.size <= 512 * 1024 && !bytes.contains(0)) { "文件过大或为二进制" }
                 val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
-                editor = RemoteEdit(file, text, MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) })
+                if(selected == server) editor = RemoteEdit(server, file, text, MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) })
             } catch(e: Exception) { error = "无法编辑：${e.message}" }
         }
     }
     fun saveEdit(edit: RemoteEdit, text: String, nginx: Boolean) {
-        val server = selected ?: return
+        val server = edit.server
+        require(selected == server) { "服务器已切换或资料已修改，请在原服务器重新打开文件" }
         require(text.toByteArray().size <= 512 * 1024)
         val temp = edit.file.path.substringBeforeLast('/') + "/.vpsdeck-${UUID.randomUUID()}.edit"
         val backup = edit.file.path + ".vpsdeck-${System.currentTimeMillis()}.bak"
@@ -212,7 +213,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
                 app.ssh.sftp(server) { s -> s.put(text.byteInputStream(), temp); s.chmod(384, temp) }
                 val p = Shell.quote(edit.file.path); val b = Shell.quote(backup); val t = Shell.quote(temp)
                 val validation = if(nginx) "if nginx -t; then echo '语法检查通过，尚未重载'; else cp -p -- $b $p || { echo '恢复失败，请立即检查备份'; exit 76; }; echo '语法错误，已恢复原配置'; exit 75; fi" else ":"
-                val cmd = "test -f $p && test ! -L $p || exit 71; current=\$(sha256sum -- $p); current=\${current%% *}; test \"\$current\" = ${Shell.quote(edit.digest)} || { echo '文件已被其他操作修改，请重新读取'; exit 73; }; cp -p -- $p $b || exit 74; cat -- $t > $p || { cp -p -- $b $p; echo '写入失败，已尝试恢复，请检查备份'; exit 74; }; $validation; echo ${Shell.quote("备份：$backup")}" 
+                val cmd = "test -f $p && test ! -L $p || exit 71; current=\$(sha256sum -- $p); current=\${current%% *}; test \"\$current\" = ${Shell.quote(edit.digest)} || { echo '文件已被其他操作修改，请重新读取'; exit 73; }; cp -p -- $p $b || exit 74; cat -- $t > $p || { cp -p -- $b $p || { echo '写入与恢复均失败，请立即检查备份'; exit 76; }; echo '写入失败，已恢复原文件'; exit 74; }; $validation; echo ${Shell.quote("备份：$backup")}" 
                 val r = app.ssh.exec(server, cmd); result = "保存配置" to r; check(r.code == 0) { "退出码 ${r.code}，请查看执行结果" }; editor = null
             } finally { withContext(NonCancellable) { runCatching { app.ssh.sftp(server) { it.rm(temp) } } } }
         }
