@@ -54,9 +54,11 @@ public class TerminalCanvas extends View {
         info.inputType=InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
         info.imeOptions=EditorInfo.IME_FLAG_NO_EXTRACT_UI|EditorInfo.IME_FLAG_NO_FULLSCREEN|EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING|EditorInfo.IME_ACTION_NONE;
         return new BaseInputConnection(this,false) {
-            @Override public boolean commitText(CharSequence text,int pos) { send(text.toString());return true; }
-            @Override public boolean setComposingText(CharSequence text,int pos) { return super.setComposingText(text,pos); }
-            @Override public boolean deleteSurroundingText(int before,int after) { for(int i=0;i<Math.min(before,100);i++)send("\u007f"); return true; }
+            private String composing = "";
+            @Override public boolean commitText(CharSequence text,int pos) { composing="";send(text.toString());return true; }
+            @Override public boolean setComposingText(CharSequence text,int pos) { composing=text.toString();return true; }
+            @Override public boolean finishComposingText() { if(!composing.isEmpty()) { send(composing);composing=""; } return true; }
+            @Override public boolean deleteSurroundingText(int before,int after) { if(!composing.isEmpty()) { composing=composing.substring(0,Math.max(0,composing.length()-before));return true; } for(int i=0;i<Math.min(before,100);i++)send("\u007f"); return true; }
             @Override public boolean sendKeyEvent(KeyEvent event) { return event.getAction()!=KeyEvent.ACTION_DOWN || onKeyDown(event.getKeyCode(),event); }
             @Override public boolean performEditorAction(int code) { send("\r");return true; }
         };

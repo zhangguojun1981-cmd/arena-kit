@@ -72,7 +72,8 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 app.ssh.connect(server)
-                ContextCompat.startForegroundService(app, Intent(app, ConnectionService::class.java))
+                try { ContextCompat.startForegroundService(app, Intent(app, ConnectionService::class.java)) }
+                catch(e: Exception) { app.closeServer(server.id); throw IllegalStateException("无法启动连接通知服务，请返回应用再连接", e) }
                 if(selected?.id == server.id) selected = server
                 refresh(server)
             } catch(c: HostChallenge) { challenge = c }

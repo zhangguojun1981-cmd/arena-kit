@@ -16,7 +16,7 @@ object Metrics {
         awk '/^cpu / {t=0;for(i=2;i<=9;i++)t+=${'$'}i;printf "CPU=%.0f %.0f\n",t,${'$'}5+${'$'}6}' /proc/stat 2>/dev/null
         awk '/MemTotal:/{t=${'$'}2}/MemAvailable:/{a=${'$'}2;found=1}END{if(t>0 && found)printf "MEM=%.2f\n",100*(t-a)/t}' /proc/meminfo 2>/dev/null
         df -Pk / 2>/dev/null | awk 'NR==2{gsub(/%/,"",${'$'}5);print "DISK="${'$'}5}'
-        awk -F'[: ]+' 'NR>2 && ${'$'}2!="lo" {rx+=${'$'}3;tx+=${'$'}11} END{printf "NET=%.0f %.0f\n",rx,tx}' /proc/net/dev 2>/dev/null
+        awk -F: 'NR>2 {dev=${'$'}1;gsub(/ /,"",dev);if(dev!="lo"){data=${'$'}2;sub(/^ +/,"",data);split(data,a,/ +/);rx+=a[1];tx+=a[9]}} END{printf "NET=%.0f %.0f\n",rx,tx}' /proc/net/dev 2>/dev/null
         printf 'CAP='; for c in systemctl docker nginx php mysql mariadb psql tmux; do if command -v "${'$'}c" >/dev/null 2>&1; then printf '%s ' "${'$'}c"; fi; done; printf '\n'
     """.trimIndent()
     fun parse(output: String, now: Long, previous: Snapshot? = null): Snapshot {

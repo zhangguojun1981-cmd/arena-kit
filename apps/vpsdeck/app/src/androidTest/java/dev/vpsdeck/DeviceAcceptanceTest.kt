@@ -49,6 +49,23 @@ class DeviceAcceptanceTest {
             shell.close()
         }
     }
+    @Test fun terminalImeDoesNotSendUncommittedComposition() {
+        ui.runOnUiThread {
+            val shell = ShellSession(Server(name = "IME fixture", host = "example.invalid"), app.ssh, app.appScope)
+            val sent = StringBuilder()
+            val canvas = com.termux.view.TerminalCanvas(ui.activity)
+            canvas.attach(shell.emulator, object : com.termux.view.TerminalCanvas.Client {
+                override fun write(bytes: ByteArray) { sent.append(String(bytes, Charsets.UTF_8)) }
+                override fun resized(columns: Int, rows: Int) { }
+            })
+            val input = canvas.onCreateInputConnection(android.view.inputmethod.EditorInfo())
+            input.setComposingText("zhong", 1); assertEquals("", sent.toString())
+            input.commitText("中", 1); input.finishComposingText(); assertEquals("中", sent.toString())
+            input.setComposingText("文", 1); input.finishComposingText(); assertEquals("中文", sent.toString())
+            input.deleteSurroundingText(1, 0); assertEquals("中文\u007f", sent.toString())
+            canvas.detach(); shell.close()
+        }
+    }
     @Test fun addServerThroughNativeUiWithoutConnecting() {
         ui.onNodeWithContentDescription("添加服务器").performClick()
         ui.onNodeWithText("名称").performTextInput("UI Fixture")
