@@ -1,0 +1,49 @@
+name: VPS Deck Android
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'apps/vpsdeck/**'
+      - '.github/workflows/vpsdeck.yml'
+permissions:
+  contents: read
+concurrency:
+  group: vpsdeck-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/vpsdeck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android SDK
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-34' 'build-tools;34.0.0'
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+      - name: Tests, APK and lint
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+      - name: Prepare delivery
+        run: |
+          mkdir -p releases
+          cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.1.0-debug.apk
+          git archive --format=zip HEAD:apps/vpsdeck > releases/VPSDeck-source.zip
+          cp ../../VPSDECK_PLAN.md releases/PLAN.md
+          cd releases && sha256sum *.apk *.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: VPSDeck-${{ github.sha }}
+          path: |
+            apps/vpsdeck/releases/
+            apps/vpsdeck/app/build/reports/tests/
+            apps/vpsdeck/app/build/test-results/
+            apps/vpsdeck/app/build/reports/lint-results-debug.*
+          retention-days: 14
