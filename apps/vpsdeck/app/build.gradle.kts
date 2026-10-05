@@ -28,4 +28,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation(project(":terminal"))
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.apache.sshd:sshd-core:2.13.2")
+    testImplementation("org.apache.sshd:sshd-sftp:2.13.2")
+    testImplementation("org.slf4j:slf4j-simple:2.0.13")
 }

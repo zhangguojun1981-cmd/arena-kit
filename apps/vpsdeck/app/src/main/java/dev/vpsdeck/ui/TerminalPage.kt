@@ -54,7 +54,7 @@ import dev.vpsdeck.ssh.ShellSession
                 DisposableEffect(shell.id) { onDispose { shell.onChanged = null; canvas?.detach(); canvas = null } }
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                listOf("Esc" to "\u001b", "Tab" to "\t", "^C" to "\u0003", "^D" to "\u0004", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, text) -> TextButton(onClick = { shell.write(text); canvas?.bottom() }, contentPadding = PaddingValues(horizontal = 12.dp)) { Text(label) } }
+                listOf("Esc" to "\u001b", "Tab" to "\t", "^C" to "\u0003", "^D" to "\u0004", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, text) -> TextButton(onClick = { shell.write(if(text.startsWith("\u001b[") && shell.emulator.isCursorKeysApplicationMode) text.replace("\u001b[", "\u001bO") else text); canvas?.bottom() }, contentPadding = PaddingValues(horizontal = 12.dp)) { Text(label) } }
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 FilterChip(ctrl, { ctrl = !ctrl }, label = { Text("Ctrl") })

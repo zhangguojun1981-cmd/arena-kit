@@ -12,10 +12,9 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-data class Credentials(val password: String = "", val privateKey: String = "", val passphrase: String = "")
 
 /** No credentials in Room, backups, external storage, logs or saved UI state. */
-class SecretStore(context: Context) {
+class SecretStore(context: Context) : CredentialReader {
     private val directory = File(context.noBackupFilesDir, "vault").apply { mkdirs() }
     private val alias = "vpsdeck.credentials.v1"
     @Synchronized private fun key(): SecretKey {
@@ -36,7 +35,7 @@ class SecretStore(context: Context) {
         try { stream.write(byteArrayOf(1)); stream.write(cipher.iv); stream.write(encrypted); target.finishWrite(stream) }
         catch (e: Exception) { target.failWrite(stream); throw e }
     }
-    fun get(id: String): Credentials {
+    override fun get(id: String): Credentials {
         val target = file(id)
         if (!target.baseFile.exists()) return Credentials()
         val bytes = target.readFully(); require(bytes.size >= 29 && bytes[0].toInt() == 1) { "凭据存储格式无效" }

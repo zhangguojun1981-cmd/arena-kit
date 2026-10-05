@@ -17,6 +17,7 @@ public class TerminalCanvas extends View {
     private Client client;
     private int top = 0;
     private float lastY;
+    private boolean moved;
     private boolean ctrl;
     private float fontSp = 13;
     public TerminalCanvas(Context context) {
@@ -68,10 +69,10 @@ public class TerminalCanvas extends View {
             case KeyEvent.KEYCODE_FORWARD_DEL: seq="\u001b[3~";break;
             case KeyEvent.KEYCODE_TAB: seq="\t";break;
             case KeyEvent.KEYCODE_ESCAPE: seq="\u001b";break;
-            case KeyEvent.KEYCODE_DPAD_UP: seq="\u001b[A";break;
-            case KeyEvent.KEYCODE_DPAD_DOWN: seq="\u001b[B";break;
-            case KeyEvent.KEYCODE_DPAD_LEFT: seq="\u001b[D";break;
-            case KeyEvent.KEYCODE_DPAD_RIGHT: seq="\u001b[C";break;
+            case KeyEvent.KEYCODE_DPAD_UP: seq="\u001b"+(emulator!=null && emulator.isCursorKeysApplicationMode()?"O":"[")+"A";break;
+            case KeyEvent.KEYCODE_DPAD_DOWN: seq="\u001b"+(emulator!=null && emulator.isCursorKeysApplicationMode()?"O":"[")+"B";break;
+            case KeyEvent.KEYCODE_DPAD_LEFT: seq="\u001b"+(emulator!=null && emulator.isCursorKeysApplicationMode()?"O":"[")+"D";break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT: seq="\u001b"+(emulator!=null && emulator.isCursorKeysApplicationMode()?"O":"[")+"C";break;
             default:
                 int c=event.getUnicodeChar(); if(c==0)return super.onKeyDown(code,event);
                 if(event.isCtrlPressed() && c>='a' && c<='z')c-=96;
@@ -80,13 +81,13 @@ public class TerminalCanvas extends View {
         send(seq); return true;
     }
     @Override public boolean onTouchEvent(android.view.MotionEvent event) {
-        if(event.getAction()==MotionEvent.ACTION_DOWN) { lastY=event.getY();return true; }
+        if(event.getAction()==MotionEvent.ACTION_DOWN) { lastY=event.getY();moved=false;return true; }
         if(event.getAction()==MotionEvent.ACTION_MOVE && emulator!=null) {
             int rows=(int)((lastY-event.getY())/renderer.mFontLineSpacing);
-            if(rows!=0) { top=Math.min(0,Math.max(-emulator.getScreen().getActiveTranscriptRows(),top+rows));lastY=event.getY();invalidate(); }
+            if(rows!=0) { moved=true; top=Math.min(0,Math.max(-emulator.getScreen().getActiveTranscriptRows(),top+rows));lastY=event.getY();invalidate(); }
             return true;
         }
-        if(event.getAction()==MotionEvent.ACTION_UP) { performClick();return true; }
+        if(event.getAction()==MotionEvent.ACTION_UP) { if(!moved)performClick();return true; }
         return true;
     }
     @Override public boolean performClick() { super.performClick();requestFocus();((InputMethodManager)getContext().getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(this,InputMethodManager.SHOW_IMPLICIT);return true; }

@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 class HostChallenge(val server: Server, val observed: String, val algorithm: String, val changed: Boolean) : Exception(if(changed) "服务器主机密钥已变化，连接被拒绝" else "首次连接需要核对 SSH 主机指纹")
 data class ExecResult(val code: Int, val output: String, val truncated: Boolean = false)
 
-class SshPool(private val vault: SecretStore) {
+class SshPool(private val vault: CredentialReader) {
     private val sessions = ConcurrentHashMap<String, Session>()
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val _connected = MutableStateFlow<Set<String>>(emptySet())
