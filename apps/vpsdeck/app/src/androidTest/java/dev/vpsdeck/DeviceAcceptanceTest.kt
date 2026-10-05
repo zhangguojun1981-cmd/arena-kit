@@ -83,6 +83,7 @@ class DeviceAcceptanceTest {
         val intent = dev.vpsdeck.ui.PrivateKeyDocument().createIntent(app, arrayOf("*/*"))
         assertEquals(android.content.Intent.ACTION_OPEN_DOCUMENT, intent.action)
         assertTrue(intent.hasCategory(android.content.Intent.CATEGORY_OPENABLE))
+        assertTrue(intent.getBooleanExtra("android.content.extra.SHOW_ADVANCED", false))
         assertNull(intent.data)
         val systemPicker = android.content.Intent(intent).setComponent(android.content.ComponentName(
             "com.google.android.documentsui", "com.android.documentsui.picker.PickActivity"))

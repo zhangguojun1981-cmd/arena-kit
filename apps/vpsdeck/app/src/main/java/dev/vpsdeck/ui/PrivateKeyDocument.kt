@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 class PrivateKeyDocument : ActivityResultContracts.OpenDocument() {
     override fun createIntent(context: Context, input: Array<String>): Intent {
         val base = super.createIntent(context, input)
+            .addCategory(Intent.CATEGORY_OPENABLE)
             .putExtra("android.content.extra.SHOW_ADVANCED", true)
         for (pkg in listOf("com.android.documentsui", "com.google.android.documentsui")) {
             val candidate = Intent(base).setComponent(ComponentName(pkg, "com.android.documentsui.picker.PickActivity"))
