@@ -1,6 +1,18 @@
-# VPS Deck · 掌上运维 — 0.1.0 验收与交付
+# VPS Deck · 掌上运维 — 验收与交付
 
-## 本次版本
+## 当前进度：0.1.1（2026-10-06）
+
+- 修复OEM私钥导入入口，优先使用可用的系统DocumentsUI；版本0.1.1/code2，源码 `2973a7b7e3e0c50601d3438178e4d1c4b011a92b`。
+- CI构建37388163894、设备回归37388163794成功：23项核心/SSH/SFTP + 7项Android设备测试通过。Mac本地构建、lint和23项测试也通过，签名前已逐一核对工程源码。
+- 新版实际保存于Mac `~/Desktop/VPSDeck-0.1.1/`。APK使用原签名身份，证书SHA256与下方原版相同；仅允许原位覆盖升级，不要卸载旧版。
+- APK `releases/VPSDeck-0.1.1.apk` SHA256：`25b95f36498f9c384d1fd65a47abf56095227229f616a520cfed651955de4fdb`。
+- 源码 `releases/VPSDeck-source-0.1.1.zip` SHA256：`d813cc99a98e5858b1f028bdfe58340569f7609914254fbcbf40488f17dbcac5`。
+- **安卓代理离线，更新传输未取得成功回执，尚未执行新版覆盖安装。** 原版0.1.0已由用户自行安装。
+- **真实SSH部分完成，App连接尚未验收：** 在用户授权下，使用已有Mac可信身份追加专用手机公钥，保留旧授权及服务器配置；手机Termux已用对应私钥严格校验主机并登录成功。尚需在App内导入、加密保存并实际连接。私钥始终留在Termux私有目录，不进入Download或Git。
+
+以下为0.1.0历史交付记录，其中“未安装/未操作VPS”描述的是当时状态，以本节最新状态为准。
+
+## 0.1.0版本记录
 
 - 原生 Android：Kotlin、Jetpack Compose、Room、Android Keystore；不是网页面板套壳。
 - Android 8.0（API 26）及以上；包名 `dev.vpsdeck`。
