@@ -93,6 +93,7 @@ class WebsiteController(private val app: DeckApp) {
     fun clearBackups(s: Server) { update(s) { it.copy(backups = emptyList()) } }
     fun restore(s: Server, row: Website, backup: String, sudo: Boolean, done: () -> Unit) = mutate(s,"恢复网站配置备份",sudo,JSONObject().put("op","restore").put("id",row.id).put("expected",row.revision).put("backup",backup),done)
     private fun mutate(s: Server, title: String, sudo: Boolean, request: JSONObject, done: () -> Unit) = job(s,title) {
+        check(!app.projects.hasActive(s)) { "该主机有已知远端任务，请先查询并等待其结束再修改网站" }
         val dao = app.database.dao()
         val task = TaskRecord(serverId=s.id,serverName=s.name,label=title)
         dao.task(task)

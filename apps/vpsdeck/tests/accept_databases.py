@@ -59,6 +59,14 @@ for engine,image,password_key in [('postgresql','postgres:16-alpine','POSTGRES_P
             assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo') == 'after-backup'
             act('password')
             act('revoke')
+            act('drop-database')
+            assert not any(r['name']=='demo' for r in db.databases(auth))
+            before_delete=next(r for r in db.backups(auth) if r.get('recoveryOf')=='before-delete')
+            act('create-database')
+            act('restore',backup=before_delete['id'],confirmRestoreTarget=True)
+            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo')=='after-backup'
+            act('drop-user')
+            assert not any(r['name']=='app_fixture' for r in db.roles(auth))
             print('PASS',engine,'real catalog, ordinary user, grant/revoke, password, backup/restore and independent safety-backup restore',flush=True)
     finally:
         subprocess.run(['docker','rm','-f',name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)

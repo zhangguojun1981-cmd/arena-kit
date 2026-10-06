@@ -10,7 +10,7 @@ import time
 import uuid
 
 DB_BACKUPS = Path('/var/lib/vpsdeck-private/backups')
-DB_ACTIONS = {'create-database', 'create-user', 'grant', 'revoke', 'password', 'backup', 'restore'}
+DB_ACTIONS = {'create-database', 'create-user', 'grant', 'revoke', 'password', 'backup', 'restore', 'drop-database', 'drop-user'}
 DB_SYSTEM = {'postgres', 'template0', 'template1', 'mysql', 'sys', 'performance_schema', 'information_schema'}
 
 
@@ -175,13 +175,13 @@ class Databases:
             raise ValueError('未知数据库操作')
         database = db_name(spec.get('database') or 'unused')
         role = db_name(spec.get('role') or 'unused')
-        if operation in ('create-user', 'password', 'grant', 'revoke') and not role.startswith('app_'):
+        if operation in ('create-user', 'password', 'grant', 'revoke', 'drop-user') and not role.startswith('app_'):
             raise ValueError('账号写操作限定显式app_账号；系统和已有其他账号只读，避免误改管理员')
         if operation in ('create-user', 'password'):
             password = spec.get('newPassword','')
             if not isinstance(password,str) or not 12 <= len(password) <= 256 or '\x00' in password:
                 raise ValueError('新账号密码需要12至256字符，不能含NUL')
-        if operation not in ('create-user', 'password') and database.lower() in DB_SYSTEM:
+        if operation not in ('create-user', 'password', 'drop-user') and database.lower() in DB_SYSTEM:
             raise ValueError('系统数据库受保护，不能通过该表单修改')
         rows = self.databases(auth)
         roles = self.roles(auth)
@@ -193,13 +193,13 @@ class Databases:
             owner = db_name(spec.get('owner') or auth['user'])
             if auth['engine'] == 'postgresql' and owner not in role_names:
                 raise ValueError('数据库所有者角色不存在')
-        elif operation not in ('create-user','password') and database not in names:
+        elif operation not in ('create-user','password','drop-user') and database not in names:
             raise ValueError('目标数据库不存在；请重新发现资源')
         if operation == 'create-user' and role in role_names:
             raise ValueError('账号已存在，不覆盖密码')
-        if operation in ('grant','revoke','password') and role not in role_names:
+        if operation in ('grant','revoke','password','drop-user') and role not in role_names:
             raise ValueError('账号不存在，请重新发现资源')
-        if operation in ('grant','revoke','password') and not any(r['name']==role and r.get('managed') for r in roles):
+        if operation in ('grant','revoke','password','drop-user') and not any(r['name']==role and r.get('managed') for r in roles):
             raise ValueError('该账号具有管理员能力或不属于可管理范围，拒绝修改')
         backup = None
         if operation == 'restore':
@@ -210,7 +210,7 @@ class Databases:
         fingerprint = dict(operation=operation, database=database, role=role, names=sorted(names), roles=sorted(role_names),
                            owner=spec.get('owner'), backup=backup and backup['sha256'])
         return dict(revision=hashlib.sha256(json.dumps(fingerprint,sort_keys=True).encode()).hexdigest(), services=[],
-                    warning='数据库身份与SSH身份独立。账号仅管理app_前缀；MySQL仅localhost账号。授权限目标库（PostgreSQL限public现有表/序列）；撤销直接授权不等于撤销PUBLIC/继承权限。逻辑备份不含角色/ACL。恢复前必做独立安全备份，需维护窗口，可能部分恢复且不自动回滚；恢复不保证清除额外对象。')
+                    warning='数据库身份与SSH身份独立。账号仅管理app_前缀；MySQL仅localhost账号。授权限目标库（PostgreSQL限public现有表/序列）；撤销直接授权不等于撤销PUBLIC/继承权限。逻辑备份不含角色/ACL。恢复/删除数据库前必做独立安全备份，需维护窗口，可能部分恢复且不自动回滚；恢复不保证清除额外对象。删除账号会使其业务登录失效；PostgreSQL账号仍拥有对象时会拒绝删除，不自动CASCADE。')
 
     def make_backup(self, auth, database, recovery_of=None):
         private_dir(self.root.parent)
@@ -273,12 +273,21 @@ class Databases:
             if database not in {r['name'] for r in self.databases(auth)}:
                 raise ValueError('恢复后未核验到目标数据库')
             return [dict(service=database,state='restored',health='安全备份 '+safety['id'])], '恢复工具成功且目标库可查询；需核对应用数据和权限，不等于业务健康检查通过'
+        if operation == 'drop-database':
+            safety=self.make_backup(auth,database,recovery_of='before-delete')
+            progress('删除前安全备份已完成：'+safety['id']+'；开始删除，不强制断开其他数据库连接')
+            self.query(auth,'DROP DATABASE '+identifier(database)+';')
+            if database in {r['name'] for r in self.databases(auth)}:
+                raise ValueError('删除后仍发现数据库，请核查')
+            return [dict(service=database,state='deleted',health='安全备份 '+safety['id'])], '数据库已不存在；安全备份已保留，恢复需先创建同名库。不自动恢复或删除备份。'
         if operation == 'create-database':
             sql = 'CREATE DATABASE '+identifier(database)
             if pg:
                 sql += ' OWNER '+identifier(spec.get('owner') or auth['user'])
         elif operation == 'create-user':
             sql = ('CREATE ROLE '+user+' LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD ' if pg else 'CREATE USER '+user+' IDENTIFIED BY ') + db_literal(spec['newPassword'])
+        elif operation == 'drop-user':
+            sql = ('DROP ROLE ' if pg else 'DROP USER ')+user
         elif operation == 'password':
             sql = ('ALTER ROLE '+user+' PASSWORD ' if pg else 'ALTER USER '+user+' IDENTIFIED BY ') + db_literal(spec['newPassword'])
         elif operation in ('grant','revoke'):
@@ -300,6 +309,8 @@ class Databases:
             privileges = json.loads(result or '[]')
             return [dict(service=role,state=operation,health=json.dumps(privileges,ensure_ascii=False))], '已重新查询当前授权；PostgreSQL显示有效CONNECT及public权限，MySQL显示该库直接授权。PUBLIC/继承权限可能仍生效。'
         inventory = self.inventory(auth)
+        if operation == 'drop-user' and role in {r['name'] for r in inventory['roles'] if r.get('host','localhost')=='localhost'}:
+            raise ValueError('删除后仍发现账号，请核查')
         if operation == 'create-database' and database not in {r['name'] for r in inventory['databases']}:
             raise ValueError('创建后未核验到数据库')
         if operation in ('create-user','password') and role not in {r['name'] for r in inventory['roles']}:

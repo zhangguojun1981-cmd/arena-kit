@@ -66,7 +66,7 @@ import java.util.Locale
                 ResourceCard(row, !busy) { controller.open(server, row) }
             }
         }
-        TextButton(onClick = legacy, enabled = !busy) { Text("Compose / 数据库 / 高级旧版工具") }
+        TextButton(onClick = legacy, enabled = !busy) { Text("高级诊断 / 主机操作") }
     }
     state.detail?.let { row ->
         FullDialog(row.name, { if(!busy) { follow = false; controller.close(server) } }) { padding ->
@@ -100,20 +100,22 @@ import java.util.Locale
                     OutlinedTextField(filter, { filter = it }, Modifier.fillMaxWidth(), label = { Text("筛选已读取日志") })
                     SelectionContainer { Text(state.logs?.lineSequence()?.filter { it.contains(filter, true) }?.joinToString("\n") ?: "尚未读取日志", style = MaterialTheme.typography.bodySmall) }
                 }
-                Hint("操作不会因关闭页面而重新提交。详细历史可返回服务器首页的任务页查看。本阶段未实现容器创建/删除及远端长任务恢复。")
+                Hint("操作不会因关闭页面而重新提交。详细历史可返回服务器首页的任务页查看。创建/重建与长任务在对应面板管理；此处只删除已停止容器，不强制删除，不删除卷。")
             }
         }
     }
     pending?.let { (row, action) ->
         var advanced by remember { mutableStateOf(false) }
+        var deleteConfirmation by remember(row.id,action) { mutableStateOf("") }
         AlertDialog(onDismissRequest = { pending = null }, title = { Text("${action.title} ${row.name}？") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("服务器：${server.name}\n${server.endpoint}\n对象：${row.id}\n当前状态：${row.state}\n\n该操作可能中断依赖此资源的业务。不会删除持久化数据，不会自动重试。${if(sudo) "\n将使用 sudo -n，不提交密码。" else ""}")
+                if(action==ResourceAction.REMOVE) { Text("容器可写层会被删除，卷不会被删除但可能变成未关联状态；请先备份业务数据。",color=MaterialTheme.colorScheme.error); OutlinedTextField(deleteConfirmation,{deleteConfirmation=it},label={Text("输入容器名称确认")},singleLine=true) }
                 TextButton(onClick = { advanced = !advanced }) { Text("高级执行计划") }
                 if(advanced) Text(ResourceProtocol.action(state.kind, row, action))
                 Text("提交前重新核对资源状态；执行后读取真实状态，未通过核验不报成功。")
             }
-        }, confirmButton = { Button(onClick = { pending = null; controller.act(server, row, action, sudo) }, enabled = !busy && online) { Text("确认${action.title}") } }, dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
+        }, confirmButton = { Button(onClick = { pending = null; controller.act(server, row, action, sudo) }, enabled = !busy && online && (action!=ResourceAction.REMOVE || deleteConfirmation==row.name)) { Text("确认${action.title}") } }, dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
     }
 }
 

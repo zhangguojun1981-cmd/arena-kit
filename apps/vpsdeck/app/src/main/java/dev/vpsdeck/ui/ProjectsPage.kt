@@ -27,6 +27,7 @@ import org.json.JSONObject
     var selected by remember(server.id) { mutableStateOf<String?>(null) }
     var plan by remember(server.id) { mutableStateOf<ProjectPlan?>(null) }
     var query by remember(server.id) { mutableStateOf("") }
+    RemoteTaskRefresh(vm,server,sudo) {controller.load(server,sudo)}
     LaunchedEffect(server.id,online) { if(online) controller.load(server,sudo) }
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("Compose 项目", "发现原始项目 · 风险预览 · 独立远端任务 · 断线后查状态")
@@ -53,7 +54,7 @@ import org.json.JSONObject
             items(state.jobs,key={JSONObject(it).getString("id")}) { raw ->
                 val row = JSONObject(raw)
                 Panel {
-                    Text("${row.optString("project")} · ${row.optString("action")} · ${JobProtocol.state(row.optString("state"))}")
+                    Text("${row.optString("project")} · ${JobProtocol.action(row.optString("action"))} · ${JobProtocol.state(row.optString("state"))}")
                     Text(row.optString("message")); Hint("任务ID：${row.getString("id")}")
                     JobProtocol.rows(row,"resources").forEach { value ->
                         val resource = JSONObject(value)
@@ -83,7 +84,7 @@ import org.json.JSONObject
     plan?.let { value ->
         var confirmation by remember(value) { mutableStateOf("") }
         val info = JSONObject(value.result)
-        AlertDialog(onDismissRequest={plan=null},title={Text("确认远端任务 · ${value.action}")},text={
+        AlertDialog(onDismissRequest={plan=null},title={Text("确认远端任务 · ${JobProtocol.action(value.action)}")},text={
             Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Text("${server.name} · ${server.endpoint}")
                 JobProtocol.rows(info,"services").forEach { raw ->

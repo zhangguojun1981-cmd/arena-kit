@@ -99,6 +99,8 @@ class Engine:
         return command
 
     def plan(self, spec):
+        if spec.get('kind') == 'deployment':
+            return Deployments().plan(spec)
         if spec.get('kind') == 'database':
             return Databases().plan(spec)
         if spec.get('kind') == 'environment':
@@ -153,6 +155,8 @@ class Engine:
         is_environment = request['project'].get('kind') == 'environment'
         is_database = request['project'].get('kind') == 'database'
         allowed = (action == 'install') if is_environment else ((action in DB_ACTIONS and action == request['project'].get('operation')) if is_database else action in ACTIONS)
+        if request['project'].get('kind') == 'deployment':
+            allowed=action in DEPLOY_ACTIONS and action==request['project'].get('operation')
         require(allowed, '不支持的动作')
         plan = self.plan(request['project'])
         require(plan['revision'] == request['revision'], '配置/环境已变化，请重新预览')
@@ -199,11 +203,12 @@ class Engine:
                     require(plan['revision'] == request['revision'], '启动前配置已变化；未执行动作')
                     state.update(message='正在执行；手机断线不影响该进程')
                     atomic(directory / 'state.json', state)
-                    if request['project'].get('kind') == 'database':
+                    if request['project'].get('kind') in ('database','deployment'):
                         def progress(message):
                             state.update(message=message, checkpoint=message)
                             atomic(directory / 'state.json', state)
-                        rows, message = Databases().execute(request['project'], progress)
+                        handler=Databases() if request['project']['kind']=='database' else Deployments()
+                        rows, message = handler.execute(request['project'], progress)
                         state.update(state='succeeded', resources=rows, message=message)
                     elif request['project'].get('kind') == 'environment':
                         rows, message = Environment(self.run).execute(request['project'])
@@ -234,6 +239,8 @@ class Engine:
 def api(request, source):
     engine = Engine()
     op = request['op']
+    if op == 'deployments':
+        return dict(deployments=Deployments().listing(),jobs=engine.states())
     if op == 'database':
         return dict(database=Databases().inventory(request['auth']), jobs=engine.states())
     if op == 'database-containers':

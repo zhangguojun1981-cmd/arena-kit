@@ -51,6 +51,7 @@ class PanelController(private val app: DeckApp) {
         }
     }
     fun act(s: Server, expected: Resource, action: ResourceAction, sudo: Boolean) = job(s, "检查操作前状态") {
+        check(!app.projects.hasActive(s)) { "该主机有已知远端任务，先查询并等待其结束再修改资源" }
         val kind = state(s).kind
         val repo = repository(s)
         val dao = app.database.dao()
@@ -74,13 +75,13 @@ class PanelController(private val app: DeckApp) {
             }
             update(s) { it.copy(busy = "命令已返回，正在验证真实状态") }
             dao.task(task.copy(detail = "命令退出码为0，正在核验资源状态；尚未判定成功。", exitCode = code))
-            var after = repo.detail(kind, expected)
+            var after = repo.after(kind, action, expected)
             // Always observe after a short settling window, including initially successful starts.
-            repeat(3) { delay(1000); after = repo.detail(kind, expected) }
+            repeat(3) { delay(1000); after = repo.after(kind, action, expected) }
             val verified = ResourceProtocol.verified(kind, action, before, after)
             val message = if(verified) "${action.title}已验证：${after.state} · 自启 ${after.enabled.ifBlank { "不适用" }}" else "未通过验证：当前 ${after.state} / ${after.enabled}，请检查日志；不会自动重试。"
             dao.task(task.copy(state = if(verified) "成功" else "未通过验证", exitCode = code, detail = message))
-            update(s) { it.copy(detail = after, rows = it.rows.map { r -> if(r.id == after.id) after else r }, notice = message, loadedAt = System.currentTimeMillis()) }
+            update(s) { it.copy(detail = if(verified && action==ResourceAction.REMOVE) null else after, rows = if(verified && action==ResourceAction.REMOVE) it.rows.filter { r -> r.id != after.id } else it.rows.map { r -> if(r.id == after.id) after else r }, notice = message, loadedAt = System.currentTimeMillis()) }
         } catch(e: CancellationException) { throw e }
         catch(e: Exception) {
             val message = if(submitted) "操作已提交，但结果未能确认。请刷新核实，不要直接重试。" else "操作未提交：${e.message}"

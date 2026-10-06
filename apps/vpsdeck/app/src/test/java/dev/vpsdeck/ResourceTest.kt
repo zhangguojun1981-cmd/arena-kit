@@ -7,6 +7,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ResourceTest {
+    @Test fun onlyStoppedContainersCanBeRemovedWithoutForceOrVolumeDeletion() {
+        val row=Resource("a".repeat(64),"demo","exited")
+        assertTrue(ResourceAction.REMOVE in ResourceProtocol.actions(ResourceKind.CONTAINER,row))
+        assertFalse(ResourceAction.REMOVE in ResourceProtocol.actions(ResourceKind.CONTAINER,row.copy(state="running")))
+        val command=ResourceProtocol.action(ResourceKind.CONTAINER,row,ResourceAction.REMOVE)
+        assertTrue(command.startsWith("docker rm -- "))
+        assertFalse(command.contains("--force"));assertFalse(command.contains(" -v"))
+        assertTrue(ResourceProtocol.verified(ResourceKind.CONTAINER,ResourceAction.REMOVE,row,row.copy(state="removed")))
+    }
+    @Test fun deletionVerificationRequiresCompleteSuccessfulInventory() = runBlocking {
+        val row=Resource("a".repeat(64),"demo","exited")
+        val repo=ResourceRepository { ExecResult(0,"",false) }
+        assertEquals("removed",repo.after(ResourceKind.CONTAINER,ResourceAction.REMOVE,row).state)
+        val failed=ResourceRepository { ExecResult(1,"",false) }
+        try { failed.after(ResourceKind.CONTAINER,ResourceAction.REMOVE,row); fail("must not infer absence from failure") } catch(_:IllegalStateException) {}
+    }
     private val id = "a".repeat(64)
     private fun service(active: String = "active", invocation: String = "first") = "Id=demo.service\nLoadState=loaded\nActiveState=$active\nSubState=running\nDescription=Demo worker\nUnitFileState=enabled\nInvocationID=$invocation\nMainPID=12\nFragmentPath=/etc/systemd/system/demo.service\n"
     @Test fun mergesInstalledAndLoadedServices() {

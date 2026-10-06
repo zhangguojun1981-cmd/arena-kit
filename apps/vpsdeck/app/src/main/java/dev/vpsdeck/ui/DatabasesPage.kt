@@ -21,7 +21,7 @@ import org.json.JSONObject
 import java.text.DateFormat
 import java.util.Date
 
-private val databaseActions = mapOf("create-database" to "创建数据库", "create-user" to "创建账号", "grant" to "授权", "revoke" to "撤销直接授权", "password" to "修改密码", "backup" to "创建逻辑备份", "restore" to "从备份恢复")
+private val databaseActions = mapOf("create-database" to "创建数据库", "create-user" to "创建账号", "grant" to "授权", "revoke" to "撤销直接授权", "password" to "修改密码", "backup" to "创建逻辑备份", "restore" to "从备份恢复", "drop-database" to "备份后删除数据库", "drop-user" to "删除普通账号")
 
 @Composable fun DatabasesPage(vm: DeckViewModel, server: Server) {
     val controller = vm.app.projects
@@ -43,6 +43,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
     fun edit(action: String, database: String = "", role: String = "", backup: String = "") {
         editor = JSONObject().put("kind","database").put("auth",auth()).put("operation",action).put("database",database).put("role",role).put("backup",backup).toString()
     }
+    RemoteTaskRefresh(vm,server,sudo) {if(state.database!=null) controller.loadDatabase(server,auth().toString(),sudo)}
     LaunchedEffect(server.id,engine,user,password,asPostgres,container,sudo) { controller.clearDatabase(server) }
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("数据库与账号", "独立数据库身份 · 资源列表 · 逻辑备份 · 安全备份后恢复")
@@ -84,6 +85,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                             if(database.optBoolean("protected")) Hint("系统库：只读显示")
                             else {
                                 OutlinedButton(onClick={edit("backup",database.getString("name"))},enabled=!state.busy) {Text("备份该数据库")}
+                                OutlinedButton(onClick={edit("drop-database",database.getString("name"))},enabled=!state.busy) {Text("备份后删除数据库",color=MaterialTheme.colorScheme.error)}
                                 Hint("恢复入口在备份列表。PostgreSQL备份不含角色/ACL；MySQL单事务备份对非事务表不保证一致性，操作前安排维护窗口。")
                             }
                         }
@@ -96,7 +98,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                             Text("${role.getString("name")} ${role.optString("host")}",style=MaterialTheme.typography.titleMedium)
                             if(!role.optBoolean("managed")) Hint("系统/管理员/非app_或非localhost账号：只读，避免误改既有身份")
                             else FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                listOf("grant","revoke","password").forEach { action -> OutlinedButton(onClick={edit(action,role=role.getString("name"))},enabled=!state.busy) {Text(databaseActions.getValue(action))} }
+                                listOf("grant","revoke","password","drop-user").forEach { action -> OutlinedButton(onClick={edit(action,role=role.getString("name"))},enabled=!state.busy) {Text(databaseActions.getValue(action))} }
                             }
                         }
                     }
@@ -106,7 +108,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                         Panel {
                             Text(backup.getString("database"),style=MaterialTheme.typography.titleMedium)
                             Text("${DateFormat.getDateTimeInstance().format(Date(backup.getLong("created")*1000))} · ${backup.getLong("bytes")} 字节")
-                            if(!backup.isNull("recoveryOf")) Text("恢复前安全备份（请保留）")
+                            if(!backup.isNull("recoveryOf")) Text("高风险操作前安全备份（请保留）")
                             Text("备份源：${backup.optString("container").ifEmpty { "原生服务" }}")
                             Hint("ID：${backup.getString("id")}\nSHA256：${backup.getString("sha256")}")
                             OutlinedButton(onClick={edit("restore",backup.getString("database"),backup=backup.getString("id"))},enabled=!state.busy) {Text("预览恢复到原数据库")}
@@ -119,7 +121,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             items(state.jobs,key={JSONObject(it).getString("id")}) { raw ->
                 val task=JSONObject(raw)
                 Panel {
-                    Text("${task.optString("project")} · ${task.optString("action")} · ${JobProtocol.state(task.optString("state"))}")
+                    Text("${task.optString("project")} · ${JobProtocol.action(task.optString("action"))} · ${JobProtocol.state(task.optString("state"))}")
                     Text(task.optString("message"));Hint("ID：${task.getString("id")}")
                     JobProtocol.rows(task,"resources").forEach { resource -> val r=JSONObject(resource);Text("${r.optString("service")}：${r.optString("state")} ${r.optString("health")}") }
                 }
@@ -160,10 +162,10 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
     var owner by remember(seed) {mutableStateOf(initial.getJSONObject("auth").getString("user"))}
     FullDialog(databaseActions[operation] ?: operation,{if(!busy) close()}) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            if(operation !in listOf("create-user","password")) OutlinedTextField(database,{database=it},Modifier.fillMaxWidth(),label={Text("数据库名称")},singleLine=true,enabled=!busy && operation !in listOf("backup","restore"))
+            if(operation !in listOf("create-user","password","drop-user")) OutlinedTextField(database,{database=it},Modifier.fillMaxWidth(),label={Text("数据库名称")},singleLine=true,enabled=!busy && operation !in listOf("backup","restore","drop-database"))
             if(operation in listOf("grant","revoke")) FlowRow(horizontalArrangement=Arrangement.spacedBy(6.dp)) { JobProtocol.rows(JSONObject(inventory),"databases").forEach { raw -> val row=JSONObject(raw); if(!row.optBoolean("protected")) FilterChip(database==row.getString("name"),{database=row.getString("name")},enabled=!busy,label={Text(row.getString("name"))}) } }
             if(operation=="create-database" && initial.getJSONObject("auth").getString("engine")=="postgresql") OutlinedTextField(owner,{owner=it},Modifier.fillMaxWidth(),label={Text("已存在的数据库所有者角色")},singleLine=true,enabled=!busy)
-            if(operation in listOf("create-user","password","grant","revoke")) OutlinedTextField(role,{role=it},Modifier.fillMaxWidth(),label={Text("app_普通账号名称")},singleLine=true,enabled=!busy && operation=="create-user")
+            if(operation in listOf("create-user","password","grant","revoke","drop-user")) OutlinedTextField(role,{role=it},Modifier.fillMaxWidth(),label={Text("app_普通账号名称")},singleLine=true,enabled=!busy && operation=="create-user")
             if(operation in listOf("create-user","password")) OutlinedTextField(password,{password=it},Modifier.fillMaxWidth(),label={Text("新账号密码（12至256字符）")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password,autoCorrect=false),enabled=!busy)
             if(operation=="restore") {
                 Text("备份ID：${initial.getString("backup")}\n仅相同引擎/数据库名。当前目标：${initial.getJSONObject("auth").optString("container").ifEmpty { "原生服务" }}。恢复前必须完成独立安全备份。")
@@ -172,7 +174,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             Hint("不提供SQL编辑器。不会自动修改数据库网络监听、认证策略或系统管理员账号。")
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
-            Button(onClick={preview(JSONObject(seed).put("database",database).put("role",role).put("owner",owner).put("newPassword",password).put("confirmRestoreTarget",confirmTarget).put("name",if(operation in listOf("create-user","password")) role else database).toString())},enabled=!busy && (operation!="restore" || confirmTarget)) {Text("预览操作与风险")}
+            Button(onClick={preview(JSONObject(seed).put("database",database).put("role",role).put("owner",owner).put("newPassword",password).put("confirmRestoreTarget",confirmTarget).put("name",if(operation in listOf("create-user","password","drop-user")) role else database).toString())},enabled=!busy && (operation!="restore" || confirmTarget)) {Text("预览操作与风险")}
         }
     }
 }

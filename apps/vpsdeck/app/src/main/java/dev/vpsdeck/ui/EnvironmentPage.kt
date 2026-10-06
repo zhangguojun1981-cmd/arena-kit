@@ -23,6 +23,7 @@ import org.json.JSONObject
     val online = server.id in connected
     var sudo by remember(server.id) { mutableStateOf(false) }
     var plan by remember(server.id) { mutableStateOf<ProjectPlan?>(null) }
+    RemoteTaskRefresh(vm,server,sudo) {controller.loadEnvironments(server,sudo)}
     LaunchedEffect(server.id, online) { if(online) controller.loadEnvironments(server,sudo) }
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("环境与安装", "Debian 12 · 已有APT源 · 先模拟依赖再确认 · 保留现有配置")

@@ -20,6 +20,12 @@ class ResourceRepository(private val exec: suspend (String) -> ExecResult) {
             check(it.id == row.id) { "资源身份已变化，请重新选择" }
         }
     }
+    suspend fun after(kind: ResourceKind, action: ResourceAction, row: Resource): Resource {
+        if(action != ResourceAction.REMOVE) return detail(kind,row)
+        check(kind == ResourceKind.CONTAINER) { "只允许删除已停止容器" }
+        val rows = list(kind)
+        return if(rows.none { it.id == row.id }) row.copy(state="removed",version="") else detail(kind,row)
+    }
     suspend fun logs(kind: ResourceKind, row: Resource): ExecResult = exec(ResourceProtocol.logs(kind, row.id))
     suspend fun act(kind: ResourceKind, expected: Resource, action: ResourceAction, sudo: Boolean, onSubmit: () -> Unit): Pair<Resource, ExecResult> {
         val before = detail(kind, expected)

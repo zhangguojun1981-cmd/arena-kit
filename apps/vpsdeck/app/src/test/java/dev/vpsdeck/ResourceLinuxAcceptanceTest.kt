@@ -49,10 +49,10 @@ class ResourceLinuxAcceptanceTest {
         try {
             checked("docker create --name $name alpine:3.20 sleep 600")
             var row = repo.detail(ResourceKind.CONTAINER,repo.list(ResourceKind.CONTAINER).single { it.name == name })
-            for(action in listOf(ResourceAction.START,ResourceAction.RESTART,ResourceAction.STOP)) {
+            for(action in listOf(ResourceAction.START,ResourceAction.RESTART,ResourceAction.STOP,ResourceAction.REMOVE)) {
                 val (before,result) = repo.act(ResourceKind.CONTAINER,row,action,false) { }
                 assertEquals(result.output,0,result.code)
-                row = repo.detail(ResourceKind.CONTAINER,row)
+                row = repo.after(ResourceKind.CONTAINER,action,row)
                 assertTrue("${action.title}: $row",ResourceProtocol.verified(ResourceKind.CONTAINER,action,before,row))
             }
         } finally { exec("docker rm -f -- $name") }

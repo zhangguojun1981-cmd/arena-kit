@@ -8,7 +8,7 @@ data class Resource(
     val id: String, val name: String, val state: String, val summary: String = "",
     val enabled: String = "", val version: String = "", val facts: Map<String, String> = emptyMap()
 )
-enum class ResourceAction(val title: String) { START("启动"), STOP("停止"), RESTART("重启"), ENABLE("启用自启"), DISABLE("关闭自启") }
+enum class ResourceAction(val title: String) { START("启动"), STOP("停止"), RESTART("重启"), ENABLE("启用自启"), DISABLE("关闭自启"), REMOVE("删除已停止容器") }
 
 object ResourceProtocol {
     const val units = "systemctl list-units --all --type=service --plain --no-legend --no-pager"
@@ -61,11 +61,12 @@ object ResourceProtocol {
             "enabled" -> result += ResourceAction.DISABLE
             "disabled" -> result += ResourceAction.ENABLE
         }
+        if(kind == ResourceKind.CONTAINER && row.state in setOf("exited", "created", "dead")) result += ResourceAction.REMOVE
         return result
     }
     fun action(kind: ResourceKind, row: Resource, action: ResourceAction): String {
         require(action in actions(kind, row)) { "该对象当前不允许此操作，请刷新状态" }
-        val verb = action.name.lowercase()
+        val verb = if(action == ResourceAction.REMOVE) "rm" else action.name.lowercase()
         return if(kind == ResourceKind.SERVICE) "systemctl $verb -- ${Shell.quote(Shell.unit(row.id))}"
         else "docker $verb -- ${Shell.quote(containerId(row.id))}"
     }
@@ -78,6 +79,7 @@ object ResourceProtocol {
             ResourceAction.RESTART -> after.state == running && after.version.isNotBlank() && after.version != before.version
             ResourceAction.ENABLE -> after.enabled == "enabled"
             ResourceAction.DISABLE -> after.enabled == "disabled"
+            ResourceAction.REMOVE -> kind == ResourceKind.CONTAINER && after.state == "removed"
         }
     }
     fun logs(kind: ResourceKind, id: String): String = if(kind == ResourceKind.SERVICE)
