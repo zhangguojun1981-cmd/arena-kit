@@ -96,10 +96,9 @@ import java.util.Locale
                 OutlinedButton(onClick = { controller.open(server, row) }, enabled = !busy && online) { ActionLabel("重新读取详情") }
                 HorizontalDivider()
                 SectionTitle("日志", "最近200行，仅保留在当前进程；日志可能含敏感信息")
-                Row {
+                ActionGroup {
                     TextButton(onClick = { showLogs = true; controller.logs(server) }, enabled = !busy && online) { ActionLabel("读取日志") }
-                    Switch(follow, { follow = it; showLogs = true }, enabled = online && pending == null)
-                    Text("每3秒刷新")
+                    FilterChip(follow,{follow=!follow;showLogs=true},enabled=online && pending==null,label={ActionLabel("每3秒刷新")})
                 }
                 if(showLogs) {
                     var filter by remember(row.id) { mutableStateOf("") }

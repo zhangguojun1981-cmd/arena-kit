@@ -61,7 +61,7 @@ fun clipboardChunks(text: String): List<String> {
             (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
         }.onSuccess {copied=true;error=null}.onFailure {error="复制失败，请重试"}
     }
-    TextButton(enabled=text.isNotEmpty() || readText!=null,onClick={captured=readText?.invoke() ?: text;if(captured.length>64000) choose=true else copy(captured)}) {ActionLabel(if(copied && captured.length<=64000) "已复制" else label)}
+    TextButton(enabled=text.isNotEmpty() || readText!=null,onClick={captured=readText?.invoke() ?: text;if(captured.isEmpty()) error="暂无可复制内容" else if(captured.length>64000) choose=true else copy(captured)}) {ActionLabel(if(copied && captured.length<=64000) "已复制" else label)}
     if(choose) AlertDialog(onDismissRequest={choose=false},title={Text("分段复制")},text={
         Column(Modifier.heightIn(max=320.dp).verticalScroll(rememberScrollState())) {
             Hint("内容较长，为避免系统剪贴板限制请按顺序复制；不会丢弃尾部内容。")

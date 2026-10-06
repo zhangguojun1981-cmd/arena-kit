@@ -62,6 +62,17 @@ class InteractionDeviceTest {
         ui.onNodeWithText("输入命令").performTextInput("pwd").performImeAction()
         ui.runOnIdle {assertEquals("pwd\r",sent.last())}
     }
+    @Test fun terminalCopyReadsLatestOutputAtClickTime() {
+        var transcript="old output"
+        ui.setContent {MaterialTheme {CopyButton("","复制历史",readText={transcript})}}
+        ui.runOnIdle {transcript="new output\n中文"}
+        ui.onNodeWithText("复制历史").performClick()
+        ui.runOnIdle {
+            val context=ApplicationProvider.getApplicationContext<Context>()
+            val clipboard=context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            assertEquals(transcript,clipboard.primaryClip!!.getItemAt(0).text.toString())
+        }
+    }
     @Test fun disconnectedTerminalCannotSubmit() {
         ui.setContent {MaterialTheme {TerminalCommandBar(false) {error("must not send")}}}
         ui.onNodeWithText("执行").assertIsNotEnabled()

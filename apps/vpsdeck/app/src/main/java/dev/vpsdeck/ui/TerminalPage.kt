@@ -21,6 +21,8 @@ import dev.vpsdeck.data.Server
 import dev.vpsdeck.ssh.ShellSession
 
 @Composable fun TerminalPage(vm: DeckViewModel, server: Server) {
+    val connections by vm.connected.collectAsState()
+    val online=server.id in connections
     val version = vm.shellVersion
     val shells = remember(version, server.id) { vm.app.terminals.values.filter { it.server.id == server.id } }
     var selected by remember(server.id) { mutableStateOf<String?>(shells.lastOrNull()?.id) }
@@ -37,10 +39,10 @@ import dev.vpsdeck.ssh.ShellSession
     Column(Modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             shells.forEachIndexed { i, s -> FilterChip(shell?.id == s.id, { selected = s.id }, label = { ActionLabel("终端 ${i + 1}") }) }
-            TextButton(onClick = { vm.newShell()?.let { selected = it.id } }) { Icon(Icons.Outlined.Add, null); ActionLabel("新建") }
+            TextButton(enabled=online && !vm.busy,onClick = { vm.newShell()?.let { selected = it.id } }) { Icon(Icons.Outlined.Add, null); ActionLabel("新建") }
         }
         if(shell == null) {
-            Panel(Modifier.padding(20.dp)) { Icon(Icons.Outlined.Terminal, null, Modifier.size(40.dp)); SectionTitle("交互式 SSH 终端"); Text("支持 vim、top、sudo、Tab补全与特殊按键。命令只在你输入时执行，断线不会自动重放。"); Button(onClick = { vm.newShell()?.let { selected = it.id } }) { ActionLabel("打开终端") }; Hint("长任务建议使用 tmux。服务器未连接时请先在概览中连接。") }
+            Panel(Modifier.padding(20.dp)) { Icon(Icons.Outlined.Terminal, null, Modifier.size(40.dp)); SectionTitle("交互式 SSH 终端"); Text("支持 vim、top、sudo、Tab补全与特殊按键。命令只在你输入时执行，断线不会自动重放。"); Button(enabled=!vm.busy,onClick = { if(online) vm.newShell()?.let { selected = it.id } else vm.connect(server) }) { ActionLabel(if(online) "打开终端" else "连接服务器") }; Hint("长任务建议使用 tmux。服务器未连接时请先在概览中连接。") }
         } else {
             val state by shell.state.collectAsState()
             val ready=state=="已连接"
