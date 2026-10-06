@@ -66,8 +66,10 @@ import kotlinx.coroutines.delay
             }
             LaunchedEffect(shell.id, ready) {
                 if(ready && shell.id !in autoFocused) {
-                    repeat(20) { if(canvas != null) break; delay(100) }
-                    if(ready && shell.id !in autoFocused) { canvas?.showKeyboard(); autoFocused = autoFocused + shell.id }
+                    var c: TerminalCanvas? = null
+                    var tries=0
+                    while(c==null && tries<20) { delay(100); tries++; c=canvas }
+                    if(c!=null) { c.showKeyboard(); autoFocused = autoFocused + shell.id }
                 }
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {

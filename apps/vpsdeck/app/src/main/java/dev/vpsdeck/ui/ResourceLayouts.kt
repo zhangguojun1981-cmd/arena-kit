@@ -45,7 +45,7 @@ data class ResourceMenuAction(val label: String, val enabled: Boolean = true, va
 /** Primary action and overflow sit at the end of the row (right on LTR); nothing is anchored left. */
 @Composable fun ResourceActions(actions: List<ResourceMenuAction>) {
     if(actions.isEmpty()) return
-    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.End, horizontalSpacing=2.dp) {
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.End) {
         val first=actions.first()
         QuietAction(first.run,first.enabled) {ActionLabel(first.label)}
         if(actions.size>1) {

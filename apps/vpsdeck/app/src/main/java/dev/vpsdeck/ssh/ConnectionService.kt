@@ -23,7 +23,7 @@ class ConnectionService : Service() {
         if(intent?.action == "disconnect") { (application as DeckApp).closeAll(); cleanStop=true;stopSelf(); return START_NOT_STICKY }
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val close = PendingIntent.getService(this, 1, Intent(this, ConnectionService::class.java).setAction("disconnect"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val battery = PendingIntent.getActivity(this, 2, Intent(android.content.Intent.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName")).setPackage(packageName), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val battery = PendingIntent.getActivity(this, 2, Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName")), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         startForeground(101, NotificationCompat.Builder(this, "ssh").setSmallIcon(R.drawable.ic_deck).setContentTitle("VPS Deck · SSH 连接")
             .setContentText("终端与传输可在后台运行；点击返回，或断开全部连接。").setContentIntent(open).setOngoing(true)
             .addAction(0, "电池设置", battery).addAction(0, "断开全部", close).build())
@@ -38,9 +38,11 @@ class ConnectionService : Service() {
                 val before=pool.connected.value
                 val after=before.toList().filter { pool.isConnected(it) }.toSet()
                 if(after!=before) {
-                    val names=before-after
+                    val dropped=before-after
+                    val names=mutableListOf<String>()
+                    for(id in dropped) { names.add(app.database.dao().server(id)?.name ?: id) }
                     app.recordDisconnect(java.text.SimpleDateFormat("MM-dd HH:mm:ss",java.util.Locale.ROOT).format(java.util.Date())+
-                        " "+names.joinToString(","){ (app.database.dao().server(it)?.name ?: it) }+" SSH断开（当时：连接服务仍在运行）——多为网络/锁屏休眠，见设置中“后台连接”建议")
+                        " "+names.joinToString(",")+" SSH断开（当时：连接服务仍在运行）——多为网络/锁屏休眠，见设置中“后台连接”建议")
                 }
                 if(after.isEmpty() && app.connecting.value.isEmpty()) {
                     cleanStop=true

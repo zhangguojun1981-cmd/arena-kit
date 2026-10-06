@@ -85,7 +85,7 @@ import dev.vpsdeck.data.Server
         Panel(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp)) {
             val meta=vm.fileSnapMeta
             Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-                Text(if(meta==null) "文件快照 · 未建立" else "快照 · ${meta.root} · ${meta.entries} 条${if(meta.truncated) "（超限截断）"}",
+                Text(if(meta==null) "文件快照 · 未建立" else "快照 · ${meta.root} · ${meta.entries} 条${if(meta.truncated) "（超限截断）" else ""}",
                     Modifier.weight(1f),style=MaterialTheme.typography.labelMedium,
                     color=if(meta==null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
                 if(meta==null) QuietAction({snapSettings=!snapSettings}) {ActionLabel("范围")}
@@ -115,7 +115,7 @@ import dev.vpsdeck.data.Server
             if(vm.fileSnapNote.isNotEmpty()) Hint(vm.fileSnapNote)
             if(vm.fileHits.isNotEmpty()) {
                 Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-                    Text("${vm.fileHits.size} 条命中${if(vm.fileHits.size==FileIndex.SEARCH_LIMIT) "（已截断）"}",Modifier.weight(1f),style=MaterialTheme.typography.labelSmall)
+                    Text("${vm.fileHits.size} 条命中${if(vm.fileHits.size==FileIndex.SEARCH_LIMIT) "（已截断）" else ""}",Modifier.weight(1f),style=MaterialTheme.typography.labelSmall)
                     QuietAction({vm.clearFileHits()}) {ActionLabel("清除")}
                 }
                 vm.fileHits.forEach {hit ->
@@ -151,7 +151,7 @@ import dev.vpsdeck.data.Server
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal=12.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.End,horizontalSpacing=4.dp) {
+        Row(Modifier.fillMaxWidth().padding(horizontal=12.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.End) {
             if(selecting) {
                 Text("已选 ${selectedFiles.size}",style=MaterialTheme.typography.labelSmall)
                 QuietAction({selectedPaths=vm.files.filter {it.name.contains(search,true)}.map {it.path}.toSet()},!vm.fileBatchBusy) {ActionLabel("全选筛选结果")}

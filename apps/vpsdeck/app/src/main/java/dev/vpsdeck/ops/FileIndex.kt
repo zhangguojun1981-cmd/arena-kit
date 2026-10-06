@@ -35,7 +35,7 @@ object FileIndex {
             "count=\$(wc -l < \"\$dir/index.tsv\")",
             "printf '%s\\t%s\\t%s\\n' $rootQ \"\$count\" \"\$(date +%s)\" > \"\$dir/meta.tsv\"",
             "chmod 600 -- \"\$dir/meta.tsv\"",
-            "cat \\\"$dir/meta.tsv\\\""
+            "cat \"\$dir/meta.tsv\""
         ).joinToString("\n")
     }
 
@@ -45,8 +45,8 @@ object FileIndex {
         val flags = if(ignoreCase) "-F -i" else "-F"
         return listOf(
             "dir=$DIR",
-            "test -s \"$dir/index.tsv\" || exit $NO_SNAPSHOT_EXIT",
-            "grep $flags -m $SEARCH_LIMIT -- " + Shell.quote(pattern) + " \"$dir/index.tsv\""
+            "test -s \"\$dir/index.tsv\" || exit $NO_SNAPSHOT_EXIT",
+            "grep $flags -m $SEARCH_LIMIT -- " + Shell.quote(pattern) + " \"\$dir/index.tsv\""
         ).joinToString("\n")
     }
 
@@ -77,6 +77,6 @@ object FileIndex {
                 if(path.isEmpty()) null else Hit(path, type == "d", type == "l", size, perm, mt * 1000,
                     path.substringAfterLast('/').ifBlank { path })
             }
-        }.filterNotNull().take(SEARCH_LIMIT)
+        }.filterNotNull().toList().take(SEARCH_LIMIT)
     }
 }

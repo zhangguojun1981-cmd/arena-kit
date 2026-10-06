@@ -99,7 +99,7 @@ class InteractionDeviceTest {
         assertTrue(primary.right >= root.right - 12, "primary action must sit at the row end")
         assertTrue(primary.left > root.width/2, "action row must not be anchored left")
         assertTrue(primary.right >= more.right)
-        assertTrue(primary.height < root.height/2f)
+        assertTrue(primary.height * 2f < root.height)
         ui.onNodeWithContentDescription("更多操作").performClick()
         ui.onNodeWithText("停用网站").assertIsDisplayed()
         ui.runOnIdle {assertFalse(performed)}
