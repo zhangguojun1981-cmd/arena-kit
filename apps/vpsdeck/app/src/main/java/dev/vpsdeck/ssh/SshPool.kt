@@ -65,10 +65,14 @@ class SshPool(private val vault: CredentialReader) {
     fun isConnected(id: String): Boolean { publish(); return sessions[id]?.isConnected == true }
     /** Privileged/action requests never reconnect implicitly. */
     fun requireSession(id: String): Session = sessions[id]?.takeIf { it.isConnected } ?: throw IllegalStateException("连接已断开，请手动重连；操作未自动重放")
-    suspend fun exec(server: Server, command: String, timeoutSeconds: Int = 45): ExecResult = withContext(Dispatchers.IO) {
+    suspend fun exec(server: Server, command: String, timeoutSeconds: Int = 45, input: ByteArray? = null): ExecResult = withContext(Dispatchers.IO) {
         val channel = requireSession(server.id).openChannel("exec") as ChannelExec
         channel.setCommand("export LC_ALL=C; PATH=\"\$PATH:/usr/sbin:/sbin\"; export PATH; $command")
-        channel.setInputStream(null)
+        require((input?.size ?: 0) <= 1024 * 1024) { "结构化请求不能超过1MiB，文件请用SFTP" }
+        // Future database/container credentials travel on SSH stdin, never in process argv.
+        // The caller retains ownership of the original array; only this working copy is cleared.
+        val requestBytes = input?.copyOf()
+        channel.setInputStream(requestBytes?.inputStream())
         val output = channel.inputStream; val error = channel.errStream
         coroutineScope {
             try {
@@ -77,7 +81,7 @@ class SshPool(private val vault: CredentialReader) {
                 withTimeout(timeoutSeconds * 1000L) { while(!channel.isClosed) delay(60) }
                 val stdout = a.await(); val stderr = b.await()
                 ExecResult(channel.exitStatus, stdout.first + if(stderr.first.isNotBlank()) "\n[stderr]\n" + stderr.first else "", stdout.second || stderr.second)
-            } finally { channel.disconnect(); publish() }
+            } finally { channel.disconnect(); requestBytes?.fill(0); publish() }
         }
     }
     private fun readLimited(input: InputStream): Pair<String, Boolean> {
@@ -88,6 +92,6 @@ class SshPool(private val vault: CredentialReader) {
     }
     suspend fun <T> sftp(server: Server, action: (ChannelSftp) -> T): T = withContext(Dispatchers.IO) {
         val channel = requireSession(server.id).openChannel("sftp") as ChannelSftp
-        try { channel.connect(10_000); action(channel) } finally { channel.disconnect(); publish() }
+        try { channel.connect(10_000); action(channel) } finally { channel.disconnect(); requestBytes?.fill(0); publish() }
     }
 }

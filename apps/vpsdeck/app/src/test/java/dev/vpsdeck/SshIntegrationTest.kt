@@ -62,6 +62,19 @@ class SshIntegrationTest {
         val success = pool.exec(trusted, "fixture-ok"); assertEquals(0, success.code); assertTrue(success.output.contains("fixture stdout"))
         val failure = pool.exec(trusted, "fixture-error"); assertEquals(7, failure.code); assertTrue(failure.output.contains("fixture stderr"))
     }
+    @Test fun structuredRequestUsesStdinWithoutPuttingPayloadInCommand() = runBlocking {
+        val trusted = pinned(); pool.connect(trusted)
+        val input = "fixture-only\n包含UTF8与引号'\n".toByteArray()
+        val expected = java.security.MessageDigest.getInstance("SHA-256").digest(input).joinToString("") { "%02x".format(it) }
+        val result = pool.exec(trusted,"fixture-stdin",input=input)
+        assertEquals(0,result.code); assertEquals(expected,result.output)
+        assertEquals("fixture-only\n包含UTF8与引号'\n",input.toString(Charsets.UTF_8))
+        assertTrue(pool.isConnected(trusted.id))
+    }
+    @Test fun oversizedStructuredRequestIsRejected() = runBlocking {
+        val trusted=pinned();pool.connect(trusted)
+        try {pool.exec(trusted,"fixture-stdin",input=ByteArray(1024*1024+1));fail("oversized input must be rejected")} catch(_: IllegalArgumentException) { }
+    }
     @Test fun outputIsBoundedAndStillDrained() = runBlocking {
         val trusted = pinned(); pool.connect(trusted); val result = pool.exec(trusted, "fixture-large")
         assertTrue(result.truncated); assertEquals(0, result.code); assertTrue(result.output.length <= 262144)
@@ -77,13 +90,18 @@ class SshIntegrationTest {
     private class FixtureCommand(private val command: String) : Command {
         private lateinit var out: OutputStream; private lateinit var err: OutputStream; private lateinit var callback: ExitCallback
         private var worker: Thread? = null
-        override fun setInputStream(input: InputStream) = Unit
+        private lateinit var input: InputStream
+        override fun setInputStream(input: InputStream) { this.input=input }
         override fun setOutputStream(output: OutputStream) { out = output }
         override fun setErrorStream(error: OutputStream) { err = error }
         override fun setExitCallback(exitCallback: ExitCallback) { callback = exitCallback }
         override fun start(channel: ChannelSession, env: Environment) {
             worker = Thread {
                 try {
+                    if(command.contains("fixture-stdin")) {
+                        val digest=java.security.MessageDigest.getInstance("SHA-256").digest(input.readBytes()).joinToString("") { "%02x".format(it) }
+                        out.write(digest.toByteArray());out.flush();callback.onExit(0);return@Thread
+                    }
                     if(command.contains("fixture-large")) out.write(ByteArray(400000) { 65 }) else out.write("fixture stdout".toByteArray())
                     if(command.contains("fixture-error")) err.write("fixture stderr".toByteArray())
                     out.flush(); err.flush(); callback.onExit(if(command.contains("fixture-error")) 7 else 0)
