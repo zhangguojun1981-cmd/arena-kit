@@ -171,3 +171,10 @@
 - 54aaa9c：新增Compose额外目录登记表单、同名路径冲突保护、登记读回验证，登记不部署；新增Debian12 Docker官方源四步安装向导（前置组件→公钥指纹/源→刷新索引→预览安装）。检测发行版冲突包拒绝自动卸载/混装，外来源文件不覆盖。参考：https://docs.docker.com/engine/install/debian/ 。
 - 37405494115已通过真实登记/systemd、Docker官方密钥/源/APT安装/Compose CLI、PG/MariaDB恢复、容器创建重建恢复步骤；其完整构建/设备结果待最终查询。Docker安装测试不宣称Debian容器内daemon启动或业务网络健康。
 - 补充仅对新建APT公开目录的权限修正（适配执行器umask077）、前台生命周期约束的任务只读轮询、中文PANEL_GUIDE.md。78个本地Python测试通过。后续必须对最终提交重新跑CI；尚未签名或安装C。
+
+### C 开发候选版本冻结与自动化验收通过（2026-10-06）
+- 冻结源码 b8dc460e1cf0e182de2a91167458109d638db371，0.2.0-stageC-dev/code5。
+- 完整构建37405828540 SUCCESS；Android设备测试37405828504 SUCCESS。78 Python测试、一次性Nginx、Compose目录登记/独立systemd、Debian12 Docker官方密钥/源/真实APT安装与Compose CLI、PG/MariaDB备份恢复及UTF8数据、托管容器创建/重建/保留卷恢复、Android单测/APK/lint均通过对应流水线。
+- Mac独立release构建成功，用原有私有身份签名；apksigner v2/v3验证成功，证书SHA256仍为f7ad243ac633980138c483db24bf2909833ea95bc8fef2259097f8f951405be6。
+- 候选包位置：Mac桌面 `VPSDeck-stageC-candidate-b8dc460/`。APK 13831857字节，SHA256 3dd2c000526886704ef0ddf04fda083ee065e791e8f031a15d46d7e4fa8efbbd；源码ZIP 92文件/280102字节，SHA256 ba78736e0821947a0be33d98797fdf5e241697c490ad945cf9e08feb069d61d5。目录包含中文PANEL_GUIDE.md及VERIFIED-CANDIDATE.json。
+- 按用户要求先完成开发；手机代理问题留后处理。本候选尚未复制到手机或安装，手机继续保留B。不能把模拟器测试视为实机升级验收，不能把Docker包安装/CLI验证视为全新Debian主机daemon或公网业务健康验收。公网ACME与无人值守续期仍未独立外部验收。
