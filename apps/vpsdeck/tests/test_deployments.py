@@ -50,6 +50,12 @@ class DeploymentsTest(unittest.TestCase):
         self.engine.execute(self.spec,lambda _:None)
         return self.engine.listing()[0]
 
+    def test_runtime_template_handles_images_without_healthcheck(self):
+        self.create()
+        template=next(args[3] for args in self.calls if args[:2]==['docker','inspect'])
+        self.assertIn('index .State "Health"',template)
+        self.assertNotIn('.State.Health',template)
+
     def test_generated_config_is_nonprivileged_pinned_and_dollar_literal(self):
         spec=self.engine.validate(self.spec)
         config=self.engine.config(spec,self.images['busybox:old'])

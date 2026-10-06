@@ -132,7 +132,7 @@ class Deployments:
         return meta
 
     def runtime(self, meta):
-        template='{"id":{{json .Id}},"image":{{json .Image}},"running":{{json .State.Running}},"state":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}""{{end}},"labels":{{json .Config.Labels}}}'
+        template='{"id":{{json .Id}},"image":{{json .Image}},"running":{{json .State.Running}},"state":{{json .State.Status}},"health":{{with index .State "Health"}}{{json .Status}}{{else}}""{{end}},"labels":{{json .Config.Labels}}}'
         row=json.loads(self.run(['docker','inspect','--format',template,meta['spec']['name']]))
         if row['labels'].get('dev.vpsdeck.id')!=meta['spec']['id'] or row['labels'].get('com.docker.compose.project')!='vpsdeck-'+meta['spec']['name']:
             raise ValueError('同名容器不属于该托管项目；拒绝接管')

@@ -72,6 +72,13 @@ import org.json.JSONObject
                 Text("目录：${row.getString("directory")}")
                 val files = row.getJSONArray("files")
                 for(i in 0 until files.length()) Text(files.getString(i))
+                if(!row.optBoolean("managed")) {
+                    for(i in 0 until files.length()) {
+                        val path=files.getString(i)
+                        OutlinedButton(onClick={selected=null;vm.page=2;vm.browse(path.substringBeforeLast('/').ifEmpty { "/" })},enabled=!state.busy && !controller.hasActive(server)) {Text("文件页编辑：${path.substringAfterLast('/')}")}
+                    }
+                    Hint("文件编辑会备份并检查原内容是否变化；保存后返回此项目预览，Compose配置校验通过后再单独确认应用。不会保存即部署。")
+                }
                 Hint("先验证原配置并显示服务风险；不会覆盖Compose文件，不删除卷。应用可能重新创建容器，停止会中断业务。仅支持已有镜像，不隐式执行build。")
                 listOf("pull" to "预览并拉取镜像", "up" to "预览并应用配置", "stop" to "预览并停止服务").forEach { (action,label) ->
                     OutlinedButton(onClick={controller.preview(server,raw,action,sudo) { plan=it }},enabled=!state.busy && online && !(action=="pull" && row.optBoolean("managed"))) { Text(label) }
