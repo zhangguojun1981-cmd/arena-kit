@@ -1,6 +1,7 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package dev.vpsdeck.ui
 
+import androidx.activity.compose.BackHandler
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.*
@@ -42,6 +43,7 @@ import java.util.Locale
         val tasks by vm.tasks.collectAsStateWithLifecycle()
         val connected by vm.connected.collectAsStateWithLifecycle()
         val server = vm.selected
+        BackHandler(enabled=server!=null) {if(vm.page!=0) vm.page=0 else vm.home()}
         Scaffold(containerColor = MaterialTheme.colorScheme.background,
             topBar = { TopAppBar(title = {
                 Column { Text(server?.name ?: "VPS Deck", style=MaterialTheme.typography.titleLarge); Text(server?.endpoint ?: "掌上运维工作台", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -53,7 +55,7 @@ import java.util.Locale
             bottomBar = {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                     if(server == null) listOf("服务器" to Icons.Outlined.Dns, "任务" to Icons.Outlined.TaskAlt, "设置" to Icons.Outlined.Settings).forEachIndexed { index, item -> NavigationBarItem(selected = rootTab == index, onClick = { rootTab = index }, icon = { Icon(item.second, null) }, label = { Text(item.first) }) }
-                    else listOf(Triple(0,"概览",Icons.Outlined.Dashboard),Triple(3,"管理",Icons.Outlined.Widgets),Triple(2,"文件",Icons.Outlined.Folder),Triple(1,"终端",Icons.Outlined.Terminal)).forEach { (index,label,icon) -> NavigationBarItem(selected=vm.page==index,onClick={vm.page=index},icon={Icon(icon,null)},label={Text(label)}) }
+                    else listOf(Triple(0,"概览",Icons.Outlined.Dashboard),Triple(3,"管理",Icons.Outlined.Widgets),Triple(2,"文件",Icons.Outlined.Folder),Triple(1,"终端",Icons.Outlined.Terminal)).forEach { (index,label,icon) -> NavigationBarItem(selected=vm.page==index,onClick={if(index==3 && vm.page==3) vm.managementSection=-1;vm.page=index},icon={Icon(icon,null)},label={Text(label)}) }
                 }
             }
         ) { padding ->

@@ -9,28 +9,26 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.vpsdeck.ui.*
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
+@androidx.test.filters.SdkSuppress(minSdkVersion=31)
 @RunWith(AndroidJUnit4::class)
 class DesignDeviceTest {
     @get:Rule val ui=createComposeRule()
+    @android.annotation.SuppressLint("NewApi") // Screenshot suite runs on the API 34 CI emulator.
     private fun screenshot(name: String) {
-        val app=ApplicationProvider.getApplicationContext<android.content.Context>()
-        val file=File(app.getExternalFilesDir(null),"ui-preview/$name.png")
-        file.parentFile!!.mkdirs()
-        file.outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)}
-        // AGP uninstalls the target after connected tests; export before its app storage is removed.
-        val command="mkdir -p /data/local/tmp/vpsdeck-ui-preview && cp '${file.absolutePath}' /data/local/tmp/vpsdeck-ui-preview/$name.png && echo EXPORTED"
-        val descriptor=androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
-        val output=android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use {it.readText()}
-        assertTrue(output.contains("EXPORTED"))
+        val bitmap=ui.onRoot().captureToImage().asAndroidBitmap()
+        val command="mkdir -p /data/local/tmp/vpsdeck-ui-preview && cat > /data/local/tmp/vpsdeck-ui-preview/$name.png && echo EXPORTED"
+        // Stream bytes through the authorized test shell, not through scoped app storage.
+        val pipes=androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommandRw(command)
+        android.os.ParcelFileDescriptor.AutoCloseOutputStream(pipes[1]).use {assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it))}
+        val output=android.os.ParcelFileDescriptor.AutoCloseInputStream(pipes[0]).bufferedReader().use {it.readText()}
+        assertTrue("Screenshot export failed: $output",output.contains("EXPORTED"))
     }
     @Test fun managementCardsOnlySelectACategory() {
         var selected=-1
@@ -40,6 +38,23 @@ class DesignDeviceTest {
         ui.onNodeWithText("数据库").performScrollTo().assertIsDisplayed().performClick()
         ui.runOnIdle {assertEquals(4,selected)}
         screenshot("management-dark")
+    }
+    @Test fun backNavigationReturnsThroughCategoryAndOverview() {
+        val app=androidx.test.core.app.ApplicationProvider.getApplicationContext<DeckApp>()
+        val vm=DeckViewModel(app)
+        val store=androidx.lifecycle.ViewModelStore();store.put("navigation",vm)
+        try {
+            ui.runOnIdle {vm.choose(dev.vpsdeck.data.Server(name="UI navigation fixture",host="example.invalid"));vm.page=3}
+            ui.setContent {DeckRoot(vm)}
+            ui.onNodeWithText("数据库").performClick()
+            ui.onNodeWithText("数据库与账号").assertIsDisplayed()
+            androidx.test.espresso.Espresso.pressBack()
+            ui.onNodeWithText("管理中心").assertIsDisplayed()
+            androidx.test.espresso.Espresso.pressBack()
+            ui.onNodeWithText("运行概览").assertIsDisplayed()
+            androidx.test.espresso.Espresso.pressBack()
+            ui.onNodeWithText("服务器资产").assertIsDisplayed()
+        } finally {ui.runOnIdle {store.clear()}}
     }
     @Test fun unknownMeasurementsAreNotDisplayedAsZero() {
         ui.setContent {MaterialTheme(colorScheme=DeckLight,typography=DeckTypography) {
