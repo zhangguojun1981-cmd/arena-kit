@@ -23,7 +23,7 @@ class PanelController(private val app: DeckApp) {
     private fun repository(s: Server) = ResourceRepository { app.ssh.exec(s, it, 60) }
     private fun job(s: Server, label: String, block: suspend () -> Unit) {
         val lock = app.operationLocks.getOrPut(s.id) { Mutex() }
-        if(!lock.tryLock()) return
+        if(!lock.tryLock()) { update(s) { it.copy(error = "该服务器有其他管理操作正在执行，请稍后重试") }; return }
         update(s) { it.copy(busy = label, error = null) }
         app.appScope.launch {
             try { check(app.ssh.isConnected(s.id)) { "连接已断开，请重新连接；未提交新操作" }; block() }

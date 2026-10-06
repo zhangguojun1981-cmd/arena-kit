@@ -23,23 +23,23 @@ import dev.vpsdeck.data.Server
 
 @Composable fun FilesPage(vm: DeckViewModel, server: Server) {
     var path by remember(server.id, vm.currentPath) { mutableStateOf(vm.currentPath) }
-    var activeFile by remember { mutableStateOf<RemoteFile?>(null) }
-    var download by remember { mutableStateOf<RemoteFile?>(null) }
-    var remove by remember { mutableStateOf<RemoteFile?>(null) }
-    var rename by remember { mutableStateOf<RemoteFile?>(null) }
+    var activeFile by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
+    var download by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
+    var remove by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
+    var rename by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
     var search by remember(server.id, vm.currentPath) { mutableStateOf("") }
     var sort by remember(server.id) { mutableStateOf("名称") }
-    var createFile by remember { mutableStateOf(false) }
-    var chmod by remember { mutableStateOf<RemoteFile?>(null) }
-    var mode by remember { mutableStateOf("") }
-    var mkdir by remember { mutableStateOf(false) }
-    var entry by remember { mutableStateOf("") }
+    var createFile by remember(server.id) { mutableStateOf(false) }
+    var chmod by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
+    var mode by remember(server.id) { mutableStateOf("") }
+    var mkdir by remember(server.id) { mutableStateOf(false) }
+    var entry by remember(server.id) { mutableStateOf("") }
     val context = LocalContext.current
     val createDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if(uri != null && vm.selected?.id == server.id) download?.let { vm.download(it, uri) }
         download = null
     }
-    var uploadLocation by remember { mutableStateOf("") }
+    var uploadLocation by remember(server.id) { mutableStateOf("") }
     val pickDocument = rememberLauncherForActivityResult(PrivateKeyDocument()) { uri ->
         if(uri != null && vm.selected?.id == server.id && vm.currentPath == uploadLocation) {
             runCatching {

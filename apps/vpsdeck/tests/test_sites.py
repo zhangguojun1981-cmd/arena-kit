@@ -81,6 +81,24 @@ class SitesTest(unittest.TestCase):
     def test_port_and_identity_validation(self):
         for change in [dict(port=0),dict(port=65536),dict(id='../bad'),dict(tls=True,port=80,cert='/etc/cert.pem',key='/etc/key.pem')]:
             with self.assertRaises(ValueError): sites.validate(dict(self.site,**change))
+    def test_https_retains_http80_acme_location(self):
+        text=sites.render(dict(self.site,tls=True,port=443,cert='/etc/cert.pem',key='/etc/key.pem')).decode()
+        self.assertIn('listen 80;',text)
+        self.assertEqual(2,text.count('location ^~ /.well-known/acme-challenge/'))
+        self.assertIn('return 301 https://$host$request_uri;',text)
+    def test_corrupt_metadata_identity_is_rejected(self):
+        self.apply()
+        wrong=sites.validate(dict(self.site,id='b'*32))
+        self.engine.metadata(self.site['id']).write_bytes(sites.encoded(wrong))
+        with self.assertRaises(ValueError):self.engine.read(self.site['id'])
+    def test_disable_does_not_require_running_php(self):
+        self.apply()
+        old=self.engine.read(self.site['id'])
+        self.apply(dict(old,kind='php',phpSocket='/run/php/missing.sock',enabled=False),sites.revision(old))
+        self.assertFalse(self.engine.target(old['id']).exists())
+    def test_acme_requires_explicit_terms(self):
+        self.apply(dict(self.site,port=80))
+        with self.assertRaises(ValueError):self.engine.issue(dict(id=self.site['id'],email='owner@example.test',agreeTerms=False))
     def test_foreign_files_are_read_only(self):
         (self.conf/'existing.conf').write_text('server {}')
         self.apply()

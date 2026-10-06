@@ -275,11 +275,12 @@ class Engine:
             raise ValueError('Nginx conf.d不存在，请先配置原生Nginx环境')
         no_links(self.conf)
         self.check(['nginx', '-t'])
-        self.prepare_root(s, bool(request.get('createRoot', False)))
         for row in self.list()['sites']:
             other = row['spec']
             if other['id'] != id and other['enabled'] and s['enabled'] and other['domain'] == s['domain'] and ({other['port'], 80} if other['tls'] else {other['port']}) & ({s['port'], 80} if s['tls'] else {s['port']}):
                 raise ValueError('同域名与端口已有启用的管理站点')
+        if s['enabled']:
+            self.prepare_root(s, bool(request.get('createRoot', False)))
         journal = dict(id=id, old=old, new=s, time=int(time.time()))
         backup = self.base / (id + '-' + uuid.uuid4().hex + '.backup')
         self.atomic(backup, encoded(journal))
