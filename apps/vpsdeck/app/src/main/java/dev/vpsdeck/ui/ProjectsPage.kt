@@ -92,7 +92,7 @@ import org.json.JSONObject
                     Hint("特权：${service.optBoolean("privileged")} · 挂载：${service.optInt("mounts")} · 端口：${service.optInt("ports")}")
                 }
                 Text(info.getString("warning"))
-                Text("将创建 /var/lib/vpsdeck/jobs 私有任务记录和按需systemd执行器，不开放端口。任务最长2小时；断线或超时不能当作成功，必须查询结果。")
+                Text("将创建 /var/lib/vpsdeck-private/jobs 私有任务记录和按需systemd执行器，不开放端口。任务最长2小时；断线或超时不能当作成功，必须查询结果。")
                 OutlinedTextField(confirmation,{confirmation=it},label={Text("输入项目名确认")},singleLine=true)
             }
         },confirmButton={Button(onClick={plan=null;selected=null;controller.submit(server,value,sudo)},enabled=online && !state.busy && confirmation==JSONObject(value.project).getString("name")) { Text("确认执行") }},dismissButton={TextButton(onClick={plan=null}) { Text("取消") }})

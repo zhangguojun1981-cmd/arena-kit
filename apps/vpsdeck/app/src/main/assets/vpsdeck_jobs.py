@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 
-ROOT = Path('/var/lib/vpsdeck/jobs')
+ROOT = Path('/var/lib/vpsdeck-private/jobs')
 ACTIONS = {'pull': ['pull'], 'up': ['up', '-d', '--no-build'], 'stop': ['stop']}
 
 
@@ -23,7 +23,7 @@ def require(value, message):
 def run(args, cwd=None, timeout=120):
     # Private temporary output avoids unbounded RAM and never returns resolved env to the app.
     with tempfile.TemporaryFile() as output:
-        p = subprocess.run(args, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+        p = subprocess.run(args, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, timeout=timeout, env=dict(os.environ, LC_ALL='C', LANG='C'))
         size = output.tell()
         require(size <= 4 * 1024 * 1024, '工具输出超过4MiB，请在高级诊断中核查')
         output.seek(0)
@@ -99,6 +99,9 @@ class Engine:
         return command
 
     def plan(self, spec):
+        if spec.get('kind') == 'environment':
+            return Environment(self.run).plan(spec)
+        require(spec.get('kind', 'compose') == 'compose', '不支持的资源类型')
         command = self.command(spec)
         config = json.loads(self.run(command + ['config', '--format', 'json']))
         services = config.get('services', {})
@@ -145,10 +148,11 @@ class Engine:
         self.authorize()
         ident = job_id(request['id'])
         action = request['action']
-        require(action in ACTIONS, '不支持的动作')
+        is_environment = request['project'].get('kind') == 'environment'
+        require(action == 'install' if is_environment else action in ACTIONS, '不支持的动作')
         plan = self.plan(request['project'])
         require(plan['revision'] == request['revision'], '配置/环境已变化，请重新预览')
-        if action in ('pull', 'up'):
+        if not is_environment and action in ('pull', 'up'):
             require(all(s['image'] for s in plan['services']), '存在仅build的服务；当前不支持隐式构建')
         private_dir(self.root.parent)
         private_dir(self.root)
@@ -191,20 +195,24 @@ class Engine:
                     require(plan['revision'] == request['revision'], '启动前配置已变化；未执行动作')
                     state.update(message='正在执行；手机断线不影响该进程')
                     atomic(directory / 'state.json', state)
-                    command = self.command(request['project'])
-                    action = request['action']
-                    self.run(command + ACTIONS[action], timeout=6600)
-                    text = self.run(command + ['ps', '--all', '--format', 'json']).strip()
-                    status = json.loads(text) if text.startswith('[') else [json.loads(line) for line in text.splitlines() if line.strip()]
-                    rows = [dict(service=r.get('Service', ''), state=r.get('State', ''), health=r.get('Health', '')) for r in status]
-                    if action == 'up':
-                        running = {r['service'] for r in rows if r['state'] == 'running' and r['health'] != 'unhealthy'}
-                        require({s['name'] for s in plan['services']} <= running,
-                                '命令已返回，但并非全部服务处于running且无unhealthy状态；请核查（一次性任务需人工确认）')
-                    if action == 'stop':
-                        require(all(r['state'] not in ('running', 'restarting') for r in rows), '仍有容器运行；请核查')
-                    state.update(state='succeeded', resources=rows,
-                                 message='已核验容器状态；不等于业务健康检查通过' if action != 'pull' else '镜像拉取命令成功；未应用或重启容器')
+                    if request['project'].get('kind') == 'environment':
+                        rows, message = Environment(self.run).execute(request['project'])
+                        state.update(state='succeeded', resources=rows, message=message)
+                    else:
+                        command = self.command(request['project'])
+                        action = request['action']
+                        self.run(command + ACTIONS[action], timeout=6600)
+                        text = self.run(command + ['ps', '--all', '--format', 'json']).strip()
+                        status = json.loads(text) if text.startswith('[') else [json.loads(line) for line in text.splitlines() if line.strip()]
+                        rows = [dict(service=r.get('Service', ''), state=r.get('State', ''), health=r.get('Health', '')) for r in status]
+                        if action == 'up':
+                            running = {r['service'] for r in rows if r['state'] == 'running' and r['health'] != 'unhealthy'}
+                            require({s['name'] for s in plan['services']} <= running,
+                                    '命令已返回，但并非全部服务处于running且无unhealthy状态；请核查（一次性任务需人工确认）')
+                        if action == 'stop':
+                            require(all(r['state'] not in ('running', 'restarting') for r in rows), '仍有容器运行；请核查')
+                        state.update(state='succeeded', resources=rows,
+                                     message='已核验容器状态；不等于业务健康检查通过' if action != 'pull' else '镜像拉取命令成功；未应用或重启容器')
             except Exception as e:
                 state.update(state='needs_review', message=str(e)[:1200] + '。可能已有部分效果，不自动回滚或重试。')
             finally:
@@ -216,6 +224,8 @@ class Engine:
 def api(request, source):
     engine = Engine()
     op = request['op']
+    if op == 'environments':
+        return dict(environments=Environment(engine.run).list(), jobs=engine.states())
     if op == 'list':
         return dict(projects=engine.projects(), jobs=engine.states())
     if op == 'jobs':

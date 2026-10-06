@@ -17,6 +17,33 @@ class SitesTest(unittest.TestCase):
         self.fail_test = False
         self.engine = sites.Engine(str(self.root/'state'), str(self.conf), self.run_command)
         self.site = dict(id='a'*32, domain='example.test', kind='proxy', port=8080, root='/var/www/vpsdeck/demo', upstream='http://127.0.0.1:9000', enabled=True, tls=False)
+    def test_new_public_directories_ignore_private_umask(self):
+        import os
+        old = os.umask(0o077)
+        try:
+            target = self.root/'public'/'nested'
+            sites.public_directory(target)
+            self.assertEqual(0o755, target.stat().st_mode & 0o777)
+            self.assertEqual(0o755, target.parent.stat().st_mode & 0o777)
+        finally:
+            os.umask(old)
+
+    def test_existing_private_directory_is_never_exposed(self):
+        target = self.root/'private'
+        target.mkdir(mode=0o700)
+        sites.public_directory(target/'child')
+        self.assertEqual(0o700, target.stat().st_mode & 0o777)
+
+    def test_new_welcome_file_has_public_read_mode(self):
+        import os
+        old = os.umask(0o077)
+        try:
+            target = self.root/'public'
+            self.engine.prepare_root(dict(self.site, kind='static', root=str(target)), True)
+            self.assertEqual(0o644, (target/'index.html').stat().st_mode & 0o777)
+        finally:
+            os.umask(old)
+
     def tearDown(self):
         self.tmp.cleanup()
     def run_command(self, args):

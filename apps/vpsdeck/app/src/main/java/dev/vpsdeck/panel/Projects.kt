@@ -10,7 +10,7 @@ import kotlinx.coroutines.sync.Mutex
 import org.json.JSONObject
 import java.util.UUID
 
-data class ProjectState(val projects: List<String> = emptyList(), val jobs: List<String> = emptyList(), val busy: Boolean = false, val error: String? = null)
+data class ProjectState(val projects: List<String> = emptyList(), val environments: List<String> = emptyList(), val jobs: List<String> = emptyList(), val busy: Boolean = false, val error: String? = null)
 data class ProjectPlan(val project: String, val result: String, val action: String)
 
 object JobProtocol {
@@ -27,7 +27,7 @@ object JobProtocol {
 class ProjectController(private val app: DeckApp) {
     private val mutable = MutableStateFlow<Map<String, ProjectState>>(emptyMap())
     val states = mutable.asStateFlow()
-    private val script by lazy { app.assets.open("vpsdeck_jobs.py").bufferedReader().use { it.readText() } }
+    private val script by lazy { listOf("vpsdeck_environment.py", "vpsdeck_jobs.py").joinToString("\n") { file -> app.assets.open(file).bufferedReader().use { it.readText() } } }
     private fun update(s: Server, f: (ProjectState) -> ProjectState) { mutable.update { it + (s.id to f(it[s.id] ?: ProjectState())) } }
     private suspend fun call(s: Server, request: JSONObject, sudo: Boolean): JSONObject {
         val bytes = request.put("adapter",script).toString().toByteArray(Charsets.UTF_8)
@@ -52,7 +52,7 @@ class ProjectController(private val app: DeckApp) {
         rows.forEach { raw ->
             val j = JSONObject(raw)
             app.database.dao().task(TaskRecord(id="remote:${s.id}:${j.getString("id")}", serverId=s.id,serverName=s.name,
-                label="Compose ${j.optString("project")} · ${j.optString("action")}",started=j.optLong("created",System.currentTimeMillis()/1000)*1000,
+                label="远端任务 ${j.optString("project")} · ${j.optString("action")}",started=j.optLong("created",System.currentTimeMillis()/1000)*1000,
                 state=JobProtocol.state(j.optString("state")), detail=j.optString("message") + "\n远端任务ID：" + j.getString("id")))
         }
     }
@@ -62,13 +62,19 @@ class ProjectController(private val app: DeckApp) {
         record(s,rows)
         update(s) { it.copy(projects=if(jobsOnly) it.projects else JobProtocol.rows(result,"projects"),jobs=rows) }
     }
+    fun loadEnvironments(s: Server, sudo: Boolean) = job(s) {
+        val result = call(s,JSONObject().put("op","environments"),sudo)
+        val rows = JobProtocol.rows(result,"jobs")
+        record(s,rows)
+        update(s) { it.copy(environments=JobProtocol.rows(result,"environments"),jobs=rows) }
+    }
     fun preview(s: Server, project: String, action: String, sudo: Boolean, ready: (ProjectPlan) -> Unit) = job(s) {
         val result = call(s,JSONObject().put("op","plan").put("project",JSONObject(project)),sudo)
         ready(ProjectPlan(project,result.toString(),action))
     }
     fun submit(s: Server, plan: ProjectPlan, sudo: Boolean) = job(s) {
         val id = UUID.randomUUID().toString().replace("-", "")
-        val task = TaskRecord(id="remote:${s.id}:$id",serverId=s.id,serverName=s.name,label="Compose ${JSONObject(plan.project).getString("name")} · ${plan.action}",state="提交待确认",detail="远端任务ID：$id；断线后只查询，不自动重放。")
+        val task = TaskRecord(id="remote:${s.id}:$id",serverId=s.id,serverName=s.name,label="远端任务 ${JSONObject(plan.project).getString("name")} · ${plan.action}",state="提交待确认",detail="远端任务ID：$id；断线后只查询，不自动重放。")
         app.database.dao().task(task)
         try {
             val result = call(s,JSONObject().put("op","submit").put("id",id).put("action",plan.action)

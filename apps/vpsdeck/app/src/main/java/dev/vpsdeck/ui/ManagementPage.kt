@@ -21,8 +21,9 @@ import dev.vpsdeck.ops.*
                 FilterChip(tab==0,{tab=0},label={Text("服务与容器")})
                 FilterChip(tab==1,{tab=1},label={Text("网站")})
                 FilterChip(tab==2,{tab=2},label={Text("Compose")})
+                FilterChip(tab==3,{tab=3},label={Text("环境")})
             }
-            Box(Modifier.weight(1f)) { when(tab) { 1 -> WebsitesPage(vm,server); 2 -> ProjectsPage(vm,server); else -> ResourcePanel(vm, server, legacy = { legacy = true }) } }
+            Box(Modifier.weight(1f)) { when(tab) { 1 -> WebsitesPage(vm,server); 2 -> ProjectsPage(vm,server); 3 -> EnvironmentPage(vm,server); else -> ResourcePanel(vm, server, legacy = { legacy = true }) } }
         }
         return
     }

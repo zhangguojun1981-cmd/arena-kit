@@ -38,6 +38,23 @@ def no_links(path):
             raise ValueError('拒绝写入符号链接路径：' + str(p))
 
 
+def public_directory(path):
+    # Only directories actually created by this request may gain public traversal.
+    no_links(path)
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o755)
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fchmod(fd, 0o755)
+        finally:
+            os.close(fd)
+
+
 def validate(value):
     s = dict(value)
     if not re.fullmatch(r'[a-f0-9]{32}', s.get('id', '')):
@@ -243,9 +260,10 @@ class Engine:
             if not p.exists():
                 if not create:
                     raise ValueError('站点目录不存在，请确认允许创建目录')
-                p.mkdir(parents=True, mode=0o755)
+                public_directory(p)
                 # No welcome-file overwrites and no changes to pre-existing directory permissions.
                 with open(p / 'index.html', 'x') as f:
+                    os.fchmod(f.fileno(), 0o644)
                     f.write('<!doctype html><meta charset="utf-8"><title>VPS Deck</title><h1>Website ready</h1>')
             if not p.is_dir():
                 raise ValueError('站点根目录不是目录')
@@ -340,7 +358,7 @@ class Engine:
         socket.getaddrinfo(s['domain'], 80)
         challenge = pathlib.Path('/var/lib/vpsdeck/acme/.well-known/acme-challenge')
         no_links(challenge)
-        challenge.mkdir(parents=True, exist_ok=True, mode=0o755)
+        public_directory(challenge)
         self.check(['certbot', 'certonly', '--webroot', '-w', '/var/lib/vpsdeck/acme',
                     '--cert-name', 'vpsdeck-' + id, '-d', s['domain'], '--email', request['email'],
                     '--agree-tos', '--non-interactive', '--keep-until-expiring',
