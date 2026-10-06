@@ -83,7 +83,8 @@ class Deployments:
         return ['docker','compose','--project-directory',str(directory),'-p','vpsdeck-'+meta['spec']['name'],'-f',str(directory/filename)]
 
     def config(self, spec, pin):
-        service=dict(image=pin,container_name=spec['name'],restart=spec.get('restart','unless-stopped'),
+        reference=('vpsdeck-pinned/'+spec['name']+':'+pin.split(':',1)[1]) if pin.startswith('sha256:') else pin
+        service=dict(image=reference,container_name=spec['name'],restart=spec.get('restart','unless-stopped'),
                      mem_limit=str(spec['memory'])+'m',cpus=spec['cpus'],pids_limit=256,pull_policy='never',
                      labels={'dev.vpsdeck.id':spec['id']})
         service['environment']={line.split('=',1)[0]:line.split('=',1)[1].replace('$','$$') for line in spec.get('environment','').split('\n') if line.strip()}
@@ -244,6 +245,15 @@ class Deployments:
         new=dict(spec=value,pin=desired['pin'],phase='pending',configHash=deploy_digest(desired['config']),containerId=old and old.get('containerId'))
         if old is None:
             atomic(directory/'metadata.json',dict(new,phase='draft'))
+        reference=desired['config']['services']['app']['image']
+        try:
+            existing_pin=self.pin(reference)
+        except ValueError:
+            existing_pin=None
+        if existing_pin is not None and existing_pin!=desired['pin']:
+            raise ValueError('固定镜像别名指向其他镜像，拒绝覆盖')
+        if existing_pin is None:
+            self.run(['docker','image','tag',desired['pin'],reference])
         atomic(directory/'candidate.json',desired['config'])
         self.run(self.command(new,'candidate.json')+['config','--quiet'])
         if old is not None and (directory/'compose.json').exists():

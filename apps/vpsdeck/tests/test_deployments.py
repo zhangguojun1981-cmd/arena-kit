@@ -54,7 +54,7 @@ class DeploymentsTest(unittest.TestCase):
         spec=self.engine.validate(self.spec)
         config=self.engine.config(spec,self.images['busybox:old'])
         service=config['services']['app']
-        self.assertEqual(self.images['busybox:old'],service['image'])
+        self.assertEqual('vpsdeck-pinned/demo:'+'1'*64,service['image'])
         self.assertEqual('private$$VALUE',service['environment']['PASSWORD'])
         self.assertNotIn('privileged',service)
         self.assertEqual('volume',service['volumes'][0]['type'])

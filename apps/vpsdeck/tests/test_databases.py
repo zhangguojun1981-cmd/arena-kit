@@ -42,7 +42,8 @@ class DatabasesTest(unittest.TestCase):
         auth=dict(self.auth,engine='mysql',container='a'*64)
         with patch.object(subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'mariadb')) as discover:
             command,env=self.engine.command(auth,'mysql',['--user=root'])
-        self.assertEqual('mariadb',command[-2])
+        self.assertIn('mariadb',command)
+        self.assertIn('--default-character-set=utf8mb4',command)
         self.assertEqual(self.auth['password'],env['MYSQL_PWD'])
         self.assertNotIn(self.auth['password'],' '.join(discover.call_args.args[0]))
 

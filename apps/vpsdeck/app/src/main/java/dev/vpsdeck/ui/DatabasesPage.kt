@@ -82,6 +82,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                         Panel {
                             Text(database.getString("name"),style=MaterialTheme.typography.titleMedium)
                             Text("所有者：${database.optString("owner").ifEmpty { "按账号授权" }} · 大小：${database.optLong("bytes")} 字节")
+                            Text("字符集：${database.optString("charset").ifEmpty { "未返回" }} · ${database.optString("collation")}")
                             if(database.optBoolean("protected")) Hint("系统库：只读显示")
                             else {
                                 OutlinedButton(onClick={edit("backup",database.getString("name"))},enabled=!state.busy) {Text("备份该数据库")}
@@ -159,11 +160,13 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
     var role by remember(seed) {mutableStateOf(initial.optString("role"))}
     var password by remember(seed) {mutableStateOf("")}
     var confirmTarget by remember(seed) {mutableStateOf(false)}
+    var charset by remember(seed) {mutableStateOf("")}
     var owner by remember(seed) {mutableStateOf(initial.getJSONObject("auth").getString("user"))}
     FullDialog(databaseActions[operation] ?: operation,{if(!busy) close()}) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             if(operation !in listOf("create-user","password","drop-user")) OutlinedTextField(database,{database=it},Modifier.fillMaxWidth(),label={Text("数据库名称")},singleLine=true,enabled=!busy && operation !in listOf("backup","restore","drop-database"))
             if(operation in listOf("grant","revoke")) FlowRow(horizontalArrangement=Arrangement.spacedBy(6.dp)) { JobProtocol.rows(JSONObject(inventory),"databases").forEach { raw -> val row=JSONObject(raw); if(!row.optBoolean("protected")) FilterChip(database==row.getString("name"),{database=row.getString("name")},enabled=!busy,label={Text(row.getString("name"))}) } }
+            if(operation=="create-database") Row { Checkbox(charset.isNotEmpty(),{charset=if(it) {if(initial.getJSONObject("auth").getString("engine")=="postgresql") "UTF8" else "utf8mb4"} else ""},enabled=!busy);Text("明确使用UTF8/utf8mb4；未勾选时使用服务器默认") }
             if(operation=="create-database" && initial.getJSONObject("auth").getString("engine")=="postgresql") OutlinedTextField(owner,{owner=it},Modifier.fillMaxWidth(),label={Text("已存在的数据库所有者角色")},singleLine=true,enabled=!busy)
             if(operation in listOf("create-user","password","grant","revoke","drop-user")) OutlinedTextField(role,{role=it},Modifier.fillMaxWidth(),label={Text("app_普通账号名称")},singleLine=true,enabled=!busy && operation=="create-user")
             if(operation in listOf("create-user","password")) OutlinedTextField(password,{password=it},Modifier.fillMaxWidth(),label={Text("新账号密码（12至256字符）")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password,autoCorrect=false),enabled=!busy)
@@ -174,7 +177,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             Hint("不提供SQL编辑器。不会自动修改数据库网络监听、认证策略或系统管理员账号。")
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
-            Button(onClick={preview(JSONObject(seed).put("database",database).put("role",role).put("owner",owner).put("newPassword",password).put("confirmRestoreTarget",confirmTarget).put("name",if(operation in listOf("create-user","password","drop-user")) role else database).toString())},enabled=!busy && (operation!="restore" || confirmTarget)) {Text("预览操作与风险")}
+            Button(onClick={preview(JSONObject(seed).put("database",database).put("role",role).put("owner",owner).put("charset",charset).put("newPassword",password).put("confirmRestoreTarget",confirmTarget).put("name",if(operation in listOf("create-user","password","drop-user")) role else database).toString())},enabled=!busy && (operation!="restore" || confirmTarget)) {Text("预览操作与风险")}
         }
     }
 }

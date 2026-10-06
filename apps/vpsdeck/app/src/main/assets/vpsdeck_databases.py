@@ -62,6 +62,7 @@ class Databases:
         auth = self.auth(auth)
         if tool in ('mysql','mysqldump'):
             tool = self.mysql_tool(auth, tool=='mysqldump')
+            args = ['--default-character-set=utf8mb4'] + args
         variable = 'PGPASSWORD' if auth['engine'] == 'postgresql' else 'MYSQL_PWD'
         env = dict(os.environ, LC_ALL='C', LANG='C')
         # Never inherit an unrelated caller's database identity/password settings.
@@ -105,9 +106,9 @@ class Databases:
 
     def databases(self, auth):
         if auth['engine'] == 'postgresql':
-            sql = "SELECT coalesce(json_agg(d),'[]'::json) FROM (SELECT datname AS name,pg_get_userbyid(datdba) AS owner,pg_database_size(datname) AS bytes FROM pg_database WHERE NOT datistemplate ORDER BY datname) d;"
+            sql = "SELECT coalesce(json_agg(d),'[]'::json) FROM (SELECT datname AS name,pg_get_userbyid(datdba) AS owner,pg_encoding_to_char(encoding) AS charset,pg_database_size(datname) AS bytes FROM pg_database WHERE NOT datistemplate ORDER BY datname) d;"
         else:
-            sql = "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',SCHEMA_NAME,'owner','','bytes',COALESCE((SELECT SUM(DATA_LENGTH+INDEX_LENGTH) FROM information_schema.TABLES t WHERE t.TABLE_SCHEMA=s.SCHEMA_NAME),0))),JSON_ARRAY()) FROM information_schema.SCHEMATA s;"
+            sql = "SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT('name',SCHEMA_NAME,'owner','','charset',DEFAULT_CHARACTER_SET_NAME,'collation',DEFAULT_COLLATION_NAME,'bytes',COALESCE((SELECT SUM(DATA_LENGTH+INDEX_LENGTH) FROM information_schema.TABLES t WHERE t.TABLE_SCHEMA=s.SCHEMA_NAME),0))),JSON_ARRAY()) FROM information_schema.SCHEMATA s;"
         rows = json.loads(self.query(auth, sql) or '[]')
         return [dict(row, protected=row['name'] in DB_SYSTEM) for row in rows]
 
@@ -188,6 +189,8 @@ class Databases:
         names = {r['name'] for r in rows}
         role_names = {r['name'] for r in roles if r.get('host','localhost') == 'localhost'}
         if operation == 'create-database':
+            if spec.get('charset','') not in ('', 'UTF8' if auth['engine']=='postgresql' else 'utf8mb4'):
+                raise ValueError('该表单只支持服务器默认或UTF8/utf8mb4字符集')
             if database in names:
                 raise ValueError('数据库已存在，不覆盖')
             owner = db_name(spec.get('owner') or auth['user'])
@@ -208,7 +211,7 @@ class Databases:
             backup, _ = self.backup_record(auth, spec['backup'], database, allow_move=True)
         # Do not include changing database size or passwords in the preview fingerprint.
         fingerprint = dict(operation=operation, database=database, role=role, names=sorted(names), roles=sorted(role_names),
-                           owner=spec.get('owner'), backup=backup and backup['sha256'])
+                           owner=spec.get('owner'), charset=spec.get('charset',''), backup=backup and backup['sha256'])
         return dict(revision=hashlib.sha256(json.dumps(fingerprint,sort_keys=True).encode()).hexdigest(), services=[],
                     warning='数据库身份与SSH身份独立。账号仅管理app_前缀；MySQL仅localhost账号。授权限目标库（PostgreSQL限public现有表/序列）；撤销直接授权不等于撤销PUBLIC/继承权限。逻辑备份不含角色/ACL。恢复/删除数据库前必做独立安全备份，需维护窗口，可能部分恢复且不自动回滚；恢复不保证清除额外对象。删除账号会使其业务登录失效；PostgreSQL账号仍拥有对象时会拒绝删除，不自动CASCADE。')
 
@@ -284,6 +287,9 @@ class Databases:
             sql = 'CREATE DATABASE '+identifier(database)
             if pg:
                 sql += ' OWNER '+identifier(spec.get('owner') or auth['user'])
+                if spec.get('charset')=='UTF8': sql += " ENCODING 'UTF8' TEMPLATE template0"
+            elif spec.get('charset')=='utf8mb4':
+                sql += ' CHARACTER SET utf8mb4'
         elif operation == 'create-user':
             sql = ('CREATE ROLE '+user+' LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD ' if pg else 'CREATE USER '+user+' IDENTIFIED BY ') + db_literal(spec['newPassword'])
         elif operation == 'drop-user':

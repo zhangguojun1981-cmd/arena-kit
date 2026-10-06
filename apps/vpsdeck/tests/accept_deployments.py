@@ -12,6 +12,11 @@ assert os.environ.get('VPSDECK_DEPLOYMENT_ACCEPTANCE')=='1', 'Disposable runner 
 assert os.geteuid()==0, 'Independent systemd fixture requires isolated root runner'
 assets=Path(__file__).parents[1]/'app/src/main/assets'
 source='\n'.join((assets/f).read_text() for f in ('vpsdeck_environment.py','vpsdeck_databases.py','vpsdeck_deployments.py','vpsdeck_jobs.py'))
+# This harness contains only disposable fixtures. Expose runner diagnostics on failures
+# without changing production error redaction or re-executing a failed mutation.
+needle="require(p.returncode == 0, '工具执行失败，退出码 %s；请在服务器核查（不回传可能含凭据的输出）' % p.returncode)"
+assert source.count(needle)==1
+source=source.replace(needle,"require(p.returncode == 0, 'DISPOSABLE FIXTURE ONLY: '+text[-4000:])")
 scope={'__name__':'deployment_acceptance'}
 exec(compile(source,'bundle','exec'),scope)
 engine=scope['Engine']()
@@ -74,7 +79,8 @@ finally:
         subprocess.run(deploy.command(project)+['down','--volumes','--remove-orphans'],capture_output=True,timeout=90)
     subprocess.run(['docker','rm','-f',name],capture_output=True)
     subprocess.run(['docker','volume','rm','vpsdeck-'+resource_id],capture_output=True)
-    for image in backup_tags+[image1,image2]:
+    pinned=subprocess.check_output(['docker','image','ls','--format','{{.Repository}}:{{.Tag}}','--filter','reference=vpsdeck-pinned/'+name+':*']).decode().splitlines()
+    for image in backup_tags+pinned+[image1,image2]:
         subprocess.run(['docker','image','rm',image],capture_output=True)
     shutil.rmtree(directory,ignore_errors=True)
     for ident in identifiers:

@@ -74,8 +74,9 @@ import org.json.JSONObject
                 for(i in 0 until files.length()) Text(files.getString(i))
                 Hint("先验证原配置并显示服务风险；不会覆盖Compose文件，不删除卷。应用可能重新创建容器，停止会中断业务。仅支持已有镜像，不隐式执行build。")
                 listOf("pull" to "预览并拉取镜像", "up" to "预览并应用配置", "stop" to "预览并停止服务").forEach { (action,label) ->
-                    OutlinedButton(onClick={controller.preview(server,raw,action,sudo) { plan=it }},enabled=!state.busy && online) { Text(label) }
+                    OutlinedButton(onClick={controller.preview(server,raw,action,sudo) { plan=it }},enabled=!state.busy && online && !(action=="pull" && row.optBoolean("managed"))) { Text(label) }
                 }
+                if(row.optBoolean("managed")) Hint("此项目固定本机镜像。更换/拉取镜像请用创建/重建面板；不要手改托管配置。")
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
             }

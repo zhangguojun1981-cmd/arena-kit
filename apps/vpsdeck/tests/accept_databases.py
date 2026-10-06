@@ -28,7 +28,7 @@ for engine,image,password_key in [('postgresql','postgres:16-alpine','POSTGRES_P
                     if time.monotonic() > deadline:
                         raise
                     time.sleep(2)
-            base=dict(kind='database',name='demo',auth=auth,database='demo',role='app_fixture',owner=auth['user'],newPassword="Fixture-user-'\\-password42")
+            base=dict(kind='database',name='demo',auth=auth,database='demo',role='app_fixture',owner=auth['user'],charset='UTF8' if engine=='postgresql' else 'utf8mb4',newPassword="Fixture-user-'\\-password42")
             def act(operation,**extra):
                 spec=dict(base,operation=operation,**extra)
                 db.plan(spec)
@@ -43,20 +43,20 @@ for engine,image,password_key in [('postgresql','postgres:16-alpine','POSTGRES_P
                 assert db.execute_tool(user_auth,'psql',['-X','-w','-A','-t','-h','127.0.0.1','-U','app_fixture','-d','demo'],text='SELECT 1;').strip()=='1'
             else:
                 assert db.query(user_auth,'SELECT 1;','demo')=='1'
-            db.query(auth,"CREATE TABLE fixture (id INTEGER PRIMARY KEY, value VARCHAR(40)); INSERT INTO fixture VALUES (1,'before-backup');",'demo')
+            db.query(auth,"CREATE TABLE fixture (id INTEGER PRIMARY KEY, value VARCHAR(40)); INSERT INTO fixture VALUES (1,'备份前😀');",'demo')
             act('backup')
             before=db.backups(auth)
             assert len(before)==1
             original=before[0]
-            db.query(auth,"UPDATE fixture SET value='after-backup' WHERE id=1;",'demo')
+            db.query(auth,"UPDATE fixture SET value='备份后😀' WHERE id=1;",'demo')
             act('restore',backup=original['id'],confirmRestoreTarget=True)
-            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo') == 'before-backup'
+            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo') == '备份前😀'
             records=db.backups(auth)
             safety=next(r for r in records if r.get('recoveryOf')==original['id'])
             assert safety['id'] != original['id']
             # Actually restore the safety backup too: proves it is usable, not just a filename.
             act('restore',backup=safety['id'],confirmRestoreTarget=True)
-            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo') == 'after-backup'
+            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo') == '备份后😀'
             act('password')
             act('revoke')
             act('drop-database')
@@ -64,7 +64,7 @@ for engine,image,password_key in [('postgresql','postgres:16-alpine','POSTGRES_P
             before_delete=next(r for r in db.backups(auth) if r.get('recoveryOf')=='before-delete')
             act('create-database')
             act('restore',backup=before_delete['id'],confirmRestoreTarget=True)
-            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo')=='after-backup'
+            assert db.query(auth,'SELECT value FROM fixture WHERE id=1;','demo')=='备份后😀'
             act('drop-user')
             assert not any(r['name']=='app_fixture' for r in db.roles(auth))
             print('PASS',engine,'real catalog, ordinary user, grant/revoke, password, backup/restore and independent safety-backup restore',flush=True)

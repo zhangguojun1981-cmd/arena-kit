@@ -82,7 +82,7 @@ class Engine:
             labels = json.loads(self.run(['docker', 'inspect', '--format', '{{json .Config.Labels}}', ids[0]]))
             directory = labels.get('com.docker.compose.project.working_dir', '')
             files = labels.get('com.docker.compose.project.config_files', '').split(',')
-            result.append(dict(name=project, status=row.get('Status', ''), directory=directory, files=files))
+            result.append(dict(name=project, status=row.get('Status', ''), directory=directory, files=files, managed=any(f.startswith('/var/lib/vpsdeck-private/projects/') for f in files)))
         return result
 
     def command(self, spec):
@@ -158,6 +158,8 @@ class Engine:
         if request['project'].get('kind') == 'deployment':
             allowed=action in DEPLOY_ACTIONS and action==request['project'].get('operation')
         require(allowed, '不支持的动作')
+        if action == 'pull' and any(f.startswith('/var/lib/vpsdeck-private/projects/') for f in request['project'].get('files', [])):
+            raise ValueError('App托管项目固定本机镜像，请在创建/重建面板选择原镜像并单独拉取')
         plan = self.plan(request['project'])
         require(plan['revision'] == request['revision'], '配置/环境已变化，请重新预览')
         if not is_environment and action in ('pull', 'up'):
