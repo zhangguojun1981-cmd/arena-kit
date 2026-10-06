@@ -178,3 +178,11 @@
 - Mac独立release构建成功，用原有私有身份签名；apksigner v2/v3验证成功，证书SHA256仍为f7ad243ac633980138c483db24bf2909833ea95bc8fef2259097f8f951405be6。
 - 候选包位置：Mac桌面 `VPSDeck-stageC-candidate-b8dc460/`。APK 13831857字节，SHA256 3dd2c000526886704ef0ddf04fda083ee065e791e8f031a15d46d7e4fa8efbbd；源码ZIP 92文件/280102字节，SHA256 ba78736e0821947a0be33d98797fdf5e241697c490ad945cf9e08feb069d61d5。目录包含中文PANEL_GUIDE.md及VERIFIED-CANDIDATE.json。
 - 按用户要求先完成开发；手机代理问题留后处理。本候选尚未复制到手机或安装，手机继续保留B。不能把模拟器测试视为实机升级验收，不能把Docker包安装/CLI验证视为全新Debian主机daemon或公网业务健康验收。公网ACME与无人值守续期仍未独立外部验收。
+
+### 安卓同步进度与连接再次中断（2026-10-06）
+- 用户报告安卓上线后，stageC-online66实际返回ANDROID_READY；stageC-source67完成源码ZIP SHA256校验、解压及92文件逐文件验证。已交付位置：Download/VPSDeck/stages/stage-C-b8dc460/project；releases/VPSDeck-source-stageC-dev-b8dc460.zip。
+- 当前Download/VPSDeck/project与B快照逐文件一致（70文件），没有修改当前工程；B与A历史快照保留。
+- 已安装版本读取仍为0.2.0-stageB/code4。启动旧App后可见既有美国主机配置；点过一次只读连接入口，但未取得连接结果，不能宣称本次SSH验收通过。
+- 完整APK下载受413限制。Mac已拆27个512KiB分片，Android下载缓存位于~/.arena-device/vpsdeck-parts，后台进程12759，日志~/.arena-device/vpsdeck-transfer.log。最后可读日志至分片16，完整APK当时不存在。并发尝试遇到404，缓存可续用，不能把部分下载当完整包。
+- 随后ADB调用返回device connection replaced during call，再次查询明确安卓离线且仅host在线（Mac亦不在线）。stageC-recheck89仍离线。后台下载的最终结果未知，恢复后必须先查日志/文件并验证完整APK SHA256，不能盲目重复启动下载或安装。
+- 本轮没有执行pm install、卸载、清数据、重置密钥/主机指纹，或生产服务器状态变更。手机继续按最后验证的B状态处理；源码已交付，APK安装和实机C面板验收尚未完成。
