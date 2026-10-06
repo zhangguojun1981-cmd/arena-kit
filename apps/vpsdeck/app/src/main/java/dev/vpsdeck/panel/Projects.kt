@@ -19,7 +19,7 @@ object JobProtocol {
     fun command(sudo: Boolean): String = (if(sudo) "sudo -n -- " else "") + "python3 -c " + Shell.quote(
         "import json,sys; envelope=json.load(sys.stdin); SOURCE=envelope.pop('adapter'); exec(compile(SOURCE,'vpsdeck-adapter','exec'))")
     fun rows(j: JSONObject, key: String): List<String> = j.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.getJSONObject(it).toString() } } ?: emptyList()
-    fun action(value: String): String = mapOf("pull" to "拉取镜像", "up" to "应用配置", "stop" to "停止项目", "install" to "环境变更", "backup" to "数据库备份", "restore" to "数据库恢复", "create-database" to "建库", "create-user" to "创建账号", "drop-database" to "备份后删库", "drop-user" to "删除账号", "grant" to "授权", "revoke" to "撤销直接授权", "password" to "修改账号密码", "create-container" to "创建容器", "rebuild-container" to "重建容器", "restore-container" to "恢复容器配置", "pull-image" to "拉取镜像")[value] ?: value
+    fun action(value: String): String = mapOf("register" to "登记项目（不部署）", "pull" to "拉取镜像", "up" to "应用配置", "stop" to "停止项目", "install" to "环境变更", "backup" to "数据库备份", "restore" to "数据库恢复", "create-database" to "建库", "create-user" to "创建账号", "drop-database" to "备份后删库", "drop-user" to "删除账号", "grant" to "授权", "revoke" to "撤销直接授权", "password" to "修改账号密码", "create-container" to "创建容器", "rebuild-container" to "重建容器", "restore-container" to "恢复容器配置", "pull-image" to "拉取镜像")[value] ?: value
     fun state(value: String): String = when(value) {
         "queued" -> "远端排队"; "running" -> "远端执行中"; "succeeded" -> "成功"
         "needs_review" -> "需核查"; else -> "结果未知"

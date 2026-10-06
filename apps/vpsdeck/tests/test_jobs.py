@@ -31,6 +31,7 @@ class JobsTest(unittest.TestCase):
 
     def run_command(self, args, **kwargs):
         self.calls.append(args)
+        if args[:3]==['docker','compose','ls']: return '[]'
         if args[0] == 'systemd-run' and self.fail_launch:
             raise RuntimeError('launch result lost')
         if args[-3:] == ['config', '--format', 'json']:
@@ -49,6 +50,20 @@ class JobsTest(unittest.TestCase):
         request = self.request(action)
         self.engine.submit(request, '# test worker, never executed')
         return request
+
+    def test_register_does_not_deploy_or_modify_yaml(self):
+        original=self.config.read_bytes()
+        self.submit('register');self.engine.work('a'*32)
+        self.assertEqual('succeeded',self.engine.states()[0]['state'])
+        self.assertEqual('demo',self.engine.projects()[0]['name'])
+        self.assertEqual(original,self.config.read_bytes())
+        self.assertFalse(any('up' in c or 'pull' in c for c in self.calls))
+
+    def test_register_rejects_name_collision(self):
+        self.submit('register');self.engine.work('a'*32)
+        alternate=self.base/'other.json';alternate.write_text('{}')
+        with self.assertRaisesRegex(ValueError,'冲突'):
+            self.engine.register(dict(self.project,files=[str(alternate)]))
 
     def test_plan_returns_no_environment_secrets(self):
         self.config_data['services']['web']['environment'] = {'PASSWORD': 'do-not-return'}

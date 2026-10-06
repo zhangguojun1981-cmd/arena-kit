@@ -33,7 +33,7 @@ class EnvironmentTest(unittest.TestCase):
 
     def test_discovery_is_read_only_and_structured(self):
         rows = self.engine.list()
-        self.assertEqual(6,len(rows))
+        self.assertEqual(9,len(rows))
         self.assertTrue(all(row['supported'] for row in rows))
         self.assertFalse(any(c[0] == 'apt-get' for c in self.calls))
         self.assertEqual('1.0', rows[0]['packages'][0]['installed'])
@@ -100,3 +100,41 @@ class EnvironmentTest(unittest.TestCase):
                 self.engine.plan(dict(name=name))
             with self.assertRaises(ValueError):
                 self.engine.execute(dict(name=name))
+
+
+class DockerRepositoryTest(unittest.TestCase):
+    setUp=EnvironmentTest.setUp
+    runner=EnvironmentTest.runner
+    def setup_repo(self):
+        self.engine.installed=lambda p: '1' if p in ('ca-certificates','gnupg') else ''
+        self.engine.run=lambda args,**kw: 'amd64' if args[0]=='dpkg' else 'pub:-:4096:1:key:0:0::::::\nfpr:::::::::'+environment.DOCKER_KEY+':\n'
+        self.apt=Path(self.temp.name)/'apt'
+        self.data=b'-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n'
+
+    def test_repository_is_explicit_and_readback_verified(self):
+        self.setup_repo()
+        plan=environment.docker_repository(self.engine,apt_root=self.apt)
+        self.assertFalse(self.apt.exists())
+        environment.docker_repository(self.engine,True,self.apt,lambda:self.data)
+        source=self.apt/'sources.list.d/vpsdeck-docker.sources'
+        self.assertIn('bookworm',source.read_text())
+        self.assertEqual(0o644,source.stat().st_mode & 0o777)
+        self.assertNotEqual(plan['revision'],environment.docker_repository(self.engine,apt_root=self.apt)['revision'])
+
+    def test_repository_rejects_untrusted_key(self):
+        self.setup_repo()
+        self.engine.run=lambda args,**kw: 'amd64' if args[0]=='dpkg' else 'pub:-:4096:1:key:0:0::::::\nfpr:::::::::WRONG:\n'
+        with self.assertRaisesRegex(ValueError,'指纹'):
+            environment.docker_repository(self.engine,True,self.apt,lambda:self.data)
+        self.assertFalse(self.apt.exists())
+
+    def test_repository_rejects_foreign_source(self):
+        self.setup_repo()
+        self.apt.mkdir();(self.apt/'sources.list').write_text('deb https://download.docker.com/linux/debian bookworm stable')
+        with self.assertRaisesRegex(ValueError,'已有其他'):
+            environment.docker_repository(self.engine,apt_root=self.apt)
+
+    def test_repository_rejects_existing_runtime(self):
+        self.setup_repo();self.engine.installed=lambda p:'1'
+        with self.assertRaisesRegex(ValueError,'冲突'):
+            environment.docker_repository(self.engine,apt_root=self.apt)

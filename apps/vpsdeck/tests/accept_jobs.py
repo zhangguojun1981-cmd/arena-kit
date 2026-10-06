@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='vpsdeck-compose-') as temp:
         discovered = next(p for p in engine.projects() if p['name'] == project_name)
         assert discovered['directory'] == temp
         assert discovered['files'] == [str(config)]
-        for action in ['stop', 'up']:
+        for action in ['register', 'stop', 'up']:
             ident = uuid.uuid4().hex
             identifiers.append(ident)
             request = dict(id=ident, action=action, project=discovered, revision=engine.plan(discovered)['revision'])
@@ -46,7 +46,8 @@ with tempfile.TemporaryDirectory(prefix='vpsdeck-compose-') as temp:
                 time.sleep(1)
             else:
                 raise AssertionError('Persistent task did not finish: ' + repr(row))
-            assert row['resources'], row
+            if action!='register': assert row['resources'], row
+            else: assert any(p['name']==project_name for p in reader.registered())
             assert not (jobs.ROOT/ident/'request.json').exists()
             try:
                 engine.submit(request, source)
@@ -56,6 +57,9 @@ with tempfile.TemporaryDirectory(prefix='vpsdeck-compose-') as temp:
                 raise AssertionError('Duplicate task was replayed')
             print('PASS independent systemd worker, verified Compose', action, flush=True)
     finally:
+        registry=engine.root.parent/'compose-registry.json'
+        if registry.exists():
+            jobs.atomic(registry,[p for p in engine.registered() if p['name']!=project_name])
         for ident in identifiers:
             subprocess.run(['systemctl','stop','vpsdeck-'+ident+'.service'], capture_output=True)
         subprocess.run(command + ['down','--remove-orphans'], capture_output=True, timeout=90)

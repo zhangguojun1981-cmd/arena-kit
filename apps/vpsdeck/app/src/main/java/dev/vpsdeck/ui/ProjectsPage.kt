@@ -16,6 +16,7 @@ import dev.vpsdeck.DeckViewModel
 import dev.vpsdeck.data.Server
 import dev.vpsdeck.panel.*
 import org.json.JSONObject
+import org.json.JSONArray
 
 @Composable fun ProjectsPage(vm: DeckViewModel, server: Server) {
     val controller = vm.app.projects
@@ -26,6 +27,7 @@ import org.json.JSONObject
     var sudo by remember(server.id) { mutableStateOf(false) }
     var selected by remember(server.id) { mutableStateOf<String?>(null) }
     var plan by remember(server.id) { mutableStateOf<ProjectPlan?>(null) }
+    var registration by remember(server.id) { mutableStateOf(false) }
     var query by remember(server.id) { mutableStateOf("") }
     RemoteTaskRefresh(vm,server,sudo) {controller.load(server,sudo)}
     LaunchedEffect(server.id,online) { if(online) controller.load(server,sudo) }
@@ -34,6 +36,7 @@ import org.json.JSONObject
         if(!online) { Button(onClick={vm.connect(server)}) { Text("连接服务器") }; return@Column }
         Row { Switch(sudo,{sudo=it},enabled=!state.busy && plan==null && selected==null); Text("明确使用已有 sudo -n 授权") }
         FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick={registration=true},enabled=!state.busy) {Text("登记已有目录")}
             OutlinedButton(onClick={controller.load(server,sudo)},enabled=!state.busy) { Text("刷新项目") }
             OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { Text("查询远端任务") }
         }
@@ -41,7 +44,7 @@ import org.json.JSONObject
         state.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
         OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),label={Text("筛选项目")},singleLine=true)
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
-            if(state.projects.isEmpty() && !state.busy) item { Hint("暂无已发现项目。只管理容器标签中记录的原始工作目录与配置；不猜测路径，不重写现有Compose文件。") }
+            if(state.projects.isEmpty() && !state.busy) item { Hint("暂无项目。可登记已有Compose目录，或通过容器标签发现；不猜测路径，不自动重写配置。") }
             items(state.projects.filter { JSONObject(it).getString("name").contains(query,true) },key={JSONObject(it).getString("name")}) { raw ->
                 val row = JSONObject(raw)
                 Panel(Modifier.clickable(enabled=!state.busy) { selected=raw }) {
@@ -63,6 +66,20 @@ import org.json.JSONObject
                 }
             }
         }
+    }
+    if(registration) {
+        var name by remember {mutableStateOf("")}
+        var directory by remember {mutableStateOf("/opt/")}
+        var files by remember {mutableStateOf("")}
+        AlertDialog(onDismissRequest={registration=false},title={Text("登记Compose目录")},text={Column(Modifier.verticalScroll(rememberScrollState())) {
+            Hint("不启动容器、不改写文件。先在文件页创建或编辑YAML；按原顺序填写已有配置绝对路径，每行一个。预览将校验Compose配置。")
+            OutlinedTextField(name,{name=it},label={Text("项目名称")},singleLine=true)
+            OutlinedTextField(directory,{directory=it},label={Text("原始工作目录")},singleLine=true)
+            OutlinedTextField(files,{files=it},label={Text("配置文件绝对路径（每行一个）")})
+        }},confirmButton={Button(enabled=!state.busy && name.isNotBlank() && files.isNotBlank(),onClick={
+            val spec=JSONObject().put("name",name.trim()).put("directory",directory.trim()).put("files",JSONArray(files.lines().map {it.trim()}.filter {it.isNotEmpty()}))
+            controller.preview(server,spec.toString(),"register",sudo) {registration=false;plan=it}
+        }) {Text("校验并预览")}},dismissButton={TextButton(onClick={registration=false}) {Text("取消")}})
     }
     selected?.let { raw ->
         val row = JSONObject(raw)
@@ -100,7 +117,7 @@ import org.json.JSONObject
                     Text("${service.getString("name")} · ${service.optString("image")}")
                     Hint("特权：${service.optBoolean("privileged")} · 挂载：${service.optInt("mounts")} · 端口：${service.optInt("ports")}")
                 }
-                Text(info.getString("warning"))
+                Text(if(value.action=="register") "仅登记现有路径和项目名，不部署、不拉取、不改写配置。配置校验成功不等于服务健康。" else info.getString("warning"))
                 Text("将创建 /var/lib/vpsdeck-private/jobs 私有任务记录和按需systemd执行器，不开放端口。任务最长2小时；断线或超时不能当作成功，必须查询结果。")
                 OutlinedTextField(confirmation,{confirmation=it},label={Text("输入项目名确认")},singleLine=true)
             }

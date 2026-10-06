@@ -83,7 +83,29 @@ class Engine:
             directory = labels.get('com.docker.compose.project.working_dir', '')
             files = labels.get('com.docker.compose.project.config_files', '').split(',')
             result.append(dict(name=project, status=row.get('Status', ''), directory=directory, files=files, managed=any(f.startswith('/var/lib/vpsdeck-private/projects/') for f in files)))
+        known={r['name']:r for r in result}
+        for row in self.registered():
+            if row['name'] in known:
+                existing=known[row['name']]
+                require(existing['directory']==row['directory'] and existing['files']==row['files'], '登记项目与容器标签冲突，需管理员核查：'+row['name'])
+            else:
+                result.append(dict(row,status='已登记，尚无容器',managed=False))
         return result
+
+    def registered(self):
+        path=self.root.parent/'compose-registry.json'
+        return json.loads(path.read_text()) if path.exists() else []
+
+    def register(self, spec):
+        self.command(spec)
+        row={k:spec[k] for k in ('name','directory','files')}
+        for existing in self.projects():
+            if existing['name']==row['name']:
+                require(all(existing[k]==row[k] for k in row), '同名项目路径冲突；禁止覆盖登记')
+        rows=self.registered()
+        rows=[r for r in rows if r['name']!=row['name']]+[row]
+        atomic(self.root.parent/'compose-registry.json',rows)
+        require(row in self.registered(),'登记读取验证失败')
 
     def command(self, spec):
         project = name(spec['name'])
@@ -154,7 +176,7 @@ class Engine:
         action = request['action']
         is_environment = request['project'].get('kind') == 'environment'
         is_database = request['project'].get('kind') == 'database'
-        allowed = (action == 'install') if is_environment else ((action in DB_ACTIONS and action == request['project'].get('operation')) if is_database else action in ACTIONS)
+        allowed = (action == 'install') if is_environment else ((action in DB_ACTIONS and action == request['project'].get('operation')) if is_database else action in (*ACTIONS, 'register'))
         if request['project'].get('kind') == 'deployment':
             allowed=action in DEPLOY_ACTIONS and action==request['project'].get('operation')
         require(allowed, '不支持的动作')
@@ -233,6 +255,9 @@ class Engine:
                     elif request['project'].get('kind') == 'environment':
                         rows, message = Environment(self.run).execute(request['project'])
                         state.update(state='succeeded', resources=rows, message=message)
+                    elif request['action']=='register':
+                        self.register(request['project'])
+                        state.update(state='succeeded',resources=[],message='登记已保存并读回核验；未启动、拉取或修改项目配置')
                     else:
                         command = self.command(request['project'])
                         action = request['action']

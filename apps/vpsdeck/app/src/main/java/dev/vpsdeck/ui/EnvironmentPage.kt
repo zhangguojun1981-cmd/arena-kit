@@ -26,7 +26,7 @@ import org.json.JSONObject
     RemoteTaskRefresh(vm,server,sudo) {controller.loadEnvironments(server,sudo)}
     LaunchedEffect(server.id, online) { if(online) controller.loadEnvironments(server,sudo) }
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
-        SectionTitle("环境与安装", "Debian 12 · 已有APT源 · 先模拟依赖再确认 · 保留现有配置")
+        SectionTitle("环境与安装", "Debian 12 · 先预览再确认 · Docker分步安装向导")
         if(!online) { Button(onClick={vm.connect(server)}) { Text("连接服务器") }; return@Column }
         Row { Switch(sudo,{sudo=it},enabled=!state.busy && plan==null); Text("明确使用已有 sudo -n 授权") }
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -36,7 +36,7 @@ import org.json.JSONObject
         if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
-            item { Hint("此面板需要服务器已有Python3。安装可能自动启动服务或监听端口，不会自动放行防火墙。其他发行版不执行安装。Docker/Compose v2第三方源引导尚不提供，不运行curl安装脚本。") }
+            item { Hint("此面板需要服务器已有Python3。安装可能自动启动服务或监听端口，不会自动放行防火墙。其他发行版不执行安装。Docker向导：1安装前置组件 → 2配置并校验官方源 → 3上方刷新索引 → 4预览安装。每一步独立确认，不运行curl安装脚本、不自动迁移发行版Docker。Docker可能改变网络规则，发布端口可能绕过ufw；不自动开放公网端口。") }
             items(state.environments,key={JSONObject(it).getString("name")}) { raw ->
                 val row = JSONObject(raw)
                 Panel {
@@ -47,7 +47,7 @@ import org.json.JSONObject
                         Text("${item.getString("name")}：${item.optString("installed").ifEmpty { "未检测到已配置版本" }}")
                         Hint("候选版本：${item.optString("candidate").ifEmpty { "现有索引中无候选" }}")
                     }
-                    OutlinedButton(onClick={controller.preview(server,raw,"install",sudo) { plan=it }},enabled=!state.busy && row.optBoolean("supported")) { Text("预览安装 / 升级") }
+                    OutlinedButton(onClick={controller.preview(server,raw,"install",sudo) { plan=it }},enabled=!state.busy && row.optBoolean("supported")) { Text(if(row.optString("name")=="docker-repository") "预览源配置" else "预览安装 / 升级") }
                 }
             }
             item { SectionTitle("该主机远端任务"); OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { Text("查询最新进度") } }
