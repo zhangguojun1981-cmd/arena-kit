@@ -15,6 +15,12 @@ class DeckApp : Application() {
     val websites by lazy { dev.vpsdeck.panel.WebsiteController(this) }
     val panel by lazy { dev.vpsdeck.panel.PanelController(this) }
     val connectionServiceActive = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val lastDisconnect = kotlinx.coroutines.flow.MutableStateFlow(readLastDisconnect())
+    private fun readLastDisconnect(): String? = runCatching { getSharedPreferences("vpsdeck.diag", MODE_PRIVATE).getString("lastDisconnect", null) }.getOrNull()
+    @Synchronized fun recordDisconnect(text: String) {
+        runCatching { getSharedPreferences("vpsdeck.diag", MODE_PRIVATE).edit().putString("lastDisconnect", text).apply() }
+        lastDisconnect.value = text
+    }
     val connecting = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
     val connectionAttempts = mutableMapOf<String, Job>()
     val terminals = linkedMapOf<String, ShellSession>()

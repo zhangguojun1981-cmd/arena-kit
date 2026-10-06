@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.vpsdeck.*
+import dev.vpsdeck.ops.FileIndex
 import dev.vpsdeck.data.Server
 
 @Composable fun FilesPage(vm: DeckViewModel, server: Server) {
@@ -44,6 +45,12 @@ import dev.vpsdeck.data.Server
     var selectedPaths by remember(server.id,vm.currentPath) {mutableStateOf(setOf<String>())}
     var batchDelete by remember(server.id) {mutableStateOf<List<RemoteFile>?>(null)}
     var batchDownload by remember(server.id) {mutableStateOf<List<RemoteFile>?>(null)}
+    var snapRoot by remember(server.id) {mutableStateOf("/")}
+    var snapMax by remember(server.id) {mutableStateOf("200000")}
+    var snapSettings by remember(server.id) {mutableStateOf(false)}
+    var snapQuery by remember(server.id) {mutableStateOf("")}
+    var snapIgnoreCase by remember(server.id) {mutableStateOf(false)}
+    var hitOpen by remember(server.id) {mutableStateOf<FileIndex.Hit?>(null)}
     val selectedFiles=vm.files.filter {it.path in selectedPaths}
     fun toggle(file: RemoteFile) { selectedPaths=toggleFileSelection(selectedPaths,file.path) }
     val pickFolder=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) {uri ->
@@ -75,6 +82,55 @@ import dev.vpsdeck.data.Server
             val pieces = vm.currentPath.split('/').filter { it.isNotEmpty() && it != "." }
             pieces.forEachIndexed { i, name -> TextButton(onClick={vm.browse("/"+pieces.take(i+1).joinToString("/"))},enabled=!vm.busy && !vm.fileBatchBusy) { ActionLabel("/ $name") } }
         }
+        Panel(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp)) {
+            val meta=vm.fileSnapMeta
+            Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Text(if(meta==null) "文件快照 · 未建立" else "快照 · ${meta.root} · ${meta.entries} 条${if(meta.truncated) "（超限截断）"}",
+                    Modifier.weight(1f),style=MaterialTheme.typography.labelMedium,
+                    color=if(meta==null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                if(meta==null) QuietAction({snapSettings=!snapSettings}) {ActionLabel("范围")}
+                QuietAction({vm.fileSnapshot(server,snapRoot,snapMax)},!vm.fileSnapBusy && server.id in connected) {
+                    ActionLabel(if(vm.fileSnapBusy) "建立中" else if(meta==null) "建立快照" else "刷新快照")
+                }
+            }
+            if(snapSettings && meta==null) {
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(snapRoot,{snapRoot=it},Modifier.weight(1f),label={Text("扫描根目录")},singleLine=true)
+                    OutlinedTextField(snapMax,{snapMax=it},Modifier.width(110.dp),label={Text("上限")},singleLine=true)
+                }
+                Hint("索引保存在服务器私有目录 /var/lib/vpsdeck-private/filesnap/（700/600），只含路径与元数据，不含文件内容；自动排除 proc/sys/dev/run/snap。大目录建立需要时间。")
+            }
+            Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                OutlinedTextField(snapQuery,{snapQuery=it},Modifier.weight(1f),label={Text("搜索路径（递归，基于快照）")},
+                    singleLine=true,enabled=meta!=null,keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(imeAction=androidx.compose.ui.text.input.ImeAction.Search),
+                    trailingIcon={IconButton(onClick={vm.searchFiles(server,snapQuery,snapIgnoreCase)},enabled=meta!=null && snapQuery.isNotBlank() && !vm.fileSnapBusy) {Icon(Icons.Outlined.Search,"搜索")}})
+                QuietAction({vm.searchFiles(server,snapQuery,snapIgnoreCase)},meta!=null && snapQuery.isNotBlank() && !vm.fileSnapBusy && server.id in connected) {ActionLabel("搜索")}
+            }
+            Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Text("忽略大小写",Modifier.weight(1f),style=MaterialTheme.typography.labelSmall)
+                IconButton(onClick={snapIgnoreCase=!snapIgnoreCase}) {
+                    Checkbox(snapIgnoreCase,{snapIgnoreCase=it},enabled=true)
+                }
+            }
+            if(vm.fileSnapNote.isNotEmpty()) Hint(vm.fileSnapNote)
+            if(vm.fileHits.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth(),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("${vm.fileHits.size} 条命中${if(vm.fileHits.size==FileIndex.SEARCH_LIMIT) "（已截断）"}",Modifier.weight(1f),style=MaterialTheme.typography.labelSmall)
+                    QuietAction({vm.clearFileHits()}) {ActionLabel("清除")}
+                }
+                vm.fileHits.forEach {hit ->
+                    Surface(shape=MaterialTheme.shapes.small,onClick={hitOpen=hit}) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                            Icon(if(hit.link) Icons.Outlined.Link else if(hit.directory) Icons.Outlined.Folder else Icons.Outlined.Description,null,
+                                Modifier.size(18.dp),tint=MaterialTheme.colorScheme.primary)
+                            Text(hit.path,Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis)
+                            Text(bytes(hit.size),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                Hint("点按命中项选择下载、进入目录或复制路径；下载时才传输该文件内容。")
+            }
+        }
         OutlinedTextField(search,{search=it},Modifier.fillMaxWidth().padding(horizontal=16.dp),label={Text("筛选当前目录文件，不递归扫描")},singleLine=true)
         Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
             TextButton(onClick={vm.browse(vm.currentPath.substringBeforeLast('/', "").ifBlank {"/"})},enabled=!vm.busy && !vm.fileBatchBusy) {Icon(Icons.Outlined.ArrowUpward,null,Modifier.size(18.dp));ActionLabel("上一级")}
@@ -95,12 +151,12 @@ import dev.vpsdeck.data.Server
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal=12.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-            QuietAction({selecting=!selecting;selectedPaths=emptySet()},!vm.fileBatchBusy) {ActionLabel(if(selecting) "退出多选" else "多选")}
+        Row(Modifier.fillMaxWidth().padding(horizontal=12.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically,horizontalArrangement=Arrangement.End,horizontalSpacing=4.dp) {
             if(selecting) {
-                Text("已选 ${selectedFiles.size}",Modifier.weight(1f),style=MaterialTheme.typography.labelSmall)
+                Text("已选 ${selectedFiles.size}",style=MaterialTheme.typography.labelSmall)
                 QuietAction({selectedPaths=vm.files.filter {it.name.contains(search,true)}.map {it.path}.toSet()},!vm.fileBatchBusy) {ActionLabel("全选筛选结果")}
             }
+            QuietAction({selecting=!selecting;selectedPaths=emptySet()},!vm.fileBatchBusy) {ActionLabel(if(selecting) "退出多选" else "多选")}
         }
         if(selecting && selectedFiles.isNotEmpty()) {
             ResourceActions(listOf(
@@ -142,6 +198,28 @@ import dev.vpsdeck.data.Server
                 OutlinedTextField(confirmation,{confirmation=it},label={Text("输入条目数量 ${snapshot.size} 确认")},singleLine=true)
             }
         },confirmButton={TextButton(onClick={batchDelete=null;vm.runFileBatch(server,snapshot);selectedPaths=emptySet();selecting=false},enabled=confirmation==snapshot.size.toString() && !vm.fileBatchBusy && server.id in connected && vm.selected?.id==server.id) {ActionLabel("确认删除")}},dismissButton={TextButton(onClick={batchDelete=null}) {ActionLabel("取消")}})
+    }
+    hitOpen?.let {hit ->
+        val dir=hit.path.substringBeforeLast('/').ifBlank {"/"}
+        AlertDialog(onDismissRequest={hitOpen=null},title={Text(hit.name)},text={Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
+            Text(hit.path,style=MaterialTheme.typography.bodySmall)
+            Text("类型：${if(hit.link) "链接" else if(hit.directory) "目录" else "文件"} · ${bytes(hit.size)} · ${time(hit.modifiedMs)}",style=MaterialTheme.typography.labelSmall)
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End) {
+                QuietAction({
+                    runCatching {
+                        val clip=android.content.ClipData.newPlainText("VPS Deck · 文件路径",hit.path)
+                        (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
+                    }.onFailure { vm.error=it.message }
+                    hitOpen=null
+                }) {ActionLabel("复制路径")}
+            }
+        }},confirmButton={
+            TextButton(onClick={
+                if(hit.directory) {vm.browse(hit.path);hitOpen=null}
+                else if(hit.link) {vm.browse(dir);hitOpen=null}
+                else {download=RemoteFile(hit.name,hit.path,false,false,hit.size,hit.permissions.toString(8).padStart(3,'0'),hit.permissions,hit.modifiedMs);hitOpen=null;createDocument.launch(hit.name)}
+            }) {ActionLabel(if(hit.link) "打开所在目录" else if(hit.directory) "进入目录" else "下载到手机")}
+        },dismissButton={TextButton(onClick={hitOpen=null}) {ActionLabel("关闭")}})
     }
     activeFile?.let { file -> AlertDialog(onDismissRequest = { activeFile = null }, title = { Text(file.name) }, text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(file.path)

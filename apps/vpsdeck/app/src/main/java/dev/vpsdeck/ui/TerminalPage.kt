@@ -12,14 +12,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.termux.view.TerminalCanvas
 import dev.vpsdeck.DeckViewModel
 import dev.vpsdeck.data.Server
 import dev.vpsdeck.ssh.ShellSession
+import kotlinx.coroutines.delay
 
+/** Input goes straight to the PTY, like a normal terminal: the on-screen keyboard types at the prompt. */
 @Composable fun TerminalPage(vm: DeckViewModel, server: Server) {
     val connections by vm.connected.collectAsState()
     val online=server.id in connections
@@ -32,46 +33,46 @@ import dev.vpsdeck.ssh.ShellSession
     var ctrl by remember { mutableStateOf(false) }
     var font by remember { mutableFloatStateOf(13f) }
     var canvas by remember { mutableStateOf<TerminalCanvas?>(null) }
+    var autoFocused by remember { mutableStateOf(setOf<String>()) }
     val context = LocalContext.current
-    val focusManager=LocalFocusManager.current
     val keyboardVisible=WindowInsets.isImeVisible
-    val draft=remember(shell?.id) {TerminalDraftState()}
-    var directInput by remember(shell?.id) {mutableStateOf(false)}
-    val compact=androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp<480
     val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
     Column(Modifier.fillMaxSize().imePadding()) {
-        if(!keyboardVisible) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             shells.forEachIndexed { i, s -> FilterChip(shell?.id == s.id, { selected = s.id }, label = { ActionLabel("终端 ${i + 1}") }) }
             TextButton(enabled=online && !vm.busy,onClick = { vm.newShell()?.let { selected = it.id } }) { Icon(Icons.Outlined.Add, null); ActionLabel("新建") }
         }
         if(shell == null) {
-            Panel(Modifier.padding(20.dp)) { Icon(Icons.Outlined.Terminal, null, Modifier.size(40.dp)); SectionTitle("交互式 SSH 终端"); Text("支持 vim、top、sudo、Tab补全与特殊按键。命令只在你输入时执行，断线不会自动重放。"); Button(enabled=!vm.busy,onClick = { if(online) vm.newShell()?.let { selected = it.id } else vm.connect(server) }) { ActionLabel(if(online) "打开终端" else "连接服务器") }; Hint("长任务建议使用 tmux。服务器未连接时请先在概览中连接。") }
+            Panel(Modifier.padding(20.dp)) { Icon(Icons.Outlined.Terminal, null, Modifier.size(40.dp)); SectionTitle("交互式 SSH 终端"); Text("直接键入即可：键盘输入实时进入命令行，回车执行；支持 vim、top、sudo、Tab补全。断线不会自动重放。"); Button(enabled=!vm.busy,onClick = { if(online) vm.newShell()?.let { selected = it.id } else vm.connect(server) }) { ActionLabel(if(online) "打开终端" else "连接服务器") }; Hint("长任务建议使用 tmux。服务器未连接时请先在概览中连接。") }
         } else {
             val state by shell.state.collectAsState()
             val ready=state=="已连接"
             val diagnostic by shell.diagnostic.collectAsState()
-            if(!keyboardVisible) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text(state, Modifier.weight(1f), maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
-                if(!ready) CopyButton("$state\n$diagnostic","复制状态")
-                TextButton(onClick = { close = shell }) { ActionLabel("关闭此会话") }
+                Row(horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                    if(!ready) CopyButton("$state\n$diagnostic","复制状态")
+                    QuietAction(onClick = { close = shell }) { ActionLabel("关闭会话") }
+                }
             }
-            if(!keyboardVisible) Hint("命令栏回车换行，点执行发送；密码、vim、top 请使用直接键盘输入。")
+            if(!keyboardVisible) Hint("点按终端区域调出键盘，直接输入，回车即执行；粘贴前会先确认。")
             key(shell.id) {
                 AndroidView(factory = { ctx -> TerminalCanvas(ctx).apply {
-                    onFocusChangeListener=android.view.View.OnFocusChangeListener {_,focused -> directInput=focused}
                     attach(shell.emulator, object : TerminalCanvas.Client {
                         override fun write(bytes: ByteArray) = shell.writeBytes(bytes)
                         override fun resized(columns: Int, rows: Int) = shell.resize(columns, rows)
                     }); shell.onChanged = { changed() }; canvas = this
                 } }, onReset=null, onRelease={view -> shell.onChanged=null;view.detach();if(canvas===view) canvas=null}, update = { it.setCtrl(ctrl); it.setFontSp(font) }, modifier = Modifier.weight(1f).fillMaxWidth())
             }
-            if(!keyboardVisible || !directInput) key(shell.id) {TerminalCommandBar(ready,if(compact) 3 else 6,draft) { bytes ->
-                val accepted=shell.sendInput(bytes);if(accepted) canvas?.bottom();accepted
-            }}
+            LaunchedEffect(shell.id, ready) {
+                if(ready && shell.id !in autoFocused) {
+                    repeat(20) { if(canvas != null) break; delay(100) }
+                    if(ready && shell.id !in autoFocused) { canvas?.showKeyboard(); autoFocused = autoFocused + shell.id }
+                }
+            }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                TextButton(onClick={if(directInput && keyboardVisible) {canvas?.clearFocus();directInput=false} else {focusManager.clearFocus(force=true);canvas?.showKeyboard();directInput=true}},enabled=ready) {ActionLabel(if(directInput && keyboardVisible) "命令栏" else "键盘")}
+                TextButton(onClick={canvas?.showKeyboard()},enabled=ready) {ActionLabel("键盘")}
                 TextButton(onClick={shell.write("\r");canvas?.bottom()},enabled=ready) {ActionLabel("回车")}
-
                 if(keyboardVisible) CopyButton("","复制屏幕",readText={canvas?.visibleText().orEmpty()})
                 listOf("Esc" to "\u001b", "Tab" to "\t", "^C" to "\u0003", "^D" to "\u0004", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, text) -> TextButton(enabled=ready,onClick = { shell.write(if(text.startsWith("\u001b[") && shell.emulator.isCursorKeysApplicationMode) text.replace("\u001b[", "\u001bO") else text); canvas?.bottom() }, contentPadding = PaddingValues(horizontal = 12.dp)) { ActionLabel(label) } }
             }

@@ -115,7 +115,7 @@ class SshIntegrationTest {
             shell.setPty(true);shell.setPtyType("xterm-256color",80,24,0,0)
             val input=shell.inputStream;val output=shell.outputStream
             shell.connect(5000)
-            output.write(dev.vpsdeck.ui.terminalCommandBytes("echo 中文"));output.flush()
+            output.write("echo 中文\r".toByteArray(Charsets.UTF_8));output.flush()
             val result=input.readBytes().toString(Charsets.UTF_8)
             assertEquals("echo 中文",received.get());assertEquals("xterm-256color",terminalType.get())
             assertTrue(result.contains("\u001b[32mfixture 中文"))

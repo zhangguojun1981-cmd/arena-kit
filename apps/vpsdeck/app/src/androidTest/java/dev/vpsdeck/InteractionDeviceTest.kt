@@ -51,33 +51,6 @@ class InteractionDeviceTest {
             assertEquals(text,clipboard.primaryClip!!.getItemAt(0).text.toString())
         }
     }
-    @Test fun terminalTypingWaitsForExplicitExecutionAndClearsOnlyAfterSend() {
-        val sent=mutableListOf<String>()
-        ui.setContent {MaterialTheme {TerminalCommandBar(true) {sent+=it.toString(Charsets.UTF_8);true}}}
-        ui.onNodeWithText("输入命令").performTextInput("echo 中文")
-        ui.runOnIdle {assertTrue(sent.isEmpty())}
-        ui.onNodeWithText("执行").performClick()
-        ui.runOnIdle {assertEquals(listOf("echo 中文\r"),sent)}
-        ui.onNodeWithText("输入命令").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText,androidx.compose.ui.text.AnnotatedString("")))
-        ui.onNodeWithText("输入命令").performTextInput("pwd")
-        ui.onNodeWithText("输入命令").performTextInput("\nid")
-        ui.runOnIdle {assertEquals(1,sent.size)}
-        ui.onNodeWithText("执行").performClick()
-        ui.onNodeWithText("发送多行命令？").assertIsDisplayed()
-        ui.runOnIdle {assertEquals(1,sent.size)}
-        ui.onNodeWithText("确认发送").performClick()
-        ui.runOnIdle {assertEquals("pwd\rid\r",sent.last())}
-    }
-    @Test fun multilineComposerGrowsAndCancelRetainsDraft() {
-        ui.setContent {MaterialTheme {TerminalCommandBar(true) {error("must confirm first")}}}
-        val before=ui.onNodeWithText("输入命令").fetchSemanticsNode().boundsInRoot.height
-        ui.onNodeWithText("输入命令").performTextInput("one\ntwo\nthree")
-        val after=ui.onNodeWithText("输入命令").fetchSemanticsNode().boundsInRoot.height
-        assertTrue(after>before)
-        ui.onNodeWithText("执行").performClick()
-        ui.onNodeWithText("继续编辑").performClick()
-        ui.onNodeWithText("输入命令").assertTextContains("one\ntwo\nthree")
-    }
     @Test fun resourceActionsAreNotShownBeforeOpeningDetails() {
         var performed=false
         ui.setContent {MaterialTheme(typography=DeckTypography) {ResourceDetail("示例网站","HTTPS · :443","启用") {
@@ -113,15 +86,23 @@ class InteractionDeviceTest {
             assertEquals(transcript,clipboard.primaryClip!!.getItemAt(0).text.toString())
         }
     }
-    @Test fun disconnectedTerminalCannotSubmit() {
-        ui.setContent {MaterialTheme {TerminalCommandBar(false) {error("must not send")}}}
-        ui.onNodeWithText("执行").assertIsNotEnabled()
-        ui.onNodeWithText("输入命令").assertIsNotEnabled()
+    @Test fun resourceActionButtonsAlignToRowEndAndAreCompact() {
+        var performed=false
+        ui.setContent {MaterialTheme(typography=DeckTypography) {
+            Column(Modifier.fillMaxSize()) {
+                ResourceActions(listOf(ResourceMenuAction("编辑网站"){performed=true},ResourceMenuAction("停用网站"){performed=true}))
+            }
+        }}
+        val root=ui.onRoot().fetchSemanticsNode().boundsInRoot
+        val primary=ui.onNodeWithText("编辑网站").fetchSemanticsNode().boundsInRoot
+        val more=ui.onNodeWithContentDescription("更多操作").fetchSemanticsNode().boundsInRoot
+        assertTrue(primary.right >= root.right - 12, "primary action must sit at the row end")
+        assertTrue(primary.left > root.width/2, "action row must not be anchored left")
+        assertTrue(primary.right >= more.right)
+        assertTrue(primary.height < root.height/2f)
+        ui.onNodeWithContentDescription("更多操作").performClick()
+        ui.onNodeWithText("停用网站").assertIsDisplayed()
+        ui.runOnIdle {assertFalse(performed)}
     }
-    @Test fun failedTerminalSubmissionPreservesInput() {
-        ui.setContent {MaterialTheme {TerminalCommandBar(true) {false}}}
-        ui.onNodeWithText("输入命令").performTextInput("pwd")
-        ui.onNodeWithText("执行").performClick()
-        ui.onNodeWithText("输入命令").assertTextContains("pwd")
-    }
+
 }

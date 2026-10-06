@@ -57,7 +57,7 @@ class SshPool(private val vault: CredentialReader) {
             session.setConfig("PreferredAuthentications", if(server.auth == "key") "publickey" else "password")
             // Never auto-negotiate deprecated SHA1 ssh-rsa/DSS/MD5 algorithms.
             if(server.auth != "key") session.setPassword(credentials.password)
-            session.serverAliveInterval = 20_000; session.serverAliveCountMax = 3
+            session.serverAliveInterval = 10_000; session.serverAliveCountMax = 5
             session.timeout = 30_000
             try { currentCoroutineContext().ensureActive();session.connect(15_000)
                 val context=currentCoroutineContext()

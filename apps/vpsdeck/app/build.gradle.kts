@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "dev.vpsdeck"
     compileSdk = 34
-    defaultConfig { applicationId = "dev.vpsdeck"; minSdk = 26; targetSdk = 34; versionCode = 8; versionName = "0.4.0-resource-preview"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "dev.vpsdeck"; minSdk = 26; targetSdk = 34; versionCode = 9; versionName = "0.5.0-filesnap-preview"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

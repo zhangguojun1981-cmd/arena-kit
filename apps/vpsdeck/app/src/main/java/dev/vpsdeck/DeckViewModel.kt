@@ -199,6 +199,50 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    var fileSnapBusy by mutableStateOf(false); private set
+    var fileSnapMeta by mutableStateOf<dev.vpsdeck.ops.FileIndex.Meta?>(null); private set
+    var fileHits by mutableStateOf<List<dev.vpsdeck.ops.FileIndex.Hit>>(emptyList()); private set
+    var fileSnapNote by mutableStateOf(""); private set
+    private var fileSnapJob: Job? = null
+    fun fileSnapshot(server: Server, root: String, maxEntries: String) {
+        if(fileSnapBusy) return
+        val parsed=runCatching {dev.vpsdeck.ops.FileIndex.maxEntries(maxEntries)}
+        if(parsed.isFailure) {error=parsed.exceptionOrNull()?.message;return}
+        val n=parsed.getOrThrow()
+        fileSnapBusy=true;fileSnapNote="正在服务器端建立索引（不传输文件内容）…";fileHits=emptyList()
+        fileSnapJob=app.appScope.launch {
+            val record=TaskRecord(serverId=server.id,serverName=server.name,label="建立文件快照")
+            try {
+                dao.task(record)
+                val r=app.ssh.exec(server,dev.vpsdeck.ops.FileIndex.buildCommand(root,n),300)
+                check(r.code==0) {"索引建立失败（exit ${r.code}）：${r.output.take(300)}"}
+                fileSnapMeta=dev.vpsdeck.ops.FileIndex.parseMeta(r.output,n)
+                fileSnapNote=""
+                dao.task(record.copy(state="成功",exitCode=0))
+            } catch(e:Exception) {
+                fileSnapNote=e.message ?: "失败"
+                withContext(NonCancellable){dao.task(record.copy(state="失败",detail="文件快照未完成；旧索引可能仍在服务器，刷新可重建"))}
+            } finally {
+                fileSnapBusy=false
+                withContext(NonCancellable){dao.trimTasks()}
+            }
+        }
+    }
+    fun searchFiles(server: Server, pattern: String, ignoreCase: Boolean) {
+        if(fileSnapBusy) return
+        if(server.id !in app.ssh.connected.value) {error="连接已断开";return}
+        fileSnapNote="搜索中（服务器端，最多${dev.vpsdeck.ops.FileIndex.SEARCH_LIMIT}条）…"
+        app.appScope.launch {
+            try {
+                val r=app.ssh.exec(server,dev.vpsdeck.ops.FileIndex.searchCommand(pattern,ignoreCase),60)
+                fileHits=dev.vpsdeck.ops.FileIndex.parseHits(r)
+                fileSnapNote=""
+            } catch(e:Exception) {
+                fileHits=emptyList();fileSnapNote=e.message ?: "搜索失败"
+            }
+        }
+    }
+    fun clearFileHits() {fileHits=emptyList();fileSnapNote=""}
     var fileBatchBusy by mutableStateOf(false); private set
     var fileBatchReport by mutableStateOf(""); private set
     private var fileBatchJob: Job? = null

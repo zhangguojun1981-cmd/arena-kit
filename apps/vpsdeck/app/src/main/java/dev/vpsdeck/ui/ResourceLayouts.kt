@@ -37,17 +37,18 @@ import androidx.compose.ui.unit.dp
 }
 
 @Composable fun QuietAction(onClick: () -> Unit, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
-    TextButton(onClick=onClick,enabled=enabled,contentPadding=PaddingValues(horizontal=12.dp,vertical=4.dp),content=content)
+    // Compact by design: small padding, single-line label; action rows align to the row end.
+    TextButton(onClick=onClick,enabled=enabled,contentPadding=PaddingValues(horizontal=8.dp,vertical=2.dp),content=content)
 }
 
 data class ResourceMenuAction(val label: String, val enabled: Boolean = true, val run: () -> Unit)
+/** Primary action and overflow sit at the end of the row (right on LTR); nothing is anchored left. */
 @Composable fun ResourceActions(actions: List<ResourceMenuAction>) {
     if(actions.isEmpty()) return
-    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.End, horizontalSpacing=2.dp) {
         val first=actions.first()
         QuietAction(first.run,first.enabled) {ActionLabel(first.label)}
         if(actions.size>1) {
-            Spacer(Modifier.weight(1f))
             var open by remember {mutableStateOf(false)}
             Box {
                 IconButton(onClick={open=true}) {Icon(Icons.Outlined.MoreHoriz,"更多操作")}
