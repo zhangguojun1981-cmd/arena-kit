@@ -11,6 +11,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -45,7 +49,7 @@ import java.util.Locale
         }
     }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        SectionTitle("管理工作台", "选择资源直接管理 · 操作后核验状态")
+        SectionTitle("服务与容器", "选择资源查看详情 · 操作后核验状态")
         if(!online) { Text("连接已断开，缓存不是实时状态"); Button(onClick = { vm.connect(server) }) { Text("连接服务器") }; return@Column }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ResourceKind.entries.forEach { kind -> FilterChip(selected = state.kind == kind, onClick = { controller.load(server, kind) }, enabled = !busy, label = { Text(kind.title) }) }
@@ -121,12 +125,14 @@ import java.util.Locale
 
 /** Stateless resource row: clicking selects an object, never executes an operation. */
 @Composable fun ResourceCard(row: Resource, enabled: Boolean, onOpen: () -> Unit) {
-    Panel(Modifier.clickable(enabled = enabled, onClick = onOpen)) {
-        Text(row.name, style = MaterialTheme.typography.titleMedium)
-        Text("${row.state}${if(row.enabled.isNotBlank()) " · 自启：${row.enabled}" else ""}")
-        if(row.summary.isNotBlank()) Hint(row.summary)
-        row.facts["镜像"]?.let { Hint(it) }
-        row.facts["端口"]?.takeIf { it.isNotBlank() }?.let { Hint(it) }
-        Text("查看详情与操作 →", color = MaterialTheme.colorScheme.primary)
+    Panel(Modifier.clickable(enabled=enabled,onClick=onOpen)) {
+        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            Text(row.name,Modifier.weight(1f),style=MaterialTheme.typography.titleSmall,maxLines=2,overflow=TextOverflow.Ellipsis)
+            StatusBadge(row.state,positive=row.state in setOf("active","running"),danger=row.state in setOf("failed","dead","unhealthy"))
+            Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if(row.summary.isNotBlank()) Text(row.summary,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,overflow=TextOverflow.Ellipsis)
+        if(row.enabled.isNotBlank()) Hint("开机自启 · ${row.enabled}")
+        row.facts["镜像"]?.let {Text(it,style=MaterialTheme.typography.labelSmall,maxLines=1,overflow=TextOverflow.Ellipsis)}
     }
 }

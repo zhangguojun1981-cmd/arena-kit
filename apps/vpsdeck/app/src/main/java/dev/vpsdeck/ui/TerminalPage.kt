@@ -60,8 +60,8 @@ import dev.vpsdeck.ssh.ShellSession
                 FilterChip(ctrl, { ctrl = !ctrl }, label = { Text("Ctrl") })
                 TextButton(onClick = { val value = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty(); if(value.length > 64000) vm.error = "粘贴内容超过64000字符" else if(value.isNotBlank()) paste = value }) { Text("粘贴") }
                 TextButton(onClick = { clipboard.setPrimaryClip(ClipData.newPlainText("SSH 当前可见文本", canvas?.visibleText().orEmpty())) }) { Text("复制屏幕") }
-                TextButton(onClick = { font = (font - 1).coerceAtLeast(9f) }) { Text("A−") }
-                TextButton(onClick = { font = (font + 1).coerceAtMost(24f) }) { Text("A+") }
+                TextButton(onClick = { font = (font - 1).coerceAtLeast(11f) }) { Text("A−") }
+                TextButton(onClick = { font = (font + 1).coerceAtMost(14f) }) { Text("A+") }
             }
         }
     }

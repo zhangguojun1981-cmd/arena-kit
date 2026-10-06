@@ -29,6 +29,8 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
     val connected = app.ssh.connected
     var selected by mutableStateOf<Server?>(null); private set
     var page by mutableStateOf(0)
+    var managementSection by mutableIntStateOf(-1)
+    val metricHistory = mutableStateMapOf<String, List<Snapshot>>()
     var busy by mutableStateOf(false); private set
     var error by mutableStateOf<String?>(null)
     var challenge by mutableStateOf<HostChallenge?>(null)
@@ -44,7 +46,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
     private var transferJob: Job? = null
     var dark by mutableStateOf<Boolean?>(null)
     fun home() { selected = null }
-    fun choose(server: Server) { selected = server; snapshot = snapshots[server.id]; files = emptyList(); currentPath = "."; page = 0; snapshotError = null }
+    fun choose(server: Server) { selected = server; managementSection = -1; snapshot = snapshots[server.id]; files = emptyList(); currentPath = "."; page = 0; snapshotError = null }
     fun save(server: Server, credentials: Credentials?, onSaved: () -> Unit) = viewModelScope.launch {
         try {
             require(server.name.isNotBlank() && server.name.length <= 100) { "请输入服务器名称" }
@@ -56,13 +58,17 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
             if(credentials != null) withContext(Dispatchers.IO) { app.vault.put(server.id, credentials) }
             val saved = if(old != null && (old.host != server.host || old.port != server.port)) server.copy(fingerprint = "") else server
             dao.save(saved)
+            if(changed || old?.fingerprint != saved.fingerprint) {
+                snapshots.remove(server.id); metricHistory.remove(server.id)
+                if(selected?.id==server.id) snapshot=null
+            }
             if(changed || credentials != null || old?.fingerprint != saved.fingerprint) app.closeServer(server.id)
             if(selected?.id == saved.id) selected = saved
             onSaved()
         } catch(e: Exception) { error = e.message ?: "保存失败" }
     }
     fun delete(server: Server) = viewModelScope.launch {
-        try { app.closeServer(server.id); withContext(Dispatchers.IO) { app.vault.delete(server.id) }; dao.delete(server.id); if(selected?.id == server.id) selected = null }
+        try { app.closeServer(server.id); withContext(Dispatchers.IO) { app.vault.delete(server.id) }; dao.delete(server.id); snapshots.remove(server.id); metricHistory.remove(server.id); if(selected?.id == server.id) selected = null }
         catch(e: Exception) { error = e.message }
     }
     fun connect(server: Server? = selected) {
@@ -94,7 +100,9 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val r = app.ssh.exec(server, Metrics.command, 20)
             if(r.code != 0) throw IllegalStateException("指标采集返回 ${r.code}")
+            if(dao.server(server.id) != server) return // Never chart a response under a changed/deleted host identity.
             val snap = Metrics.parse(r.output, System.currentTimeMillis(), snapshots[server.id]); snapshots[server.id] = snap
+            metricHistory[server.id] = ((metricHistory[server.id] ?: emptyList()) + snap).takeLast(40)
             if(selected?.id == server.id) { snapshot = snap; snapshotError = null }
         } catch(e: CancellationException) { throw e }
         catch(e: Exception) { if(selected?.id == server.id) snapshotError = "更新失败：${e.message}；下方可能为历史采样" }

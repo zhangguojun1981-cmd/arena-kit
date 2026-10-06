@@ -26,7 +26,7 @@ public class TerminalCanvas extends View {
         rebuildRenderer();
     }
     private void rebuildRenderer() { renderer = new TerminalRenderer(Math.round(fontSp * getResources().getDisplayMetrics().scaledDensity), Typeface.MONOSPACE); resize(); invalidate(); }
-    public void setFontSp(float value) { if(fontSp != value) { fontSp = value; rebuildRenderer(); } }
+    public void setFontSp(float value) { value = Math.max(11f, Math.min(14f, value)); if(fontSp != value) { fontSp = value; rebuildRenderer(); } }
     public void setCtrl(boolean value) { ctrl = value; }
     public void attach(TerminalEmulator value, Client valueClient) { if(emulator != value) top=0; emulator=value; client=valueClient; resize(); invalidate(); }
     public void detach() { client=null; emulator=null; }

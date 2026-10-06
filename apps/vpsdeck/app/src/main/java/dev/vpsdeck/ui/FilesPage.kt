@@ -15,6 +15,7 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -22,6 +23,9 @@ import dev.vpsdeck.*
 import dev.vpsdeck.data.Server
 
 @Composable fun FilesPage(vm: DeckViewModel, server: Server) {
+    var showPath by remember(server.id) { mutableStateOf(false) }
+    var tools by remember(server.id) { mutableStateOf(false) }
+    var sortMenu by remember(server.id) { mutableStateOf(false) }
     var path by remember(server.id, vm.currentPath) { mutableStateOf(vm.currentPath) }
     var activeFile by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
     var download by remember(server.id) { mutableStateOf<RemoteFile?>(null) }
@@ -59,17 +63,26 @@ import dev.vpsdeck.data.Server
             pieces.forEachIndexed { i, name -> TextButton(onClick={vm.browse("/"+pieces.take(i+1).joinToString("/"))},enabled=!vm.busy) { Text("/ $name") } }
         }
         OutlinedTextField(search,{search=it},Modifier.fillMaxWidth().padding(horizontal=16.dp),label={Text("筛选当前目录文件，不递归扫描")},singleLine=true)
-        FlowRow(Modifier.padding(horizontal=16.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            listOf("名称","大小","修改时间").forEach { label -> FilterChip(sort==label,{sort=label},label={Text(label)}) }
-            TextButton(onClick={entry="";createFile=true},enabled=!vm.busy) { Text("新建文件") }
+        Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+            TextButton(onClick={vm.browse(vm.currentPath.substringBeforeLast('/', "").ifBlank {"/"})},enabled=!vm.busy) {Icon(Icons.Outlined.ArrowUpward,null,Modifier.size(18.dp));Text("上一级")}
+            Box {
+                TextButton(onClick={sortMenu=true}) {Text("排序 · $sort")}
+                DropdownMenu(sortMenu,{sortMenu=false}) {listOf("名称","大小","修改时间").forEach {label ->
+                    DropdownMenuItem(text={Text(label)},onClick={sort=label;sortMenu=false})
+                }}
+            }
+            IconButton(onClick={vm.browse()},enabled=!vm.busy) {Icon(Icons.Outlined.Refresh,"刷新目录")}
+            Box {
+                IconButton(onClick={tools=true}) {Icon(Icons.Outlined.MoreVert,"目录操作")}
+                DropdownMenu(tools,{tools=false}) {
+                    DropdownMenuItem(text={Text("新建文件")},enabled=!vm.busy,onClick={tools=false;entry="";createFile=true})
+                    DropdownMenuItem(text={Text("新建目录")},enabled=!vm.busy,onClick={tools=false;entry="";mkdir=true})
+                    DropdownMenuItem(text={Text("上传文件")},enabled=vm.currentPath.startsWith('/') && vm.transfer==null,onClick={tools=false;uploadLocation=vm.currentPath;pickDocument.launch(arrayOf("*/*"))})
+                    DropdownMenuItem(text={Text("输入完整路径")},onClick={tools=false;showPath=!showPath})
+                }
+            }
         }
-        OutlinedTextField(path, { path = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp), label = { Text("远端路径") }, singleLine = true, trailingIcon = { IconButton(onClick = { vm.browse(path) }, enabled = !vm.busy) { Icon(Icons.Outlined.ArrowForward, "前往路径") } })
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { vm.browse(vm.currentPath.substringBeforeLast('/', "").ifBlank { "/" }) }, enabled = !vm.busy) { Text("上一级") }
-            TextButton(onClick = { vm.browse() }, enabled = !vm.busy) { Text("刷新") }
-            TextButton(onClick = { entry = ""; mkdir = true }) { Text("新建目录") }
-            TextButton(onClick = { uploadLocation = vm.currentPath; pickDocument.launch(arrayOf("*/*")) }, enabled = vm.currentPath.startsWith('/') && vm.transfer == null) { Text("上传") }
-        }
+        if(showPath) OutlinedTextField(path,{path=it},Modifier.fillMaxWidth().padding(horizontal=16.dp),label={Text("远端路径")},singleLine=true,trailingIcon={IconButton(onClick={vm.browse(path)},enabled=!vm.busy) {Icon(Icons.Outlined.ArrowForward,"前往路径")}})
         vm.transfer?.let { text -> Row(Modifier.padding(horizontal = 16.dp)) { Text(text, Modifier.weight(1f)); TextButton(onClick = { vm.cancelTransfer() }) { Text("取消") } } }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if(vm.files.isEmpty() && !vm.busy) item { Panel { Text("此目录暂无条目"); Hint("也可能尚未完成读取，点击刷新获取实际结果。") } }
@@ -78,7 +91,7 @@ import dev.vpsdeck.data.Server
             }
             if(visible.isEmpty() && vm.files.isNotEmpty()) item { Text("没有符合筛选的文件") }
             items(visible, key = { it.path }) { file ->
-                ListItem(modifier = Modifier.clickable { if(file.directory && !file.link) vm.browse(file.path) else activeFile = file },
+                ListItem(modifier = Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp)).clickable(enabled=!vm.busy) { if(file.directory && !file.link) vm.browse(file.path) else activeFile = file },
                     leadingContent = { Icon(if(file.link) Icons.Outlined.Link else if(file.directory) Icons.Outlined.Folder else Icons.Outlined.Description, null, tint = if(file.directory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) },
                     headlineContent = { Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text("${file.mode} · ${if(file.directory) "目录" else bytes(file.size)}${if(file.link) " · 链接" else ""}", style = MaterialTheme.typography.labelSmall) },

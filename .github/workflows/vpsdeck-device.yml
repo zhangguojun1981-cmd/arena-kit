@@ -34,7 +34,9 @@ jobs:
           profile: pixel_2
           disable-animations: true
           working-directory: apps/vpsdeck
-          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest
+          script: |
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest
+            adb pull /sdcard/Android/data/dev.vpsdeck/files/ui-preview ./ui-preview
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -42,4 +44,5 @@ jobs:
           path: |
             apps/vpsdeck/app/build/reports/androidTests/
             apps/vpsdeck/app/build/outputs/androidTest-results/
+            apps/vpsdeck/ui-preview/
           retention-days: 14
