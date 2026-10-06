@@ -63,6 +63,10 @@ class DeviceAcceptanceTest {
             input.commitText("中", 1); input.finishComposingText(); assertEquals("中", sent.toString())
             input.setComposingText("文", 1); input.finishComposingText(); assertEquals("中文", sent.toString())
             input.deleteSurroundingText(1, 0); assertEquals("中文\u007f", sent.toString())
+            input.performEditorAction(android.view.inputmethod.EditorInfo.IME_ACTION_SEND)
+            assertEquals("中文\u007f\r",sent.toString())
+            canvas.onKeyDown(android.view.KeyEvent.KEYCODE_TAB,android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_TAB))
+            assertEquals("中文\u007f\r\t",sent.toString())
             canvas.detach(); shell.close()
         }
     }

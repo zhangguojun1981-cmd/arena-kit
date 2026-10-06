@@ -87,6 +87,40 @@ class SshIntegrationTest {
         val trusted = pinned(); pool.connect(trusted); pool.disconnect(trusted.id); val before = authCalls.get()
         try { pool.exec(trusted, "fixture-ok"); fail("Must not auto-connect") } catch(e: IllegalStateException) { assertEquals(before, authCalls.get()) }
     }
+    @Test fun ptyShellCarriesExplicitUtf8InputAndAnsiOutput() = runBlocking {
+        val received=java.util.concurrent.atomic.AtomicReference<String>()
+        val terminalType=java.util.concurrent.atomic.AtomicReference<String>()
+        fixture.shellFactory=org.apache.sshd.server.shell.ShellFactory { _ -> object : Command {
+            lateinit var input: InputStream;lateinit var output: OutputStream;lateinit var callback: ExitCallback
+            override fun setInputStream(value: InputStream) {input=value}
+            override fun setOutputStream(value: OutputStream) {output=value}
+            override fun setErrorStream(value: OutputStream) = Unit
+            override fun setExitCallback(value: ExitCallback) {callback=value}
+            override fun start(channel: ChannelSession,env: Environment) {
+                terminalType.set(env.env["TERM"])
+                Thread {
+                    val bytes=ByteArrayOutputStream()
+                    var c=input.read()
+                    while(c>=0 && c!=13) {bytes.write(c);c=input.read()}
+                    received.set(bytes.toString("UTF-8"))
+                    output.write("\u001b[32mfixture 中文\u001b[0m\r\n".toByteArray(Charsets.UTF_8));output.flush();callback.onExit(0)
+                }.apply {isDaemon=true;start()}
+            }
+            override fun destroy(channel: ChannelSession) {runCatching {input.close()}}
+        }}
+        val trusted=pinned();pool.connect(trusted)
+        val session=pool.requireSession(trusted.id);session.timeout=10000
+        val shell=session.openChannel("shell") as com.jcraft.jsch.ChannelShell
+        try {
+            shell.setPty(true);shell.setPtyType("xterm-256color",80,24,0,0)
+            val input=shell.inputStream;val output=shell.outputStream
+            shell.connect(5000)
+            output.write(dev.vpsdeck.ui.terminalCommandBytes("echo 中文"));output.flush()
+            val result=input.readBytes().toString(Charsets.UTF_8)
+            assertEquals("echo 中文",received.get());assertEquals("xterm-256color",terminalType.get())
+            assertTrue(result.contains("\u001b[32mfixture 中文"))
+        } finally {shell.disconnect()}
+    }
     private class FixtureCommand(private val command: String) : Command {
         private lateinit var out: OutputStream; private lateinit var err: OutputStream; private lateinit var callback: ExitCallback
         private var worker: Thread? = null

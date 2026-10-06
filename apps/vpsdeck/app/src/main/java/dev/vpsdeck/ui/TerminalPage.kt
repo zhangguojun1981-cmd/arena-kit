@@ -12,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.termux.view.TerminalCanvas
@@ -30,6 +31,8 @@ import dev.vpsdeck.ssh.ShellSession
     var font by remember { mutableFloatStateOf(13f) }
     var canvas by remember { mutableStateOf<TerminalCanvas?>(null) }
     val context = LocalContext.current
+    val focusManager=LocalFocusManager.current
+    val keyboardVisible=WindowInsets.isImeVisible
     val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
     Column(Modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -42,32 +45,32 @@ import dev.vpsdeck.ssh.ShellSession
             val state by shell.state.collectAsState()
             val ready=state=="已连接"
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(state, style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
+                Text(state, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
                 TextButton(onClick = { close = shell }) { ActionLabel("关闭此会话") }
             }
-            Hint("命令栏输入后点执行；密码、vim、top 等交互请点键盘或终端区域。")
+            if(!keyboardVisible) Hint("命令栏输入后点执行；密码、vim、top 等交互请点键盘或终端区域。")
             key(shell.id) {
                 AndroidView(factory = { ctx -> TerminalCanvas(ctx).apply {
                     attach(shell.emulator, object : TerminalCanvas.Client {
                         override fun write(bytes: ByteArray) = shell.writeBytes(bytes)
                         override fun resized(columns: Int, rows: Int) = shell.resize(columns, rows)
                     }); shell.onChanged = { changed() }; canvas = this
-                } }, update = { it.setCtrl(ctrl); it.setFontSp(font) }, modifier = Modifier.weight(1f).fillMaxWidth())
-                DisposableEffect(shell.id) { onDispose { shell.onChanged = null; canvas?.detach(); canvas = null } }
+                } }, onReset=null, onRelease={view -> shell.onChanged=null;view.detach();if(canvas===view) canvas=null}, update = { it.setCtrl(ctrl); it.setFontSp(font) }, modifier = Modifier.weight(1f).fillMaxWidth())
             }
             key(shell.id) {TerminalCommandBar(ready) { bytes ->
                 val accepted=shell.sendInput(bytes);if(accepted) canvas?.bottom();accepted
             }}
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                TextButton(onClick={canvas?.showKeyboard()},enabled=ready) {ActionLabel("键盘")}
+                TextButton(onClick={focusManager.clearFocus(force=true);canvas?.showKeyboard()},enabled=ready) {ActionLabel("键盘")}
                 TextButton(onClick={shell.write("\r");canvas?.bottom()},enabled=ready) {ActionLabel("回车")}
 
+                if(keyboardVisible) CopyButton("","复制屏幕",readText={canvas?.visibleText().orEmpty()})
                 listOf("Esc" to "\u001b", "Tab" to "\t", "^C" to "\u0003", "^D" to "\u0004", "↑" to "\u001b[A", "↓" to "\u001b[B", "←" to "\u001b[D", "→" to "\u001b[C").forEach { (label, text) -> TextButton(enabled=ready,onClick = { shell.write(if(text.startsWith("\u001b[") && shell.emulator.isCursorKeysApplicationMode) text.replace("\u001b[", "\u001bO") else text); canvas?.bottom() }, contentPadding = PaddingValues(horizontal = 12.dp)) { ActionLabel(label) } }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            if(!keyboardVisible) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 FilterChip(ctrl, { ctrl = !ctrl }, enabled=ready, label = { ActionLabel("Ctrl") })
                 TextButton(enabled=ready,onClick = { val value = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty(); if(value.length > 64000) vm.error = "粘贴内容超过64000字符" else if(value.isNotBlank()) paste = value }) { ActionLabel("粘贴") }
-                TextButton(onClick = { clipboard.setPrimaryClip(ClipData.newPlainText("SSH 当前可见文本", canvas?.visibleText().orEmpty())) }) { ActionLabel("复制屏幕") }
+                CopyButton("","复制屏幕",readText={canvas?.visibleText().orEmpty()})
                 CopyButton("","复制历史",readText={shell.emulator.screen.transcriptText})
                 TextButton(onClick = { font = (font - 1).coerceAtLeast(11f) }) { ActionLabel("A−") }
                 TextButton(onClick = { font = (font + 1).coerceAtMost(14f) }) { ActionLabel("A+") }
