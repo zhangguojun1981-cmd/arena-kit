@@ -9,6 +9,8 @@ import kotlinx.coroutines.*
 
 class ConnectionService : Service() {
     private var monitor: Job? = null
+    private var cleanStop=false
+    private var latestStartId=0
     private var wake: android.os.PowerManager.WakeLock? = null
     private var renewedAt = 0L
     override fun onCreate() {
@@ -16,7 +18,9 @@ class ConnectionService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("ssh", "SSH 活动连接", NotificationManager.IMPORTANCE_LOW))
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if(intent?.action == "disconnect") { (application as DeckApp).closeAll(); stopSelf(); return START_NOT_STICKY }
+        latestStartId=startId
+        cleanStop=false
+        if(intent?.action == "disconnect") { (application as DeckApp).closeAll(); cleanStop=true;stopSelf(); return START_NOT_STICKY }
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val close = PendingIntent.getService(this, 1, Intent(this, ConnectionService::class.java).setAction("disconnect"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         startForeground(101, NotificationCompat.Builder(this, "ssh").setSmallIcon(R.drawable.ic_deck).setContentTitle("VPS Deck · SSH 连接")
@@ -29,7 +33,11 @@ class ConnectionService : Service() {
                 delay(5000)
                 val pool = (application as DeckApp).ssh
                 pool.connected.value.toList().forEach { pool.isConnected(it) }
-                if(pool.connected.value.isEmpty() && (application as DeckApp).connecting.value.isEmpty()) { stopSelf(); break }
+                if(pool.connected.value.isEmpty() && (application as DeckApp).connecting.value.isEmpty()) {
+                    cleanStop=true
+                    if(stopSelfResult(latestStartId)) break
+                    cleanStop=false
+                }
                 renewWakeLock()
             }
         }
@@ -39,6 +47,6 @@ class ConnectionService : Service() {
         val now=android.os.SystemClock.elapsedRealtime()
         if(wake?.isHeld!=true || now-renewedAt>=5*60*1000) {wake?.acquire(10*60*1000L);renewedAt=now}
     }
-    override fun onDestroy() { (application as DeckApp).connectionServiceActive.value=false; monitor?.cancel(); wake?.let {if(it.isHeld) it.release()};wake=null; (application as DeckApp).closeAll(); super.onDestroy() }
+    override fun onDestroy() { (application as DeckApp).connectionServiceActive.value=false; monitor?.cancel(); wake?.let {if(it.isHeld) it.release()};wake=null; if(!cleanStop) (application as DeckApp).closeAll(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 }

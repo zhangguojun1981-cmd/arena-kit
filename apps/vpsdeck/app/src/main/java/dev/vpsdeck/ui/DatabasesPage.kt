@@ -57,7 +57,9 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                 state.error?.let { CopyableOutput(it,"错误详情",error=true) }
             } }
             item {
-                Panel {
+                ResourceDetail("数据库连接",if(state.database!=null) "$engine · $user" else "配置独立数据库身份后浏览资源",if(state.database!=null) "已加载" else "待验证",closeWhen=state.database!=null) {
+                    if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    state.error?.let {CopyableOutput(it,"连接错误",error=true)}
                     Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
                         SectionTitle("数据库连接",if(state.database!=null) "$engine · $user" else "数据库身份独立于 SSH")
                         TextButton(onClick={identityExpanded=!identityExpanded},enabled=!state.busy) {ActionLabel(if(identityExpanded) "收起" else "编辑身份")}

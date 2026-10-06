@@ -26,8 +26,9 @@ import androidx.compose.ui.unit.dp
     }
 }
 
-@Composable fun ResourceDetail(title: String, subtitle: String, status: String = "", content: @Composable ColumnScope.() -> Unit) {
+@Composable fun ResourceDetail(title: String, subtitle: String, status: String = "", closeWhen: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     var open by remember(title) {mutableStateOf(false)}
+    LaunchedEffect(closeWhen) {if(closeWhen) open=false}
     ResourceIndexRow(title,subtitle,status) {open=true}
     if(open) FullDialog(title,{open=false}) {padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),

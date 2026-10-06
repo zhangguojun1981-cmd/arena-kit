@@ -103,7 +103,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
         challenge = null
         viewModelScope.launch { val saved = c.server.copy(fingerprint = c.observed); dao.save(saved); if(selected?.id == saved.id) selected = saved; connect(saved) }
     }
-    fun disconnect(server: Server? = selected) { if(server == null) return; app.closeServer(server.id); shellVersion++; if(app.ssh.connected.value.isEmpty()) app.stopService(Intent(app, ConnectionService::class.java)) }
+    fun disconnect(server: Server? = selected) { if(server == null) return; app.closeServer(server.id); shellVersion++; if(app.ssh.connected.value.isEmpty() && app.connecting.value.isEmpty()) app.stopService(Intent(app, ConnectionService::class.java)) }
     suspend fun refresh(server: Server? = selected) {
         if(server == null) return
         if(!app.ssh.isConnected(server.id)) return
