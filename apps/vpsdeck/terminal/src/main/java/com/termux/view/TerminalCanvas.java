@@ -52,7 +52,7 @@ public class TerminalCanvas extends View {
     @Override public boolean onCheckIsTextEditor() { return true; }
     @Override public InputConnection onCreateInputConnection(EditorInfo info) {
         info.inputType=InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
-        info.imeOptions=EditorInfo.IME_FLAG_NO_EXTRACT_UI|EditorInfo.IME_FLAG_NO_FULLSCREEN|EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING|EditorInfo.IME_ACTION_NONE;
+        info.imeOptions=EditorInfo.IME_FLAG_NO_EXTRACT_UI|EditorInfo.IME_FLAG_NO_FULLSCREEN|EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING|EditorInfo.IME_ACTION_SEND;
         return new BaseInputConnection(this,false) {
             private String composing = "";
             @Override public boolean commitText(CharSequence text,int pos) { composing="";send(text.toString());return true; }
@@ -92,5 +92,13 @@ public class TerminalCanvas extends View {
         if(event.getAction()==MotionEvent.ACTION_UP) { if(!moved)performClick();return true; }
         return true;
     }
-    @Override public boolean performClick() { super.performClick();requestFocus();((InputMethodManager)getContext().getSystemService(Context.INPUT_METHOD_SERVICE)).showSoftInput(this,InputMethodManager.SHOW_IMPLICIT);return true; }
+    public void showKeyboard() {
+        requestFocus();
+        post(() -> {
+            InputMethodManager manager=(InputMethodManager)getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            manager.restartInput(this);
+            manager.showSoftInput(this,InputMethodManager.SHOW_IMPLICIT);
+        });
+    }
+    @Override public boolean performClick() { super.performClick();showKeyboard();return true; }
 }

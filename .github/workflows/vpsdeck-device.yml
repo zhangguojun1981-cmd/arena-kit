@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - apps/vpsdeck/app/src/**
+      - apps/vpsdeck/terminal/src/**
       - apps/vpsdeck/app/build.gradle.kts
       - .github/workflows/vpsdeck-device.yml
 concurrency:

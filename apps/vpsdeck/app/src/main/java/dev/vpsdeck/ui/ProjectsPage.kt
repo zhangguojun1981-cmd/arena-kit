@@ -32,25 +32,29 @@ import org.json.JSONArray
     RemoteTaskRefresh(vm,server,sudo) {controller.load(server,sudo)}
     LaunchedEffect(server.id,online) { if(online) controller.load(server,sudo) }
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
-        SectionTitle("Compose 项目", "发现原始项目 · 风险预览 · 独立远端任务 · 断线后查状态")
-        if(!online) { Button(onClick={vm.connect(server)}) { Text("连接服务器") }; return@Column }
-        PrivilegeControl(sudo,enabled=!state.busy && plan==null && selected==null) {sudo=it}
-        FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick={registration=true},enabled=!state.busy) {Text("登记已有目录")}
-            OutlinedButton(onClick={controller.load(server,sudo)},enabled=!state.busy) { Text("刷新项目") }
-            OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { Text("查询远端任务") }
-        }
-        if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        state.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
-        OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),label={Text("筛选项目")},singleLine=true)
-        LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
+        ManagementHeading("Compose 项目", "发现原始项目 · 风险预览 · 独立远端任务 · 断线后查状态")
+        if(!online) { Button(onClick={vm.connect(server)}) { ActionLabel("连接服务器") }; return@Column }
+        LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
+            item { Panel {
+                PrivilegeControl(sudo,enabled=!state.busy && plan==null && selected==null) {sudo=it}
+                FlowActionGroup {
+                    ActionGroup {
+                        OutlinedButton(onClick={registration=true},enabled=!state.busy) {ActionLabel("登记已有目录")}
+                        OutlinedButton(onClick={controller.load(server,sudo)},enabled=!state.busy) { ActionLabel("刷新项目") }
+                        OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { ActionLabel("查询远端任务") }
+                    }
+                }
+                if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                state.error?.let { CopyableOutput(it,"错误详情",error=true) }
+                OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),label={Text("筛选项目")},singleLine=true)
+            } }
             if(state.projects.isEmpty() && !state.busy) item { Hint("暂无项目。可登记已有Compose目录，或通过容器标签发现；不猜测路径，不自动重写配置。") }
             items(state.projects.filter { JSONObject(it).getString("name").contains(query,true) },key={JSONObject(it).getString("name")}) { raw ->
                 val row = JSONObject(raw)
                 Panel(Modifier.clickable(enabled=!state.busy) { selected=raw }) {
-                    Text(row.getString("name"),style=MaterialTheme.typography.titleMedium)
-                    Text(row.optString("status")); Text(row.getString("directory"))
-                    Text("服务与风险 / 拉取 / 应用 / 停止 →",color=MaterialTheme.colorScheme.primary)
+                    ResourceHeading(row.getString("name"),row.optString("status"),row.getString("directory"))
+                    OutlinedButton(onClick={selected=raw},enabled=!state.busy) {ActionLabel("管理项目")}
+                    Hint("查看服务、镜像与风险，再单独确认操作")
                 }
             }
             item { SectionTitle("远端持久任务", "任务文件仅执行身份可访问；App退出后不自动重放。点查询刷新进度。") }
@@ -69,7 +73,7 @@ import org.json.JSONArray
         }},confirmButton={Button(enabled=!state.busy && name.isNotBlank() && files.isNotBlank(),onClick={
             val spec=JSONObject().put("name",name.trim()).put("directory",directory.trim()).put("files",JSONArray(files.lines().map {it.trim()}.filter {it.isNotEmpty()}))
             controller.preview(server,spec.toString(),"register",sudo) {registration=false;plan=it}
-        }) {Text("校验并预览")}},dismissButton={TextButton(onClick={registration=false}) {Text("取消")}})
+        }) {ActionLabel("校验并预览")}},dismissButton={TextButton(onClick={registration=false}) {ActionLabel("取消")}})
     }
     selected?.let { raw ->
         val row = JSONObject(raw)
@@ -82,17 +86,18 @@ import org.json.JSONArray
                 if(!row.optBoolean("managed")) {
                     for(i in 0 until files.length()) {
                         val path=files.getString(i)
-                        OutlinedButton(onClick={selected=null;vm.page=2;vm.browse(path.substringBeforeLast('/').ifEmpty { "/" })},enabled=!state.busy && !controller.hasActive(server)) {Text("文件页编辑：${path.substringAfterLast('/')}")}
+                        Hint(path.substringAfterLast('/'))
+                        OutlinedButton(onClick={selected=null;vm.page=2;vm.browse(path.substringBeforeLast('/').ifEmpty { "/" })},enabled=!state.busy && !controller.hasActive(server)) {ActionLabel("编辑配置文件")}
                     }
                     Hint("文件编辑会备份并检查原内容是否变化；保存后返回此项目预览，Compose配置校验通过后再单独确认应用。不会保存即部署。")
                 }
                 Hint("先验证原配置并显示服务风险；不会覆盖Compose文件，不删除卷。应用可能重新创建容器，停止会中断业务。仅支持已有镜像，不隐式执行build。")
-                listOf("pull" to "预览并拉取镜像", "up" to "预览并应用配置", "stop" to "预览并停止服务").forEach { (action,label) ->
-                    OutlinedButton(onClick={controller.preview(server,raw,action,sudo) { plan=it }},enabled=!state.busy && online && !(action=="pull" && row.optBoolean("managed"))) { Text(label) }
+                listOf("pull" to "预览拉取", "up" to "预览应用", "stop" to "预览停止").forEach { (action,label) ->
+                    OutlinedButton(onClick={controller.preview(server,raw,action,sudo) { plan=it }},enabled=!state.busy && online && !(action=="pull" && row.optBoolean("managed"))) { ActionLabel(label) }
                 }
                 if(row.optBoolean("managed")) Hint("此项目固定本机镜像。更换/拉取镜像请用创建/重建面板；不要手改托管配置。")
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                state.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
+                state.error?.let { CopyableOutput(it,"错误详情",error=true) }
             }
         }
     }
@@ -111,6 +116,6 @@ import org.json.JSONArray
                 Text("将创建 /var/lib/vpsdeck-private/jobs 私有任务记录和按需systemd执行器，不开放端口。任务最长2小时；断线或超时不能当作成功，必须查询结果。")
                 OutlinedTextField(confirmation,{confirmation=it},label={Text("输入项目名确认")},singleLine=true)
             }
-        },confirmButton={Button(onClick={plan=null;selected=null;controller.submit(server,value,sudo)},enabled=online && !state.busy && confirmation==JSONObject(value.project).getString("name")) { Text("确认执行") }},dismissButton={TextButton(onClick={plan=null}) { Text("取消") }})
+        },confirmButton={Button(onClick={plan=null;selected=null;controller.submit(server,value,sudo)},enabled=online && !state.busy && confirmation==JSONObject(value.project).getString("name")) { ActionLabel("确认执行") }},dismissButton={TextButton(onClick={plan=null}) { ActionLabel("取消") }})
     }
 }

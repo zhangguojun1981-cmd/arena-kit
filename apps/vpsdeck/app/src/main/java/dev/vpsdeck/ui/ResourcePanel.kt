@@ -49,28 +49,30 @@ import java.util.Locale
         }
     }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        SectionTitle("服务与容器", "选择资源查看详情 · 操作后核验状态")
-        if(!online) { Text("连接已断开，缓存不是实时状态"); Button(onClick = { vm.connect(server) }) { Text("连接服务器") }; return@Column }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ResourceKind.entries.forEach { kind -> FilterChip(selected = state.kind == kind, onClick = { controller.load(server, kind) }, enabled = !busy, label = { Text(kind.title) }) }
-        }
-        OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索名称或描述") })
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            FilterChip(onlyActive, { onlyActive = !onlyActive }, label = { Text("仅运行中") })
-            TextButton(onClick = { controller.load(server) }, enabled = !busy) { Text("刷新列表") }
-        }
-        state.loadedAt?.let { Hint("上次读取 ${SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date(it))} · ${state.rows.size} 个对象") }
-        if(busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(state.busy.orEmpty()) }
-        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        state.notice?.let { Text(it) }
+        ManagementHeading("服务与容器", "选择资源查看详情 · 操作后核验状态")
+        if(!online) { Text("连接已断开，缓存不是实时状态"); Button(onClick = { vm.connect(server) }) { ActionLabel("连接服务器") }; return@Column }
         val rows = state.rows.filter { (!onlyActive || it.state in setOf("active", "running")) && (query.isBlank() || (it.name + it.summary).contains(query, true)) }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
+            item { Panel {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ResourceKind.entries.forEach { kind -> FilterChip(selected = state.kind == kind, onClick = { controller.load(server, kind) }, enabled = !busy, label = { ActionLabel(kind.title) }) }
+                }
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索名称或描述") })
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    FilterChip(onlyActive, { onlyActive = !onlyActive }, label = { ActionLabel("仅运行中") })
+                    TextButton(onClick = { controller.load(server) }, enabled = !busy) { ActionLabel("刷新列表") }
+                }
+                state.loadedAt?.let { Hint("上次读取 ${SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date(it))} · ${state.rows.size} 个对象") }
+                if(busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(state.busy.orEmpty()) }
+                state.error?.let { CopyableOutput(it,"错误详情",error=true) }
+                state.notice?.let { CopyableOutput(it,"操作结果") }
+            } }
             if(state.loaded && rows.isEmpty()) item { Panel { Text(if(state.rows.isEmpty()) "没有发现资源" else "没有符合筛选的资源") } }
             items(rows, key = { it.id }) { row ->
                 ResourceCard(row, !busy) { controller.open(server, row) }
             }
         }
-        TextButton(onClick = legacy, enabled = !busy) { Text("高级诊断 / 主机操作") }
+        TextButton(onClick = legacy, enabled = !busy) { ActionLabel("高级诊断 / 主机操作") }
     }
     state.detail?.let { row ->
         FullDialog(row.name, { if(!busy) { follow = false; controller.close(server) } }) { padding ->
@@ -83,25 +85,26 @@ import java.util.Locale
                     if(row.enabled.isNotBlank()) Text("开机自启：${row.enabled}")
                     row.facts.forEach { (k, v) -> Text("$k：${v.ifBlank { "—" }}") }
                     if(busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(state.busy.orEmpty()) }
-                    state.notice?.let { Text(it) }; state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    state.notice?.let { CopyableOutput(it,"操作结果") }; state.error?.let { CopyableOutput(it,"错误详情",error=true) }
                 }
-                Row { Switch(sudo, { sudo = it }, enabled = !busy); Spacer(Modifier.width(8.dp)); Text("显式使用 sudo -n（需已有免密权限）") }
+                PrivilegeControl(sudo,enabled=!busy) {sudo=it}
                 val actions = ResourceProtocol.actions(state.kind, row)
                 if(actions.isEmpty()) Hint("当前状态不支持动作，或属于受保护的连接/核心服务。模板服务需先创建具体实例。")
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    actions.forEach { action -> OutlinedButton(onClick = { follow = false; pending = row to action }, enabled = !busy && online) { Text(action.title) } }
+                    actions.forEach { action -> OutlinedButton(onClick = { follow = false; pending = row to action }, enabled = !busy && online) { ActionLabel(action.title) } }
                 }
-                OutlinedButton(onClick = { controller.open(server, row) }, enabled = !busy && online) { Text("重新读取详情") }
+                OutlinedButton(onClick = { controller.open(server, row) }, enabled = !busy && online) { ActionLabel("重新读取详情") }
                 HorizontalDivider()
                 SectionTitle("日志", "最近200行，仅保留在当前进程；日志可能含敏感信息")
                 Row {
-                    TextButton(onClick = { showLogs = true; controller.logs(server) }, enabled = !busy && online) { Text("读取日志") }
+                    TextButton(onClick = { showLogs = true; controller.logs(server) }, enabled = !busy && online) { ActionLabel("读取日志") }
                     Switch(follow, { follow = it; showLogs = true }, enabled = online && pending == null)
                     Text("每3秒刷新")
                 }
                 if(showLogs) {
                     var filter by remember(row.id) { mutableStateOf("") }
                     OutlinedTextField(filter, { filter = it }, Modifier.fillMaxWidth(), label = { Text("筛选已读取日志") })
+                    CopyButton(state.logs.orEmpty(),"复制全部日志")
                     SelectionContainer { Text(state.logs?.lineSequence()?.filter { it.contains(filter, true) }?.joinToString("\n") ?: "尚未读取日志", style = MaterialTheme.typography.bodySmall) }
                 }
                 Hint("操作不会因关闭页面而重新提交。详细历史可返回服务器首页的任务页查看。创建/重建与长任务在对应面板管理；此处只删除已停止容器，不强制删除，不删除卷。")
@@ -115,11 +118,11 @@ import java.util.Locale
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text("服务器：${server.name}\n${server.endpoint}\n对象：${row.id}\n当前状态：${row.state}\n\n该操作可能中断依赖此资源的业务。不会删除持久化数据，不会自动重试。${if(sudo) "\n将使用 sudo -n，不提交密码。" else ""}")
                 if(action==ResourceAction.REMOVE) { Text("容器可写层会被删除，卷不会被删除但可能变成未关联状态；请先备份业务数据。",color=MaterialTheme.colorScheme.error); OutlinedTextField(deleteConfirmation,{deleteConfirmation=it},label={Text("输入容器名称确认")},singleLine=true) }
-                TextButton(onClick = { advanced = !advanced }) { Text("高级执行计划") }
-                if(advanced) Text(ResourceProtocol.action(state.kind, row, action))
+                TextButton(onClick = { advanced = !advanced }) { ActionLabel("高级执行计划") }
+                if(advanced) CopyableOutput(ResourceProtocol.action(state.kind, row, action),"执行计划")
                 Text("提交前重新核对资源状态；执行后读取真实状态，未通过核验不报成功。")
             }
-        }, confirmButton = { Button(onClick = { pending = null; controller.act(server, row, action, sudo) }, enabled = !busy && online && (action!=ResourceAction.REMOVE || deleteConfirmation==row.name)) { Text("确认${action.title}") } }, dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
+        }, confirmButton = { Button(onClick = { pending = null; controller.act(server, row, action, sudo) }, enabled = !busy && online && (action!=ResourceAction.REMOVE || deleteConfirmation==row.name)) { ActionLabel("确认${action.title}") } }, dismissButton = { TextButton(onClick = { pending = null }) { ActionLabel("取消") } })
     }
 }
 

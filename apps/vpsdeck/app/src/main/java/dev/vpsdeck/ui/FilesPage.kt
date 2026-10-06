@@ -56,17 +56,17 @@ import dev.vpsdeck.data.Server
     val connected by vm.connected.collectAsState()
     LaunchedEffect(server.id, connected.contains(server.id)) { if(server.id in connected && vm.files.isEmpty()) vm.browse() }
     Column(Modifier.fillMaxSize()) {
-        if(server.id !in connected) { Panel(Modifier.padding(20.dp)) { Text("SFTP 需要活动 SSH 连接"); Button(onClick = { vm.connect(server) }, enabled = !vm.busy) { Text("连接") } }; return@Column }
+        if(server.id !in connected) { Panel(Modifier.padding(20.dp)) { Text("SFTP 需要活动 SSH 连接"); Button(onClick = { vm.connect(server) }, enabled = !vm.busy) { ActionLabel("连接") } }; return@Column }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal=8.dp)) {
-            TextButton(onClick={vm.browse("/")},enabled=!vm.busy) { Text("根目录") }
+            TextButton(onClick={vm.browse("/")},enabled=!vm.busy) { ActionLabel("根目录") }
             val pieces = vm.currentPath.split('/').filter { it.isNotEmpty() && it != "." }
-            pieces.forEachIndexed { i, name -> TextButton(onClick={vm.browse("/"+pieces.take(i+1).joinToString("/"))},enabled=!vm.busy) { Text("/ $name") } }
+            pieces.forEachIndexed { i, name -> TextButton(onClick={vm.browse("/"+pieces.take(i+1).joinToString("/"))},enabled=!vm.busy) { ActionLabel("/ $name") } }
         }
         OutlinedTextField(search,{search=it},Modifier.fillMaxWidth().padding(horizontal=16.dp),label={Text("筛选当前目录文件，不递归扫描")},singleLine=true)
         Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-            TextButton(onClick={vm.browse(vm.currentPath.substringBeforeLast('/', "").ifBlank {"/"})},enabled=!vm.busy) {Icon(Icons.Outlined.ArrowUpward,null,Modifier.size(18.dp));Text("上一级")}
+            TextButton(onClick={vm.browse(vm.currentPath.substringBeforeLast('/', "").ifBlank {"/"})},enabled=!vm.busy) {Icon(Icons.Outlined.ArrowUpward,null,Modifier.size(18.dp));ActionLabel("上一级")}
             Box {
-                TextButton(onClick={sortMenu=true}) {Text("排序 · $sort")}
+                TextButton(onClick={sortMenu=true}) {ActionLabel("排序 · $sort")}
                 DropdownMenu(sortMenu,{sortMenu=false}) {listOf("名称","大小","修改时间").forEach {label ->
                     DropdownMenuItem(text={Text(label)},onClick={sort=label;sortMenu=false})
                 }}
@@ -83,7 +83,7 @@ import dev.vpsdeck.data.Server
             }
         }
         if(showPath) OutlinedTextField(path,{path=it},Modifier.fillMaxWidth().padding(horizontal=16.dp),label={Text("远端路径")},singleLine=true,trailingIcon={IconButton(onClick={vm.browse(path)},enabled=!vm.busy) {Icon(Icons.Outlined.ArrowForward,"前往路径")}})
-        vm.transfer?.let { text -> Row(Modifier.padding(horizontal = 16.dp)) { Text(text, Modifier.weight(1f)); TextButton(onClick = { vm.cancelTransfer() }) { Text("取消") } } }
+        vm.transfer?.let { text -> Row(Modifier.padding(horizontal = 16.dp)) { Text(text, Modifier.weight(1f)); TextButton(onClick = { vm.cancelTransfer() }) { ActionLabel("取消") } } }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if(vm.files.isEmpty() && !vm.busy) item { Panel { Text("此目录暂无条目"); Hint("也可能尚未完成读取，点击刷新获取实际结果。") } }
             val visible = vm.files.filter { it.name.contains(search,true) }.let { list ->
@@ -102,20 +102,20 @@ import dev.vpsdeck.data.Server
     }
     activeFile?.let { file -> AlertDialog(onDismissRequest = { activeFile = null }, title = { Text(file.name) }, text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(file.path)
-        if(file.directory || file.link) TextButton(onClick = { vm.browse(file.path); activeFile = null }) { Text("尝试进入目录") }
+        if(file.directory || file.link) TextButton(onClick = { vm.browse(file.path); activeFile = null }) { ActionLabel("尝试进入目录") }
         if(!file.directory && !file.link) {
-            TextButton(onClick = { download = file; activeFile = null; createDocument.launch(file.name) }) { Text("下载到手机") }
-            TextButton(onClick = { activeFile = null; vm.edit(file) }) { Text("编辑文本（最大512KB）") }
+            TextButton(onClick = { download = file; activeFile = null; createDocument.launch(file.name) }) { ActionLabel("下载到手机") }
+            TextButton(onClick = { activeFile = null; vm.edit(file) }) { ActionLabel("编辑文本（最大512KB）") }
         }
-        if(!file.link && file.permissions and 0xe00 == 0) TextButton(onClick={chmod=file;mode=(file.permissions and 511).toString(8).padStart(3,'0');activeFile=null}) { Text("修改权限") }
-        TextButton(onClick = { rename = file; entry = file.name; activeFile = null }) { Text("重命名") }
-        TextButton(onClick = { remove = file; activeFile = null }) { Text("删除", color = MaterialTheme.colorScheme.error) }
-    } }, confirmButton = { TextButton(onClick = { activeFile = null }) { Text("关闭") } }) }
-    if(mkdir || rename != null || createFile) AlertDialog(onDismissRequest = { mkdir = false; rename = null; createFile = false }, title = { Text(if(mkdir) "新建目录" else if(createFile) "新建空文本文件" else "重命名") }, text = { OutlinedTextField(entry, { entry = it }, label = { Text("名称") }, singleLine = true) }, confirmButton = { TextButton(onClick = { runCatching { if(mkdir) vm.mkdir(entry) else if(createFile) vm.createTextFile(entry) else rename?.let { vm.rename(it, entry) } }.onFailure { vm.error = it.message }; mkdir = false; rename = null; createFile = false }) { Text("确认") } }, dismissButton = { TextButton(onClick = { mkdir = false; rename = null; createFile = false }) { Text("取消") } })
-    remove?.let { file -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("删除远端条目？") }, text = { Text("${server.name}\n${file.path}\n\n不可撤销。非空目录会拒绝删除，不使用递归删除。") }, confirmButton = { TextButton(onClick = { vm.remove(file); remove = null }) { Text("确认删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { remove = null }) { Text("取消") } }) }
+        if(!file.link && file.permissions and 0xe00 == 0) TextButton(onClick={chmod=file;mode=(file.permissions and 511).toString(8).padStart(3,'0');activeFile=null}) { ActionLabel("修改权限") }
+        TextButton(onClick = { rename = file; entry = file.name; activeFile = null }) { ActionLabel("重命名") }
+        TextButton(onClick = { remove = file; activeFile = null }) { ActionLabel("删除", color = MaterialTheme.colorScheme.error) }
+    } }, confirmButton = { TextButton(onClick = { activeFile = null }) { ActionLabel("关闭") } }) }
+    if(mkdir || rename != null || createFile) AlertDialog(onDismissRequest = { mkdir = false; rename = null; createFile = false }, title = { Text(if(mkdir) "新建目录" else if(createFile) "新建空文本文件" else "重命名") }, text = { OutlinedTextField(entry, { entry = it }, label = { Text("名称") }, singleLine = true) }, confirmButton = { TextButton(onClick = { runCatching { if(mkdir) vm.mkdir(entry) else if(createFile) vm.createTextFile(entry) else rename?.let { vm.rename(it, entry) } }.onFailure { vm.error = it.message }; mkdir = false; rename = null; createFile = false }) { ActionLabel("确认") } }, dismissButton = { TextButton(onClick = { mkdir = false; rename = null; createFile = false }) { ActionLabel("取消") } })
+    remove?.let { file -> AlertDialog(onDismissRequest = { remove = null }, title = { Text("删除远端条目？") }, text = { Text("${server.name}\n${file.path}\n\n不可撤销。非空目录会拒绝删除，不使用递归删除。") }, confirmButton = { TextButton(onClick = { vm.remove(file); remove = null }) { ActionLabel("确认删除", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { remove = null }) { ActionLabel("取消") } }) }
     chmod?.let { file -> AlertDialog(onDismissRequest={chmod=null},title={Text("修改远端权限？")},text={Column {
         Text("${server.name}\n${file.path}\n原权限：${file.mode}\n只修改该条目，不递归、不更改属主。")
         OutlinedTextField(mode,{mode=it.filter { c -> c in '0'..'7' }.take(3)},label={Text("三位权限，例如644或755")},singleLine=true)
-    }},confirmButton={Button(onClick={vm.changePermissions(file,mode);chmod=null},enabled=mode.length==3) {Text("修改并核验")}},dismissButton={TextButton(onClick={chmod=null}) {Text("取消")}}) }
+    }},confirmButton={Button(onClick={vm.changePermissions(file,mode);chmod=null},enabled=mode.length==3) {ActionLabel("修改并核验")}},dismissButton={TextButton(onClick={chmod=null}) {ActionLabel("取消")}}) }
 
 }

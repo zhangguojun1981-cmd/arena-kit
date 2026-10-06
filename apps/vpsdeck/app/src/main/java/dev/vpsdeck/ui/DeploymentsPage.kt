@@ -32,36 +32,39 @@ import java.util.Date
     RemoteTaskRefresh(vm,server,sudo) {controller.loadDeployments(server,sudo)}
     LaunchedEffect(server.id,online) {if(online) controller.loadDeployments(server,sudo)}
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
-        SectionTitle("创建与重建", "表单创建容器和Compose项目 · 固定镜像ID · 配置快照 · 保留命名卷")
-        if(!online) {Button(onClick={vm.connect(server)}) {Text("连接服务器")};return@Column}
-        PrivilegeControl(sudo,enabled=!state.busy && editor==null && plan==null) {sudo=it}
-        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            Button(onClick={editor=JSONObject().put("operation","create-container").put("id",UUID.randomUUID().toString().replace("-","")).toString()},enabled=!state.busy) {Text("新建容器 / 项目")}
-            OutlinedButton(onClick={controller.loadDeployments(server,sudo)},enabled=!state.busy) {Text("刷新")}
-        }
-        if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        state.error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
-        OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),label={Text("筛选App托管部署")},singleLine=true)
-        LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
+        ManagementHeading("创建与重建", "表单创建容器和Compose项目 · 固定镜像ID · 配置快照 · 保留命名卷")
+        if(!online) {Button(onClick={vm.connect(server)}) {ActionLabel("连接服务器")};return@Column}
+        LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
+            item { Panel {
+                PrivilegeControl(sudo,enabled=!state.busy && editor==null && plan==null) {sudo=it}
+                ActionGroup {
+                    Button(onClick={editor=JSONObject().put("operation","create-container").put("id",UUID.randomUUID().toString().replace("-","")).toString()},enabled=!state.busy) {ActionLabel("新建部署")}
+                    OutlinedButton(onClick={controller.loadDeployments(server,sudo)},enabled=!state.busy) {ActionLabel("刷新")}
+                }
+                if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                state.error?.let { CopyableOutput(it,"错误详情",error=true) }
+                OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),label={Text("筛选App托管部署")},singleLine=true)
+            } }
             item {HelpDisclosure("仅重建本面板创建的单服务项目。既有容器仍在服务与容器页管理；不无损反推复杂容器，不覆盖外部改动。镜像拉取与应用分开确认，不删除卷。")}
+            if(state.deployments.isEmpty() && !state.busy) item {Panel {Hint("暂无托管部署，请使用上方操作获取或创建资源")}}
             items(state.deployments.filter {JSONObject(it).getString("name").contains(query,true)},key={JSONObject(it).getString("name")}) {raw ->
                 val row=JSONObject(raw)
                 Panel {
-                    Text(row.getString("name"),style=MaterialTheme.typography.titleMedium)
-                    Text("${row.optString("image")} · ${row.optString("phase")}")
+                    ResourceHeading(row.getString("name"),row.optString("phase"),row.optString("image"))
                     row.optJSONObject("runtime")?.let {runtime -> Text("实际状态：${runtime.optString("state")} · ${runtime.optString("health")}");Hint("容器ID：${runtime.optString("id")}")}
                     if(row.has("notice")) Text(row.getString("notice"),color=MaterialTheme.colorScheme.error)
-                    OutlinedButton(onClick={editor=JSONObject(raw).put("operation","rebuild-container").put("expected",row.getString("revision")).toString()},enabled=!state.busy && row.has("revision")) {Text("选择镜像 / 重建")}
+                    OutlinedButton(onClick={editor=JSONObject(raw).put("operation","rebuild-container").put("expected",row.getString("revision")).toString()},enabled=!state.busy && row.has("revision")) {ActionLabel("预览重建")}
                     var snapshotsOpen by remember(row.getString("name")) {mutableStateOf(false)}
-                    TextButton(onClick={snapshotsOpen=!snapshotsOpen}) {Text("配置快照 (${JobProtocol.rows(row,"backups").size}) · ${if(snapshotsOpen) "收起" else "展开"}")}
+                    TextButton(onClick={snapshotsOpen=!snapshotsOpen}) {ActionLabel("配置快照 (${JobProtocol.rows(row,"backups").size}) · ${if(snapshotsOpen) "收起" else "展开"}")}
+                    if(snapshotsOpen) Hint("仅恢复配置，不回滚数据；每次恢复需预览和确认。")
                     if(snapshotsOpen) JobProtocol.rows(row,"backups").sortedByDescending {JSONObject(it).optLong("created")}.forEach {value ->
                         val backup=JSONObject(value)
                         Text("配置快照：${DateFormat.getDateTimeInstance().format(Date(backup.getLong("created")*1000))}\n${backup.getString("image")} · ${backup.getString("phase")}")
-                        TextButton(onClick={val spec=JSONObject().put("kind","deployment").put("operation","restore-container").put("name",row.getString("name")).put("expected",row.getString("revision")).put("backup",backup.getString("id"));controller.preview(server,spec.toString(),"restore-container",sudo) {plan=it}},enabled=!state.busy) {Text("预览恢复该配置（不回滚数据）")}
+                        TextButton(onClick={val spec=JSONObject().put("kind","deployment").put("operation","restore-container").put("name",row.getString("name")).put("expected",row.getString("revision")).put("backup",backup.getString("id"));controller.preview(server,spec.toString(),"restore-container",sudo) {plan=it}},enabled=!state.busy) {ActionLabel("预览恢复配置")}
                     }
                 }
             }
-            item {SectionTitle("远端任务");OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {Text("查询最新进度")}}
+            item {SectionTitle("远端任务");OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {ActionLabel("查询最新进度")}}
             items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }
@@ -78,7 +81,7 @@ import java.util.Date
             Text(JSONObject(p.result).getString("warning"))
             Text("凭据不会进入SSH命令行；环境变量保存在服务器私有配置，Docker管理员仍能查看它们。重建前请单独备份业务数据。")
             OutlinedTextField(confirmation,{confirmation=it},label={Text("输入目标名称确认")},singleLine=true)
-        }},confirmButton={Button(onClick={plan=null;if(p.action!="pull-image") editor=null;controller.submit(server,p,sudo)},enabled=online && !state.busy && confirmation==target) {Text("确认执行")}},dismissButton={TextButton(onClick={plan=null}) {Text("取消")}})
+        }},confirmButton={Button(onClick={plan=null;if(p.action!="pull-image") editor=null;controller.submit(server,p,sudo)},enabled=online && !state.busy && confirmation==target) {ActionLabel("确认执行")}},dismissButton={TextButton(onClick={plan=null}) {ActionLabel("取消")}})
     }
 }
 
@@ -102,7 +105,7 @@ import java.util.Date
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(name,{name=it},Modifier.fillMaxWidth(),label={Text("容器名称（小写）")},singleLine=true,enabled=create && !busy)
             OutlinedTextField(image,{image=it},Modifier.fillMaxWidth(),label={Text("镜像引用")},singleLine=true,enabled=!busy)
-            OutlinedButton(onClick={preview(JSONObject().put("kind","deployment").put("name",image).put("operation","pull-image").put("image",image).toString())},enabled=!busy) {Text("先预览拉取镜像（不应用）")}
+            OutlinedButton(onClick={preview(JSONObject().put("kind","deployment").put("name",image).put("operation","pull-image").put("image",image).toString())},enabled=!busy) {ActionLabel("预览拉取镜像")}
             if(create) {
                 OutlinedTextField(memory,{memory=it},Modifier.fillMaxWidth(),label={Text("内存上限MiB（128–32768）")},singleLine=true,enabled=!busy)
                 OutlinedTextField(cpus,{cpus=it},Modifier.fillMaxWidth(),label={Text("CPU上限（0.1–16）")},singleLine=true,enabled=!busy)
@@ -117,11 +120,11 @@ import java.util.Date
                 Hint("数据库镜像须选对数据目录（如postgres:16的/var/lib/postgresql/data、MySQL的/var/lib/mysql）；容器层/匿名卷不等于可靠备份。")
                 OutlinedTextField(environment,{environment=it},Modifier.fillMaxWidth(),label={Text("环境变量，每行KEY=VALUE（不会回显到任务输出）")},minLines=3,enabled=!busy)
                 OutlinedTextField(command,{command=it},Modifier.fillMaxWidth(),label={Text("可选启动参数，每行一个；留空用镜像默认CMD")},minLines=2,enabled=!busy)
-                FlowRow(horizontalArrangement=Arrangement.spacedBy(6.dp)) {listOf("unless-stopped","no","always","on-failure").forEach {value -> FilterChip(restart==value,{restart=value},label={Text(value)},enabled=!busy)}}
+                FlowRow(horizontalArrangement=Arrangement.spacedBy(6.dp)) {listOf("unless-stopped","no","always","on-failure").forEach {value -> FilterChip(restart==value,{restart=value},label={ActionLabel(value)},enabled=!busy)}}
             } else Hint("仅替换镜像；保留原端口、环境变量、卷、资源限制及启动参数。环境变量不会回传手机。旧配置/镜像会保留，但不回滚数据。")
-            error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
+            error?.let { CopyableOutput(it,"错误详情",error=true) }
             if(busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-            Button(onClick={val spec=JSONObject(seed).put("kind","deployment").put("name",name).put("image",image);if(create) spec.put("memory",memory).put("cpus",cpus).put("publish",publish).put("bind",if(publicPort) "0.0.0.0" else "127.0.0.1").put("hostPort",hostPort).put("containerPort",containerPort).put("volume",volume).put("volumePath",volumePath).put("environment",environment).put("command",command).put("restart",restart);preview(spec.toString())},enabled=!busy) {Text("预览部署与风险")}
+            Button(onClick={val spec=JSONObject(seed).put("kind","deployment").put("name",name).put("image",image);if(create) spec.put("memory",memory).put("cpus",cpus).put("publish",publish).put("bind",if(publicPort) "0.0.0.0" else "127.0.0.1").put("hostPort",hostPort).put("containerPort",containerPort).put("volume",volume).put("volumePath",volumePath).put("environment",environment).put("command",command).put("restart",restart);preview(spec.toString())},enabled=!busy) {ActionLabel("预览部署与风险")}
         }
     }
 }

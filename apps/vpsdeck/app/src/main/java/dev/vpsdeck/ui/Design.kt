@@ -77,7 +77,7 @@ fun time(value: Long) = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).
 @Composable fun HelpDisclosure(text: String, title: String = "说明与边界") {
     var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     Column {
-        TextButton(onClick={open=!open}) { Text(if(open) "$title · 收起" else "$title · 展开") }
+        TextButton(onClick={open=!open}) { ActionLabel(if(open) "$title · 收起" else "$title · 展开") }
         if(open) Hint(text)
     }
 }
@@ -86,7 +86,7 @@ fun time(value: Long) = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).
     Column {
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
             StatusBadge(if(value) "sudo -n 已启用" else "当前 SSH 身份",positive=false)
-            TextButton(onClick={open=!open},enabled=enabled) {Text("执行权限")}
+            TextButton(onClick={open=!open},enabled=enabled) {ActionLabel("执行权限")}
         }
         if(open) Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
             Switch(value,onChange,enabled=enabled)

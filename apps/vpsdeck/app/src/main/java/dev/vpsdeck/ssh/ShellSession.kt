@@ -61,7 +61,13 @@ class ShellSession(val server: Server, private val pool: SshPool, private val sc
             finally { channel?.disconnect(); writer?.cancel(); writes.close() }
         }
     }
-    fun writeBytes(bytes: ByteArray) { if(state.value == "已连接" && !writes.trySend(bytes).isSuccess) state.value = "输入队列已满，请新建终端" }
+    fun sendInput(bytes: ByteArray): Boolean {
+        if(state.value != "已连接") return false
+        if(writes.trySend(bytes).isSuccess) return true
+        state.value = "输入队列已满或会话已关闭，请新建终端"
+        return false
+    }
+    fun writeBytes(bytes: ByteArray) { sendInput(bytes) }
     fun write(text: String) = writeBytes(text.toByteArray())
     fun resize(columns: Int, rows: Int) { scope.launch(Dispatchers.IO) { runCatching { channel?.setPtySize(columns, rows, 0, 0) } } }
     fun paste(text: String) { require(text.length <= 64_000) { "单次粘贴最多 64000 字符" }; emulator.paste(text) }

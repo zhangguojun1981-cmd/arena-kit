@@ -74,15 +74,15 @@ import java.util.Locale
             }
         }
         if(adding || edit != null) ServerDialog(edit, vm, onClose = { adding = false; edit = null })
-        delete?.let { target -> AlertDialog(onDismissRequest = { delete = null }, title = { Text("移除 ${target.name}？") }, text = { Text("仅删除手机中的连接资料和加密凭据，断开该连接；不会删除 VPS 或远端数据。") }, confirmButton = { TextButton(onClick = { vm.delete(target); delete = null }) { Text("移除本机资料") } }, dismissButton = { TextButton(onClick = { delete = null }) { Text("取消") } }) }
+        delete?.let { target -> AlertDialog(onDismissRequest = { delete = null }, title = { Text("移除 ${target.name}？") }, text = { Text("仅删除手机中的连接资料和加密凭据，断开该连接；不会删除 VPS 或远端数据。") }, confirmButton = { TextButton(onClick = { vm.delete(target); delete = null }) { ActionLabel("移除本机资料") } }, dismissButton = { TextButton(onClick = { delete = null }) { ActionLabel("取消") } }) }
         vm.challenge?.let { c -> AlertDialog(onDismissRequest = { vm.challenge = null }, title = { Text(if(c.changed) "主机指纹发生变化" else "核对 SSH 主机指纹") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(c.server.endpoint); Text("算法：${c.algorithm}")
             SelectionContainer { Text(c.observed, fontFamily = FontFamily.Monospace) }
             if(c.changed) { Text("已保存：${c.server.fingerprint}"); Text("可能是服务器重装，也可能是中间人攻击。连接已拒绝，请从服务商控制台独立核对后，在编辑页面显式重置。", color = MaterialTheme.colorScheme.error) }
             else Text("请通过服务商控制台或可信渠道独立核对上述 SHA256 指纹。接受后固定保存，后续变化将阻止连接。")
-        } }, confirmButton = { if(!c.changed) TextButton(onClick = { vm.trust() }) { Text("已核对，信任并连接") } else TextButton(onClick = { vm.challenge = null }) { Text("拒绝连接") } }, dismissButton = { if(!c.changed) TextButton(onClick = { vm.challenge = null }) { Text("取消") } }) }
+        } }, confirmButton = { if(!c.changed) TextButton(onClick = { vm.trust() }) { ActionLabel("已核对，信任并连接") } else TextButton(onClick = { vm.challenge = null }) { ActionLabel("拒绝连接") } }, dismissButton = { if(!c.changed) TextButton(onClick = { vm.challenge = null }) { ActionLabel("取消") } }) }
         pending?.let { (target, op) -> OperationDialog(target, op, onDismiss = { pending = null }, onExecute = { vm.perform(target, op); pending = null }) }
-        vm.error?.let { text -> AlertDialog(onDismissRequest = { vm.error = null }, title = { Text("操作提示") }, text = { SelectionContainer { Text(text) } }, confirmButton = { TextButton(onClick = { vm.error = null }) { Text("知道了") } }) }
+        vm.error?.let { text -> AlertDialog(onDismissRequest = { vm.error = null }, title = { Text("操作提示") }, text = { CopyableOutput(text,"错误详情",error=true) }, confirmButton = { TextButton(onClick = { vm.error = null }) { ActionLabel("知道了") } }) }
         vm.result?.let { (title, output) -> OutputDialog(title, output) { vm.result = null } }
         vm.editor?.let { editFile -> FileEditor(editFile, vm) }
     }
@@ -100,7 +100,7 @@ import java.util.Locale
             Icon(Icons.Outlined.Dns, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
             Text("你的第一台 VPS", style = MaterialTheme.typography.titleLarge)
             Text("添加主机地址与 SSH 认证方式，即可使用终端、文件和运维工具。不会自动安装任何软件。")
-            Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("添加服务器") }
+            Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); ActionLabel("添加服务器") }
         } } else {
             item { OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("搜索名称、主机或分组") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, singleLine = true, shape = RoundedCornerShape(16.dp)) }
             val filtered = servers.filter { query.isBlank() || "${it.name} ${it.host} ${it.group}".contains(query, true) }
@@ -139,7 +139,7 @@ import java.util.Locale
         if(!connected) item {Panel {
             Text("连接后查看实时资源",style=MaterialTheme.typography.titleMedium)
             Hint("下方已有数据仅为历史采样；连接不会安装软件。")
-            Button(onClick={vm.connect(server)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()) {Icon(Icons.Outlined.Link,null);Spacer(Modifier.width(8.dp));Text("安全连接")}
+            Button(onClick={vm.connect(server)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()) {Icon(Icons.Outlined.Link,null);Spacer(Modifier.width(8.dp));ActionLabel("安全连接")}
         }}
         vm.snapshotError?.let {error -> item {Panel {Text(error,color=MaterialTheme.colorScheme.error)}}}
         item {Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
@@ -172,9 +172,9 @@ import java.util.Locale
         }}
         item {SectionTitle("常用管理","从资源列表进入详情，变更仍需单独确认")}
         item {Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick={manage(0)},modifier=Modifier.weight(1f)) {Text("服务 / 容器")}
-            OutlinedButton(onClick={manage(1)},modifier=Modifier.weight(1f)) {Text("网站")}
-            OutlinedButton(onClick={manage(4)},modifier=Modifier.weight(1f)) {Text("数据库")}
+            OutlinedButton(onClick={manage(0)},modifier=Modifier.weight(1f)) {ActionLabel("服务 / 容器")}
+            OutlinedButton(onClick={manage(1)},modifier=Modifier.weight(1f)) {ActionLabel("网站")}
+            OutlinedButton(onClick={manage(4)},modifier=Modifier.weight(1f)) {ActionLabel("数据库")}
         }}
         item {Panel {
             SectionTitle("系统信息")
@@ -189,12 +189,12 @@ import java.util.Locale
             var expanded by remember(server.id) {mutableStateOf(false)}
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
                 SectionTitle("工具清单","${s?.capabilities?.size ?: 0} 项已发现")
-                TextButton(onClick={expanded=!expanded}) {Text(if(expanded) "收起" else "展开")}
+                TextButton(onClick={expanded=!expanded}) {ActionLabel(if(expanded) "收起" else "展开")}
             }
             if(expanded) {
                 s?.capabilities?.sorted()?.forEach {DetailRow(it,"已发现命令")}
                 Hint("发现命令不等于具备权限或服务健康；安装请进入环境面板。")
-                OutlinedButton(onClick={manage(3)}) {Text("打开环境面板")}
+                OutlinedButton(onClick={manage(3)}) {ActionLabel("打开环境面板")}
             }
         }}
         item {Hint("仅前台每15秒读取 · 当前进程最多40次采样 · 断线不重放操作")}
@@ -208,7 +208,7 @@ import java.util.Locale
     LazyColumn(contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
         item {SectionTitle("任务记录","最近 ${tasks.size} 条 · 结果未知时不自动重试")}
         item {Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            listOf("全部","进行中","需关注").forEachIndexed {i,label -> FilterChip(filter==i,{filter=i},label={Text(label)})}
+            listOf("全部","进行中","需关注").forEachIndexed {i,label -> FilterChip(filter==i,{filter=i},label={ActionLabel(label)})}
         }}
         if(filtered.isEmpty()) item {Panel {Text("暂无符合条件的任务");Hint("完成资源操作后，状态会记录在这里。")}}
         items(filtered,key={it.id}) {t -> Panel {
@@ -219,8 +219,8 @@ import java.util.Locale
             Hint("${t.serverName} · ${time(t.started)}${t.exitCode?.let {" · exit $it"} ?: ""}")
             if(t.detail.isNotBlank()) {
                 var expanded by remember(t.id) {mutableStateOf(false)}
-                TextButton(onClick={expanded=!expanded},contentPadding=PaddingValues(0.dp)) {Text(if(expanded) "收起记录" else "查看记录")}
-                if(expanded) Hint(t.detail)
+                TextButton(onClick={expanded=!expanded},contentPadding=PaddingValues(0.dp)) {ActionLabel(if(expanded) "收起记录" else "查看记录")}
+                if(expanded) CopyableOutput(t.detail,"任务记录")
             }
         }}
         item {Hint("仅保存元信息，不持久化终端内容、命令输出或密码。")}
@@ -228,9 +228,9 @@ import java.util.Locale
 }
 @Composable private fun Settings(vm: DeckViewModel) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Panel { SectionTitle("外观"); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(vm.dark == null, { vm.dark = null }, label = { Text("系统") }); FilterChip(vm.dark == true, { vm.dark = true }, label = { Text("深色") }); FilterChip(vm.dark == false, { vm.dark = false }, label = { Text("浅色") }) } }
+        Panel { SectionTitle("外观"); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(vm.dark == null, { vm.dark = null }, label = { ActionLabel("系统") }); FilterChip(vm.dark == true, { vm.dark = true }, label = { ActionLabel("深色") }); FilterChip(vm.dark == false, { vm.dark = false }, label = { ActionLabel("浅色") }) } }
         Panel { SectionTitle("安全与隐私"); Text("凭据使用 Android Keystore 加密，仅存于本机私有目录。系统备份与截图已禁用。首次 SSH 连接核对指纹，后续变化拒绝连接。"); Hint("不采集遥测，不使用中央服务器。任务记录不保存完整输出。复制输出或粘贴内容由你主动决定。") }
-        Panel { SectionTitle("连接与后台"); Text("活动 SSH 连接通过前台通知保持。安卓系统仍可能终止后台运行；长任务请在 VPS 中使用 tmux。应用不会自动重放断线前的命令。"); OutlinedButton(onClick = { vm.app.closeAll(); vm.app.stopService(Intent(vm.app, dev.vpsdeck.ssh.ConnectionService::class.java)) }) { Text("断开全部 SSH 连接") } }
-        Panel { SectionTitle("VPS Deck ${BuildConfig.VERSION_NAME}"); Text("原生 Android · SSH / SFTP · Linux 运维"); Hint("终端使用 Termux v0.118.0 仿真器与渲染器。SSH 使用 mwiede JSch。源码按 GPL-3.0 提供，完整许可和依赖说明随源码交付。"); TextButton(onClick = { vm.app.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.gnu.org/licenses/gpl-3.0.html")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }) { Text("查看 GPL-3.0 许可") } }
+        Panel { SectionTitle("连接与后台"); Text("活动 SSH 连接通过前台通知保持。安卓系统仍可能终止后台运行；长任务请在 VPS 中使用 tmux。应用不会自动重放断线前的命令。"); OutlinedButton(onClick = { vm.app.closeAll(); vm.app.stopService(Intent(vm.app, dev.vpsdeck.ssh.ConnectionService::class.java)) }) { ActionLabel("断开全部 SSH 连接") } }
+        Panel { SectionTitle("VPS Deck ${BuildConfig.VERSION_NAME}"); Text("原生 Android · SSH / SFTP · Linux 运维"); Hint("终端使用 Termux v0.118.0 仿真器与渲染器。SSH 使用 mwiede JSch。源码按 GPL-3.0 提供，完整许可和依赖说明随源码交付。"); TextButton(onClick = { vm.app.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.gnu.org/licenses/gpl-3.0.html")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }) { ActionLabel("查看 GPL-3.0 许可") } }
     }
 }

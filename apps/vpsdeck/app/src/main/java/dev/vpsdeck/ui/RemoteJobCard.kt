@@ -25,8 +25,10 @@ import org.json.JSONObject
         Text(job.optString("message"),style=MaterialTheme.typography.bodySmall,
             maxLines=if(attention || expanded) Int.MAX_VALUE else 2,overflow=TextOverflow.Ellipsis,
             color=if(attention) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
-        TextButton(onClick={expanded=!expanded},contentPadding=PaddingValues(0.dp)) {Text(if(expanded) "收起任务详情" else "查看任务详情")}
+        TextButton(onClick={expanded=!expanded},contentPadding=PaddingValues(0.dp)) {ActionLabel(if(expanded) "收起任务详情" else "查看任务详情")}
+        CopyButton(listOf(job.optString("project"),"ID：${job.getString("id")}",JobProtocol.action(job.optString("action")),JobProtocol.state(state),job.optString("message"),job.optJSONArray("resources")?.toString(2).orEmpty()).joinToString("\n"),"复制任务结果")
         if(expanded) {
+            Hint("复制服务端返回的任务摘要，不代表未返回的完整进程输出。")
             Hint("ID：${job.getString("id")}")
             JobProtocol.rows(job,"resources").forEach {value ->
                 val item=JSONObject(value)

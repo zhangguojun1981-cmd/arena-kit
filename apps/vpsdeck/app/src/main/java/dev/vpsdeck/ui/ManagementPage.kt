@@ -27,7 +27,7 @@ import dev.vpsdeck.ops.*
         if(tab<0) ManagementHub {vm.managementSection=it}
         else Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                TextButton(onClick={vm.managementSection=-1}) {Icon(Icons.Outlined.ArrowBack,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("管理分类")}
+                TextButton(onClick={vm.managementSection=-1}) {Icon(Icons.Outlined.ArrowBack,null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));ActionLabel("管理分类")}
                 Text("/ ${managementTitles.getOrElse(tab) {"服务与容器"}}",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Box(Modifier.weight(1f)) {when(tab) {
@@ -45,34 +45,34 @@ import dev.vpsdeck.ops.*
     val connected by vm.connected.collectAsState()
     fun run(block: () -> Operation) { runCatching { block().privileged(sudo) }.onSuccess(request).onFailure { vm.error = it.message } }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        TextButton(onClick = { legacy = false }) { Text("← 返回资源管理面板") }
+        TextButton(onClick = { legacy = false }) { ActionLabel("← 返回资源管理面板") }
         SectionTitle("高级诊断 / 主机操作", "普通资源操作请用对应面板；这里保留原始诊断输出，不代表业务健康")
-        if(server.id !in connected) { Button(onClick={vm.connect(server)},enabled=!vm.busy) {Text("连接")}; return@Column }
+        if(server.id !in connected) { Button(onClick={vm.connect(server)},enabled=!vm.busy) {ActionLabel("连接")}; return@Column }
         Row { Switch(sudo,{sudo=it});Text("明确使用已有 sudo -n 授权") }
         Panel {
             SectionTitle("只读诊断")
-            OutlinedButton(onClick={run {Operations.services}}) {Text("systemd原始列表")}
-            OutlinedButton(onClick={run {Operations.dockerStats}}) {Text("容器资源快照")}
-            OutlinedButton(onClick={run {Operations.dockerImages}}) {Text("镜像诊断")}
-            OutlinedButton(onClick={run {Operations.dockerVolumes}}) {Text("卷与网络诊断")}
-            OutlinedButton(onClick={run {Operations.nativeServices}}) {Text("原生运行时服务诊断")}
-            OutlinedButton(onClick={run {Operations.nginxTest}}) {Text("Nginx完整配置检查")}
+            OutlinedButton(onClick={run {Operations.services}}) {ActionLabel("systemd原始列表")}
+            OutlinedButton(onClick={run {Operations.dockerStats}}) {ActionLabel("容器资源快照")}
+            OutlinedButton(onClick={run {Operations.dockerImages}}) {ActionLabel("镜像诊断")}
+            OutlinedButton(onClick={run {Operations.dockerVolumes}}) {ActionLabel("卷与网络诊断")}
+            OutlinedButton(onClick={run {Operations.nativeServices}}) {ActionLabel("原生运行时服务诊断")}
+            OutlinedButton(onClick={run {Operations.nginxTest}}) {ActionLabel("Nginx完整配置检查")}
         }
         Panel {
             SectionTitle("非托管Nginx配置")
             Hint("不自动接管或覆盖。可在文件页编辑并备份，配置检查后再明确重载；输出成功不等于业务HTTP健康。")
-            OutlinedButton(onClick={vm.page=2;vm.browse("/etc/nginx")}) {Text("浏览原始配置")}
-            OutlinedButton(onClick={run {Operations.nginxReload}},enabled=!vm.app.projects.hasActive(server)) {Text("高级：检查并重载Nginx")}
+            OutlinedButton(onClick={vm.page=2;vm.browse("/etc/nginx")}) {ActionLabel("浏览原始配置")}
+            OutlinedButton(onClick={run {Operations.nginxReload}},enabled=!vm.app.projects.hasActive(server)) {ActionLabel("高级：检查并重载Nginx")}
         }
         Panel {
             SectionTitle("主机重启")
             Hint("会中断所有连接；断线不能作为重启成功。必须重新连接并核对运行时间。")
-            OutlinedButton(onClick={run {Operations.reboot}},enabled=!vm.app.projects.hasActive(server)) {Text("重启服务器",color=MaterialTheme.colorScheme.error)}
+            OutlinedButton(onClick={run {Operations.reboot}},enabled=!vm.app.projects.hasActive(server)) {ActionLabel("重启服务器",color=MaterialTheme.colorScheme.error)}
         }
     }
 }
 
-@Composable fun ActionRow(labels: List<String>, action: (String) -> Unit) { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { OutlinedButton(onClick = { action(it) }) { Text(it) } } } }
+@Composable fun ActionRow(labels: List<String>, action: (String) -> Unit) { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { OutlinedButton(onClick = { action(it) }) { ActionLabel(it) } } } }
 
 
 private val managementTitles=listOf("服务与容器","网站","Compose","环境","数据库","创建/重建")
