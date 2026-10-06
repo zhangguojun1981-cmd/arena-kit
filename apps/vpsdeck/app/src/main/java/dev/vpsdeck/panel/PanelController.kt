@@ -18,12 +18,11 @@ data class PanelState(
 class PanelController(private val app: DeckApp) {
     private val _states = MutableStateFlow<Map<String, PanelState>>(emptyMap())
     val states = _states.asStateFlow()
-    private val locks = mutableMapOf<String, Mutex>()
     private fun state(s: Server) = _states.value[s.id] ?: PanelState()
     private fun update(s: Server, f: (PanelState) -> PanelState) { _states.update { it + (s.id to f(it[s.id] ?: PanelState())) } }
     private fun repository(s: Server) = ResourceRepository { app.ssh.exec(s, it, 60) }
     private fun job(s: Server, label: String, block: suspend () -> Unit) {
-        val lock = locks.getOrPut(s.id) { Mutex() }
+        val lock = app.operationLocks.getOrPut(s.id) { Mutex() }
         if(!lock.tryLock()) return
         update(s) { it.copy(busy = label, error = null) }
         app.appScope.launch {

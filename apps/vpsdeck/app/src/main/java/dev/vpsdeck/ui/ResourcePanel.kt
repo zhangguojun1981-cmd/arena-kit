@@ -66,7 +66,7 @@ import java.util.Locale
                 ResourceCard(row, !busy) { controller.open(server, row) }
             }
         }
-        TextButton(onClick = legacy, enabled = !busy) { Text("网站 / Compose / 数据库（旧版工具，待重写）") }
+        TextButton(onClick = legacy, enabled = !busy) { Text("Compose / 数据库 / 高级旧版工具") }
     }
     state.detail?.let { row ->
         FullDialog(row.name, { if(!busy) { follow = false; controller.close(server) } }) { padding ->

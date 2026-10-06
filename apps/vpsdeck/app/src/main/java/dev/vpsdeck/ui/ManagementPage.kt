@@ -14,7 +14,17 @@ import dev.vpsdeck.ops.*
 
 @Composable fun ManagementPage(vm: DeckViewModel, server: Server, request: (Operation) -> Unit) {
     var legacy by remember(server.id) { mutableStateOf(false) }
-    if(!legacy) { ResourcePanel(vm, server, legacy = { legacy = true }); return }
+    var websites by remember(server.id) { mutableStateOf(false) }
+    if(!legacy) {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.padding(horizontal=16.dp), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                FilterChip(!websites,{websites=false},label={Text("服务与容器")})
+                FilterChip(websites,{websites=true},label={Text("网站")})
+            }
+            Box(Modifier.weight(1f)) { if(websites) WebsitesPage(vm,server) else ResourcePanel(vm, server, legacy = { legacy = true }) }
+        }
+        return
+    }
     var section by remember { mutableIntStateOf(0) }; var sudo by remember { mutableStateOf(false) }
     val connected by vm.connected.collectAsState()
     fun run(block: () -> Operation) { runCatching { block().privileged(sudo) }.onSuccess(request).onFailure { vm.error = it.message } }

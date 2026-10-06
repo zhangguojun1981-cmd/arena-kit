@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.*
 import java.security.MessageDigest
 import java.util.UUID
 
-data class RemoteFile(val name: String, val path: String, val directory: Boolean, val link: Boolean, val size: Long, val mode: String)
+data class RemoteFile(val name: String, val path: String, val directory: Boolean, val link: Boolean, val size: Long, val mode: String, val permissions: Int = 0, val modified: Long = 0)
 data class RemoteEdit(val server: Server, val file: RemoteFile, val original: String, val digest: String)
 
 class DeckViewModel(application: Application) : AndroidViewModel(application) {
@@ -130,7 +130,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val listing = app.ssh.sftp(server) { s ->
                     val full = s.realpath(supportedPath(path)); val values = s.ls(supportedPath(full))
-                    full to values.filterIsInstance<ChannelSftp.LsEntry>().filter { it.filename !in listOf(".", "..") }.map { RemoteFile(it.filename, full.trimEnd('/') + "/" + it.filename, it.attrs.isDir, it.attrs.isLink, it.attrs.size, it.attrs.permissionsString) }.sortedWith(compareByDescending<RemoteFile> { it.directory }.thenBy { it.name.lowercase() })
+                    full to values.filterIsInstance<ChannelSftp.LsEntry>().filter { it.filename !in listOf(".", "..") }.map { RemoteFile(it.filename, full.trimEnd('/') + "/" + it.filename, it.attrs.isDir, it.attrs.isLink, it.attrs.size, it.attrs.permissionsString, it.attrs.permissions, (it.attrs.mTime.toLong() and 0xffffffffL) * 1000) }.sortedWith(compareByDescending<RemoteFile> { it.directory }.thenBy { it.name.lowercase() })
                 }
                 if(selected?.id == server.id) { currentPath = listing.first; files = listing.second }
             } catch(e: Exception) { error = "文件读取失败：${e.message}" } finally { busy = false }
@@ -156,15 +156,40 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
             finally { dao.trimTasks() }
         }
     }
+    fun createTextFile(name: String) {
+        val server = selected ?: return
+        val path = Shell.child(currentPath, name)
+        fileTask(server, "新建文件 $name") {
+            supportedPath(path)
+            val temp = Shell.child(path.substringBeforeLast('/'), ".vpsdeck-${UUID.randomUUID()}.new")
+            val r = app.ssh.exec(server, "(umask 077; set -C; : > ${Shell.quote(temp)}) || exit 71; ln -T -- ${Shell.quote(temp)} ${Shell.quote(path)}; code=\$?; rm -- ${Shell.quote(temp)}; exit \$code")
+            check(r.code == 0) { "目标已存在或没有写权限；未覆盖文件" }
+        }
+    }
+    fun changePermissions(file: RemoteFile, octal: String) {
+        val server = selected ?: return
+        require(octal.matches(Regex("[0-7]{3}"))) { "请输入三位普通权限，例如644或755" }
+        require(!file.link && file.permissions and 0xe00 == 0) { "符号链接或特殊权限文件请使用高级工具处理" }
+        val wanted = octal.toInt(8)
+        fileTask(server,"修改权限 ${file.name}") {
+            app.ssh.sftp(server) { s ->
+                val path = supportedPath(file.path); val before = s.lstat(path)
+                check(!before.isLink && before.permissions == file.permissions) { "文件权限或类型已变化，请刷新后重试" }
+                s.chmod(wanted,path)
+                val after = s.lstat(path)
+                check(!after.isLink && after.permissions and 511 == wanted) { "权限核验失败，请刷新检查" }
+            }
+        }
+    }
     fun cancelTransfer() { transferJob?.cancel() }
     private fun transferTask(server: Server, label: String, work: suspend (SftpProgressMonitor) -> Unit) {
         if(transferJob?.isActive == true) { error = "已有传输任务，请等待或取消"; return }
         transferJob = app.appScope.launch {
             val task = TaskRecord(serverId = server.id, serverName = server.name, label = label); dao.task(task); transfer = label
-            val activeContext = currentCoroutineContext(); var done = 0L; var last = 0L
+            val activeContext = currentCoroutineContext(); var done = 0L; var last = 0L; var total = 0L
             val monitor = object : SftpProgressMonitor {
-                override fun init(op: Int, src: String?, dest: String?, max: Long) = Unit
-                override fun count(count: Long): Boolean { done += count; if(System.currentTimeMillis() - last > 400) { last = System.currentTimeMillis(); app.appScope.launch { transfer = "$label · ${done / 1024} KB" } }; return activeContext.isActive }
+                override fun init(op: Int, src: String?, dest: String?, max: Long) { total = max.coerceAtLeast(0) }
+                override fun count(count: Long): Boolean { done += count; if(System.currentTimeMillis() - last > 400) { last = System.currentTimeMillis(); app.appScope.launch { transfer = "$label · ${server.name} · ${done / 1024} KB${if(total > 0) " / ${total / 1024} KB · ${(done.toDouble() / total * 100).toInt().coerceIn(0,100)}%" else "（总大小未知）"}" } }; return activeContext.isActive }
                 override fun end() = Unit
             }
             try { work(monitor); ensureActive(); dao.task(task.copy(state = "成功", exitCode = 0)); if(selected?.id == server.id) browse() }

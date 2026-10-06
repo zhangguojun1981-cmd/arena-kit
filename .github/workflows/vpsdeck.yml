@@ -30,6 +30,12 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-34' 'build-tools;34.0.0'
           printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+      - name: Website adapter tests and disposable Nginx acceptance
+        run: |
+          python3 -m unittest discover -s tests -v
+          sudo apt-get update -qq
+          sudo apt-get install -y nginx
+          sudo env VPSDECK_NGINX_ACCEPTANCE=1 python3 tests/accept_nginx.py
       - name: Tests, APK and lint
         run: |
           set +e
@@ -40,8 +46,8 @@ jobs:
       - name: Prepare delivery
         run: |
           mkdir -p releases
-          cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.2.0-stageA-debug.apk
-          cp app/build/outputs/apk/release/app-release-unsigned.apk releases/VPSDeck-0.2.0-stageA-unsigned.apk
+          cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.2.0-stageB-debug.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk releases/VPSDeck-0.2.0-stageB-unsigned.apk
           git -C ../.. archive --format=zip HEAD:apps/vpsdeck > releases/VPSDeck-source.zip
           python3 - <<'PYZIP'
           import zipfile
