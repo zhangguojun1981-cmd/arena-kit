@@ -66,9 +66,9 @@ class SshPool(private val vault: CredentialReader) {
     /** Privileged/action requests never reconnect implicitly. */
     fun requireSession(id: String): Session = sessions[id]?.takeIf { it.isConnected } ?: throw IllegalStateException("连接已断开，请手动重连；操作未自动重放")
     suspend fun exec(server: Server, command: String, timeoutSeconds: Int = 45, input: ByteArray? = null): ExecResult = withContext(Dispatchers.IO) {
+        require((input?.size ?: 0) <= 1024 * 1024) { "结构化请求不能超过1MiB，文件请用SFTP" }
         val channel = requireSession(server.id).openChannel("exec") as ChannelExec
         channel.setCommand("export LC_ALL=C; PATH=\"\$PATH:/usr/sbin:/sbin\"; export PATH; $command")
-        require((input?.size ?: 0) <= 1024 * 1024) { "结构化请求不能超过1MiB，文件请用SFTP" }
         // Future database/container credentials travel on SSH stdin, never in process argv.
         // The caller retains ownership of the original array; only this working copy is cleared.
         val requestBytes = input?.copyOf()
