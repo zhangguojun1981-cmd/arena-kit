@@ -56,11 +56,11 @@ class DesignDeviceTest {
             ui.setContent {DeckRoot(vm)}
             ui.onNodeWithText("数据库").performClick()
             ui.onNodeWithText("数据库与账号").assertIsDisplayed()
-            androidx.test.espresso.Espresso.pressBack()
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             ui.onNodeWithText("管理中心").assertIsDisplayed()
-            androidx.test.espresso.Espresso.pressBack()
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             ui.onNodeWithText("运行概览").assertIsDisplayed()
-            androidx.test.espresso.Espresso.pressBack()
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             ui.onNodeWithText("服务器资产").assertIsDisplayed()
         } finally {ui.runOnIdle {store.clear()}}
     }
