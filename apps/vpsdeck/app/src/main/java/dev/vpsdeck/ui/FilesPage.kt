@@ -104,7 +104,7 @@ import dev.vpsdeck.data.Server
         }
         if(selecting && selectedFiles.isNotEmpty()) {
             ResourceActions(listOf(
-                ResourceMenuAction("下载 (${selectedFiles.size})",!vm.fileBatchBusy && vm.transfer==null && selectedFiles.all {!it.directory && !it.link}) {batchDownload=selectedFiles.toList();pickFolder.launch(null)},
+                ResourceMenuAction("下载 (${selectedFiles.size})",!vm.fileBatchBusy && vm.transfer==null && selectedFiles.all {!it.directory && !it.link && it.mode.startsWith("-")}) {batchDownload=selectedFiles.toList();pickFolder.launch(null)},
                 ResourceMenuAction("删除所选",!vm.fileBatchBusy && vm.transfer==null) {batchDelete=selectedFiles.toList()}
             ))
             CopyButton(selectedFiles.joinToString("\n") {it.path},"复制所选路径")

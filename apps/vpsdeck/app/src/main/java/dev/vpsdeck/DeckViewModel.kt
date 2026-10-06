@@ -206,7 +206,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
     fun runFileBatch(server: Server, entries: List<RemoteFile>, destination: Uri? = null) {
         if(fileBatchBusy || transfer!=null) {error="请先等待当前文件任务完成";return}
         if(entries.isEmpty() || entries.size>1000) {error="请选择1–1000个条目";return}
-        if(destination!=null && entries.any {it.directory || it.link}) {error="批量下载仅支持普通文件，不跟随符号链接或递归目录";return}
+        if(destination!=null && entries.any {it.directory || it.link || !it.mode.startsWith("-")}) {error="批量下载仅支持普通文件，不跟随符号链接或递归目录";return}
         val snapshot=entries.distinctBy {it.path}.toList()
         val action=if(destination==null) "批量删除" else "批量下载"
         fileBatchBusy=true;fileBatchReport="${server.name} · ${server.endpoint}\n$action · ${snapshot.size} 项\n"
@@ -229,6 +229,7 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
                             try {s.lstat(path);error("删除后路径仍存在，请核查")}
                             catch(e:SftpException) {if(e.id!=ChannelSftp.SSH_FX_NO_SUCH_FILE) throw e}
                         } else {
+                            check(now.isReg) {"批量下载只接受普通文件"}
                             check(folder.findFile(file.name)==null) {"本地同名文件已存在，不覆盖"}
                             val doc=requireNotNull(folder.createFile("application/octet-stream",file.name)) {"无法创建本地文件"}
                             val active=batchContext

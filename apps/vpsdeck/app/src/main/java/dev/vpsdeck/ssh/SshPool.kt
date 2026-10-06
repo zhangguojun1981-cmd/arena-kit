@@ -26,6 +26,7 @@ class SshPool(private val vault: CredentialReader) {
     suspend fun connect(server: Server): Session = withContext(Dispatchers.IO) {
         locks.computeIfAbsent(server.id) { Mutex() }.withLock {
             sessions[server.id]?.takeIf { it.isConnected }?.let { return@withLock it }
+            currentCoroutineContext().ensureActive()
             val generation=generations.computeIfAbsent(server.id) {java.util.concurrent.atomic.AtomicLong()}
             val epoch=generation.get()
             val credentials = vault.get(server.id)
@@ -58,7 +59,7 @@ class SshPool(private val vault: CredentialReader) {
             if(server.auth != "key") session.setPassword(credentials.password)
             session.serverAliveInterval = 20_000; session.serverAliveCountMax = 3
             session.timeout = 30_000
-            try { session.connect(15_000)
+            try { currentCoroutineContext().ensureActive();session.connect(15_000)
                 val context=currentCoroutineContext()
                 synchronized(this@SshPool) {
                     context.ensureActive()

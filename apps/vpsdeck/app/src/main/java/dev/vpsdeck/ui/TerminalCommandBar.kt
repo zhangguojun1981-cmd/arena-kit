@@ -19,9 +19,10 @@ fun terminalCommandBytes(command: String): ByteArray {
     }
     return (text.replace('\n','\r')+if(text.endsWith('\n')) "" else "\r").toByteArray(Charsets.UTF_8)
 }
-@Composable fun TerminalCommandBar(connected: Boolean, onSend: (ByteArray) -> Boolean) {
-    var command by remember {mutableStateOf("")}
-    var failed by remember {mutableStateOf(false)}
+class TerminalDraftState { val command=mutableStateOf("");val failed=mutableStateOf(false) }
+@Composable fun TerminalCommandBar(connected: Boolean, maxLines: Int = 6, draft: TerminalDraftState = remember {TerminalDraftState()}, onSend: (ByteArray) -> Boolean) {
+    var command by draft.command
+    var failed by draft.failed
     var pending by remember {mutableStateOf<String?>(null)}
     val bytes=remember(command) {runCatching {terminalCommandBytes(command)}.getOrNull()}
     fun send(text: String) {
@@ -32,7 +33,7 @@ fun terminalCommandBytes(command: String): ByteArray {
     Column(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=4.dp)) {
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=androidx.compose.ui.Alignment.Bottom) {
             OutlinedTextField(command,{command=it;failed=false},Modifier.weight(1f),enabled=connected,
-                singleLine=false,minLines=1,maxLines=6,label={Text("输入命令")},placeholder={Text("支持多行，回车换行")},
+                singleLine=false,minLines=1,maxLines=maxLines,label={Text("输入命令")},placeholder={Text("支持多行，回车换行")},
                 keyboardOptions=KeyboardOptions(autoCorrect=false,imeAction=ImeAction.Default))
             QuietAction(onClick={if(normalizedCommand(command).contains('\n')) pending=command else send(command)},enabled=connected && bytes!=null) {ActionLabel("执行")}
         }

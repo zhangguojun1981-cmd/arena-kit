@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package dev.vpsdeck.ui
 
 import androidx.activity.compose.BackHandler
@@ -44,17 +44,18 @@ import java.util.Locale
         val connected by vm.connected.collectAsStateWithLifecycle()
         val connecting by vm.app.connecting.collectAsStateWithLifecycle()
         val server = vm.selected
+        val immersiveTerminal=server!=null && vm.page==1 && WindowInsets.isImeVisible
         BackHandler(enabled=server!=null) {if(vm.page!=0) vm.page=0 else vm.home()}
         Scaffold(containerColor = MaterialTheme.colorScheme.background,
-            topBar = { TopAppBar(title = {
+            topBar = { if(!immersiveTerminal) TopAppBar(title = {
                 Column { Text(server?.name ?: "VPS Deck", style=MaterialTheme.typography.titleLarge); Text(server?.endpoint ?: "掌上运维工作台", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }, navigationIcon = { if(server != null) IconButton(onClick = { vm.home() }) { Icon(Icons.Outlined.ArrowBack, "返回服务器") } },
                 actions = {
                     if(server != null) { IconButton(onClick = { edit = server }) { Icon(Icons.Outlined.Edit, "编辑服务器") }; IconButton(onClick = { if(server.id in connected) vm.disconnect(server) else vm.connect(server) }, enabled = !vm.busy) { Icon(if(server.id in connected) Icons.Outlined.LinkOff else Icons.Outlined.Link, "连接或断开") } }
-                    else if(rootTab == 0) IconButton(onClick = { adding = true }, connecting) { Icon(Icons.Outlined.Add, "添加服务器") }
+                    else if(rootTab == 0) IconButton(onClick = { adding = true }) { Icon(Icons.Outlined.Add, "添加服务器") }
                 }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)) },
             bottomBar = {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+                if(!immersiveTerminal) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                     if(server == null) listOf("服务器" to Icons.Outlined.Dns, "任务" to Icons.Outlined.TaskAlt, "设置" to Icons.Outlined.Settings).forEachIndexed { index, item -> NavigationBarItem(selected = rootTab == index, onClick = { rootTab = index }, icon = { Icon(item.second, null) }, label = { Text(item.first) }) }
                     else listOf(Triple(0,"概览",Icons.Outlined.Dashboard),Triple(3,"管理",Icons.Outlined.Widgets),Triple(2,"文件",Icons.Outlined.Folder),Triple(1,"终端",Icons.Outlined.Terminal)).forEach { (index,label,icon) -> NavigationBarItem(selected=vm.page==index,onClick={if(index==3 && vm.page==3) vm.managementSection=-1;vm.page=index},icon={Icon(icon,null)},label={Text(label)}) }
                 }
@@ -62,7 +63,7 @@ import java.util.Locale
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 if(server == null) when(rootTab) {
-                    0 -> ServerList(servers, connected, { vm.choose(it) }, { edit = it }, { delete = it }, { adding = true })
+                    0 -> ServerList(servers, connected, { vm.choose(it) }, { edit = it }, { delete = it }, { adding = true }, connecting)
                     1 -> TaskList(tasks)
                     else -> Settings(vm)
                 } else when(vm.page) {

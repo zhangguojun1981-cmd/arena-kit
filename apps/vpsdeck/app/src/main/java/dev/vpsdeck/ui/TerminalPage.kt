@@ -35,9 +35,12 @@ import dev.vpsdeck.ssh.ShellSession
     val context = LocalContext.current
     val focusManager=LocalFocusManager.current
     val keyboardVisible=WindowInsets.isImeVisible
+    val draft=remember(shell?.id) {TerminalDraftState()}
+    var directInput by remember(shell?.id) {mutableStateOf(false)}
+    val compact=androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp<480
     val clipboard = remember { context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager }
     Column(Modifier.fillMaxSize().imePadding()) {
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if(!keyboardVisible) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             shells.forEachIndexed { i, s -> FilterChip(shell?.id == s.id, { selected = s.id }, label = { ActionLabel("终端 ${i + 1}") }) }
             TextButton(enabled=online && !vm.busy,onClick = { vm.newShell()?.let { selected = it.id } }) { Icon(Icons.Outlined.Add, null); ActionLabel("新建") }
         }
@@ -47,7 +50,7 @@ import dev.vpsdeck.ssh.ShellSession
             val state by shell.state.collectAsState()
             val ready=state=="已连接"
             val diagnostic by shell.diagnostic.collectAsState()
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            if(!keyboardVisible) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(state, Modifier.weight(1f), maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
                 if(!ready) CopyButton("$state\n$diagnostic","复制状态")
                 TextButton(onClick = { close = shell }) { ActionLabel("关闭此会话") }
@@ -55,17 +58,18 @@ import dev.vpsdeck.ssh.ShellSession
             if(!keyboardVisible) Hint("命令栏回车换行，点执行发送；密码、vim、top 请使用直接键盘输入。")
             key(shell.id) {
                 AndroidView(factory = { ctx -> TerminalCanvas(ctx).apply {
+                    onFocusChangeListener=android.view.View.OnFocusChangeListener {_,focused -> directInput=focused}
                     attach(shell.emulator, object : TerminalCanvas.Client {
                         override fun write(bytes: ByteArray) = shell.writeBytes(bytes)
                         override fun resized(columns: Int, rows: Int) = shell.resize(columns, rows)
                     }); shell.onChanged = { changed() }; canvas = this
                 } }, onReset=null, onRelease={view -> shell.onChanged=null;view.detach();if(canvas===view) canvas=null}, update = { it.setCtrl(ctrl); it.setFontSp(font) }, modifier = Modifier.weight(1f).fillMaxWidth())
             }
-            key(shell.id) {TerminalCommandBar(ready) { bytes ->
+            if(!keyboardVisible || !directInput) key(shell.id) {TerminalCommandBar(ready,if(compact) 3 else 6,draft) { bytes ->
                 val accepted=shell.sendInput(bytes);if(accepted) canvas?.bottom();accepted
             }}
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                TextButton(onClick={focusManager.clearFocus(force=true);canvas?.showKeyboard()},enabled=ready) {ActionLabel("键盘")}
+                TextButton(onClick={if(directInput && keyboardVisible) {canvas?.clearFocus();directInput=false} else {focusManager.clearFocus(force=true);canvas?.showKeyboard();directInput=true}},enabled=ready) {ActionLabel(if(directInput && keyboardVisible) "命令栏" else "键盘")}
                 TextButton(onClick={shell.write("\r");canvas?.bottom()},enabled=ready) {ActionLabel("回车")}
 
                 if(keyboardVisible) CopyButton("","复制屏幕",readText={canvas?.visibleText().orEmpty()})
