@@ -20,15 +20,23 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class DesignDeviceTest {
     @get:Rule val ui=createComposeRule()
+    private fun shellOutput(command: String): String {
+        val descriptor=androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use {it.readText()}
+    }
     @android.annotation.SuppressLint("NewApi") // Screenshot suite runs on the API 34 CI emulator.
     private fun screenshot(name: String) {
-        val bitmap=ui.onRoot().captureToImage().asAndroidBitmap()
-        val command="mkdir -p /data/local/tmp/vpsdeck-ui-preview && cat > /data/local/tmp/vpsdeck-ui-preview/$name.png && echo EXPORTED"
-        // Stream bytes through the authorized test shell, not through scoped app storage.
-        val pipes=androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommandRw(command)
-        android.os.ParcelFileDescriptor.AutoCloseOutputStream(pipes[1]).use {assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it))}
-        val output=android.os.ParcelFileDescriptor.AutoCloseInputStream(pipes[0]).bufferedReader().use {it.readText()}
-        assertTrue("Screenshot export failed: $output",output.contains("EXPORTED"))
+        val bytes=java.io.ByteArrayOutputStream().use {stream ->
+            assertTrue(ui.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,stream))
+            stream.toByteArray()
+        }
+        val path="/data/local/tmp/vpsdeck-ui-preview/$name.png"
+        shellOutput("mkdir -p /data/local/tmp/vpsdeck-ui-preview")
+        // UiAutomation starts an executable directly: do not use shell operators or redirection.
+        val pipes=androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommandRw("dd of=$path")
+        android.os.ParcelFileDescriptor.AutoCloseOutputStream(pipes[1]).use {it.write(bytes)}
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(pipes[0]).use {it.copyTo(java.io.ByteArrayOutputStream())}
+        assertEquals("Screenshot size",bytes.size.toString(),shellOutput("stat -c %s $path").trim())
     }
     @Test fun managementCardsOnlySelectACategory() {
         var selected=-1
@@ -44,7 +52,7 @@ class DesignDeviceTest {
         val vm=DeckViewModel(app)
         val store=androidx.lifecycle.ViewModelStore();store.put("navigation",vm)
         try {
-            ui.runOnIdle {vm.choose(dev.vpsdeck.data.Server(name="UI navigation fixture",host="example.invalid"));vm.page=3}
+            ui.runOnUiThread {vm.choose(dev.vpsdeck.data.Server(name="UI navigation fixture",host="example.invalid"));vm.page=3}
             ui.setContent {DeckRoot(vm)}
             ui.onNodeWithText("数据库").performClick()
             ui.onNodeWithText("数据库与账号").assertIsDisplayed()
