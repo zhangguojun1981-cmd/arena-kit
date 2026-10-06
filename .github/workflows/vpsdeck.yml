@@ -33,7 +33,7 @@ jobs:
       - name: Tests, APK and lint
         run: |
           set +e
-          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug 2>&1 | tee build.log
+          VPSDECK_LINUX_ACCEPTANCE=1 ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug 2>&1 | tee build.log
           result=${PIPESTATUS[0]}
           python3 scripts/report_ci.py build.log
           exit "$result"
