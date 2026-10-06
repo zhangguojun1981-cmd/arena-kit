@@ -93,12 +93,16 @@ class InteractionDeviceTest {
                 ResourceActions(listOf(ResourceMenuAction("编辑网站"){performed=true},ResourceMenuAction("停用网站"){performed=true}))
             }
         }}
+        val ctx=ApplicationProvider.getApplicationContext<Context>()
+        val density=ctx.resources.displayMetrics.density
         val root=ui.onRoot().fetchSemanticsNode().boundsInRoot
         val primary=ui.onNodeWithText("编辑网站").fetchSemanticsNode().boundsInRoot
         val more=ui.onNodeWithContentDescription("更多操作").fetchSemanticsNode().boundsInRoot
-        assertTrue("overflow button must sit at the row end", more.right >= root.right - 12)
+        // Gap between the inner text and the icon is only the buttons' own 8dp content paddings (16dp total).
+        val gap=more.left-primary.right
+        assertTrue("overflow button must sit at the row end", more.right >= root.right - 12*density)
         assertTrue("action group must not be anchored left", primary.left > root.width/2)
-        assertTrue("primary sits next to the overflow button", primary.right <= more.left && more.left - primary.right < 8)
+        assertTrue("primary sits next to the overflow button (gap=${gap}px)", gap in 0..(24*density).toInt())
         assertTrue("buttons stay compact", primary.height * 2f < root.height)
         ui.onNodeWithContentDescription("更多操作").performClick()
         ui.onNodeWithText("停用网站").assertIsDisplayed()
