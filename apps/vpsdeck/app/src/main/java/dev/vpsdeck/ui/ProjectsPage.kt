@@ -37,7 +37,7 @@ import org.json.JSONArray
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
             item { Panel {
                 PrivilegeControl(sudo,enabled=!state.busy && plan==null && selected==null) {sudo=it}
-                FlowActionGroup {
+                ActionGroup {
                     ActionGroup {
                         OutlinedButton(onClick={registration=true},enabled=!state.busy) {ActionLabel("登记已有目录")}
                         OutlinedButton(onClick={controller.load(server,sudo)},enabled=!state.busy) { ActionLabel("刷新项目") }

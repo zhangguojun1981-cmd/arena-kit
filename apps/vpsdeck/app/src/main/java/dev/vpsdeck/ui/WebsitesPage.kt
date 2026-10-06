@@ -141,7 +141,7 @@ import org.json.JSONObject
         Column(Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             Text("先填写表单，再预览差异。不会直接覆盖已有非托管站点。")
             OutlinedTextField(domain,{domain=it},Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={Text("域名（ASCII，不含协议）")})
-            FlowActionGroup { listOf("static" to "静态网站","proxy" to "反向代理","php" to "PHP网站").forEach { (value,label) -> FilterChip(kind==value,{kind=value},enabled=!busy,label={ActionLabel(label)}) } }
+            ActionGroup { listOf("static" to "静态网站","proxy" to "反向代理","php" to "PHP网站").forEach { (value,label) -> FilterChip(kind==value,{kind=value},enabled=!busy,label={ActionLabel(label)}) } }
             OutlinedTextField(port,{port=it.filter(Char::isDigit)},Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={Text("监听端口")})
             OutlinedTextField(root,{root=it},Modifier.fillMaxWidth(),enabled=!busy,singleLine=true,label={Text("站点目录（/var/www/ 下）")})
             Row {Checkbox(create,{create=it},enabled=!busy);Text("允许创建不存在的站点目录和欢迎页（不覆盖现有文件）")}

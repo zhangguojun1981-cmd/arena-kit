@@ -63,7 +63,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                         TextButton(onClick={identityExpanded=!identityExpanded},enabled=!state.busy) {ActionLabel(if(identityExpanded) "收起" else "编辑身份")}
                     }
                     if(identityExpanded || state.database==null) Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
-                    FlowActionGroup {
+                    ActionGroup {
                         listOf("postgresql" to "PostgreSQL", "mysql" to "MySQL / MariaDB").forEach { (value,label) ->
                             FilterChip(engine==value,{engine=value;user=if(value=="postgresql") "postgres" else "root";password="";asPostgres=false},enabled=!state.busy,label={ActionLabel(label)})
                         }
@@ -85,7 +85,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             }
             state.database?.let { raw ->
                 val inventory = JSONObject(raw)
-                item { FlowActionGroup { listOf("数据库","账号","备份").forEachIndexed { i,label -> FilterChip(tab==i,{tab=i},label={ActionLabel(label)}) } } }
+                item { ActionGroup { listOf("数据库","账号","备份").forEachIndexed { i,label -> FilterChip(tab==i,{tab=i},label={ActionLabel(label)}) } } }
                 item {OutlinedTextField(resourceQuery,{resourceQuery=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("搜索当前资源")})}
                 val resourceKey=if(tab==0) "databases" else if(tab==1) "roles" else "backups"
                 val visible=JobProtocol.rows(inventory,resourceKey).filter { val r=JSONObject(it);(r.optString("name")+r.optString("database")+r.optString("id")).contains(resourceQuery,true) }
@@ -117,7 +117,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                         Panel {
                             Text("${role.getString("name")} ${role.optString("host")}",style=MaterialTheme.typography.titleMedium)
                             if(!role.optBoolean("managed")) Hint("系统/管理员/非app_或非localhost账号：只读，避免误改既有身份")
-                            else FlowActionGroup {
+                            else ActionGroup {
                                 listOf("grant","revoke","password","drop-user").forEach { action -> OutlinedButton(onClick={edit(action,role=role.getString("name"))},enabled=!state.busy) {ActionLabel(databaseActions.getValue(action))} }
                             }
                         }
