@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -115,7 +116,10 @@ class DockerRepositoryTest(unittest.TestCase):
         self.setup_repo()
         plan=environment.docker_repository(self.engine,apt_root=self.apt)
         self.assertFalse(self.apt.exists())
-        environment.docker_repository(self.engine,True,self.apt,lambda:self.data)
+        old=os.umask(0o077)
+        try: environment.docker_repository(self.engine,True,self.apt,lambda:self.data)
+        finally: os.umask(old)
+        self.assertEqual(0o755,(self.apt/"keyrings").stat().st_mode & 0o777)
         source=self.apt/'sources.list.d/vpsdeck-docker.sources'
         self.assertIn('bookworm',source.read_text())
         self.assertEqual(0o644,source.stat().st_mode & 0o777)

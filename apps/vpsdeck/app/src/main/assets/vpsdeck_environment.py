@@ -167,7 +167,14 @@ def docker_repository(environment, execute=False, apt_root='/etc/apt', fetch=Non
         if len(primary)!=1 or not fingerprints or fingerprints[0]!=DOCKER_KEY or primary[0][1] in ('r','e','d'):
             raise ValueError('Docker签名公钥指纹不匹配/失效；未写入APT源')
     for path,value in ((key,data),(source,content)):
-        path.parent.mkdir(parents=True,exist_ok=True,mode=0o755)
+        if path.parent.is_symlink(): raise ValueError('APT目录为符号链接，拒绝写入')
+        try:
+            path.parent.mkdir(parents=True,mode=0o755)
+            path.parent.chmod(0o755)  # Only newly created directories, despite worker umask 077.
+        except FileExistsError:
+            pass
+        if path.parent.stat().st_mode & 0o005 != 0o005:
+            raise ValueError('已有APT目录不允许仓库沙箱读取；不自动修改已有权限')
         if path.exists():
             if path.read_bytes()!=value: raise ValueError('已有文件不匹配；拒绝覆盖')
             if path.stat().st_mode & 0o444 != 0o444: raise ValueError('已有APT文件不可公开读取；不自动修改权限')
