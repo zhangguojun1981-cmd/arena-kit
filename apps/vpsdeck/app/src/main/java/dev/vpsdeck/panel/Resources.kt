@@ -46,11 +46,11 @@ object ResourceProtocol {
         ResourceKind.SERVICE -> "systemctl show --no-pager -p Id -p LoadState -p ActiveState -p SubState -p Description -p UnitFileState -p MainPID -p FragmentPath -p InvocationID -- ${Shell.quote(Shell.unit(id))}"
         ResourceKind.CONTAINER -> "docker inspect --format '{{json .State}}' -- ${Shell.quote(containerId(id))}"
     }
-    fun protected(id: String): Boolean = id.removeSuffix(".service").lowercase().let {
+    fun isProtected(id: String): Boolean = id.removeSuffix(".service").lowercase().let {
         it in setOf("ssh", "sshd", "dropbear", "networking", "networkmanager", "dbus", "polkit", "systemd-logind") || it.startsWith("systemd-") || it.startsWith("ssh@") || it.startsWith("sshd@")
     }
     fun actions(kind: ResourceKind, row: Resource): List<ResourceAction> {
-        if(kind == ResourceKind.SERVICE && (protected(row.id) || '@' in row.id && row.id.endsWith("@.service"))) return emptyList()
+        if(kind == ResourceKind.SERVICE && (isProtected(row.id) || '@' in row.id && row.id.endsWith("@.service"))) return emptyList()
         val run = row.state in setOf("active", "running")
         val result = mutableListOf<ResourceAction>()
         if(row.state in setOf("active", "inactive", "failed", "running", "exited", "created", "dead")) {
