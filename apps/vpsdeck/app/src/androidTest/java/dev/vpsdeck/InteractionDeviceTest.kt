@@ -59,7 +59,8 @@ class InteractionDeviceTest {
         ui.onNodeWithText("执行").performClick()
         ui.runOnIdle {assertEquals(listOf("echo 中文\r"),sent)}
         ui.onNodeWithText("输入命令").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText,androidx.compose.ui.text.AnnotatedString("")))
-        ui.onNodeWithText("输入命令").performTextInput("pwd").performImeAction()
+        ui.onNodeWithText("输入命令").performTextInput("pwd")
+        ui.onNodeWithText("输入命令").performImeAction()
         ui.runOnIdle {assertEquals("pwd\r",sent.last())}
     }
     @Test fun terminalCopyReadsLatestOutputAtClickTime() {
