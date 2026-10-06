@@ -158,6 +158,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             Text("数据库身份：${spec.getJSONObject("auth").getString("user")} · ${spec.getJSONObject("auth").getString("engine")}")
             Text("目标数据库：${spec.optString("database")} · 目标账号：${spec.optString("role")}\n连接位置：${spec.getJSONObject("auth").optString("container").ifEmpty { "原生socket" }}")
             if(p.action=="create-database") Text("数据库所有者：${spec.optString("owner")}")
+            CopyButton(previewReport(JSONObject(p.result)),"复制预览结果")
             Text(JSONObject(p.result).getString("warning"))
             if(p.action=="restore") Text("恢复会修改现有数据！先保留独立可核查的安全备份，不能保证自动回滚；整个任务最长2小时。")
             Text("请求与数据库凭据通过SSH stdin传送，远端敏感输入与任务记录分离，仅执行身份可读，执行器读取后删除；启动前中断可能保留私有输入，需管理员核查。")

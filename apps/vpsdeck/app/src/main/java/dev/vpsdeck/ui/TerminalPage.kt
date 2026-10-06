@@ -46,8 +46,10 @@ import dev.vpsdeck.ssh.ShellSession
         } else {
             val state by shell.state.collectAsState()
             val ready=state=="已连接"
+            val diagnostic by shell.diagnostic.collectAsState()
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(state, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
+                Text(state, Modifier.weight(1f), maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
+                if(!ready) CopyButton("$state\n$diagnostic","复制状态")
                 TextButton(onClick = { close = shell }) { ActionLabel("关闭此会话") }
             }
             if(!keyboardVisible) Hint("命令栏输入后点执行；密码、vim、top 等交互请点键盘或终端区域。")

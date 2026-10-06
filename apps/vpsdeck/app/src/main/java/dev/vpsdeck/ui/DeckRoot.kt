@@ -141,7 +141,7 @@ import java.util.Locale
             Hint("下方已有数据仅为历史采样；连接不会安装软件。")
             Button(onClick={vm.connect(server)},enabled=!vm.busy,modifier=Modifier.fillMaxWidth()) {Icon(Icons.Outlined.Link,null);Spacer(Modifier.width(8.dp));ActionLabel("安全连接")}
         }}
-        vm.snapshotError?.let {error -> item {Panel {Text(error,color=MaterialTheme.colorScheme.error)}}}
+        vm.snapshotError?.let {error -> item {Panel {CopyableOutput(error,"采样错误",error=true)}}}
         item {Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             MetricTrendCard("CPU",s?.cpuPercent,history.map {it.sampled to it.cpuPercent},Modifier.weight(1f))
             MetricTrendCard("内存",s?.memoryUsedPercent,history.map {it.sampled to it.memoryUsedPercent},Modifier.weight(1f))

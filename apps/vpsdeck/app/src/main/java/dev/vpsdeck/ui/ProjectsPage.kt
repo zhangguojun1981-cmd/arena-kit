@@ -107,6 +107,7 @@ import org.json.JSONArray
         AlertDialog(onDismissRequest={plan=null},title={Text("确认远端任务 · ${JobProtocol.action(value.action)}")},text={
             Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Text("${server.name} · ${server.endpoint}")
+                CopyButton(previewReport(info),"复制预览结果")
                 JobProtocol.rows(info,"services").forEach { raw ->
                     val service = JSONObject(raw)
                     Text("${service.getString("name")} · ${service.optString("image")}")

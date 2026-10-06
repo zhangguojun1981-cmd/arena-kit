@@ -87,3 +87,15 @@ fun clipboardChunks(text: String): List<String> {
         }
     }
 }
+
+/** Only presentation fields: never copy original requests, authentication or environment values. */
+fun previewReport(info: org.json.JSONObject): String = buildString {
+    listOf("warning","previousImageID","newImageID","binding","volumePath").forEach {key ->
+        if(info.has(key) && !info.isNull(key)) appendLine("$key: ${info.optString(key)}")
+    }
+    val services=info.optJSONArray("services")
+    if(services!=null) for(i in 0 until services.length()) {
+        val service=services.optJSONObject(i) ?: continue
+        appendLine(listOf("name","image","privileged","mounts","ports").filter {service.has(it)}.joinToString(" · ") {"$it: ${service.optString(it)}"})
+    }
+}

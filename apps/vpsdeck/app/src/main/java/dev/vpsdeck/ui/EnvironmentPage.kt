@@ -67,6 +67,7 @@ import org.json.JSONObject
         val result = JSONObject(p.result)
         AlertDialog(onDismissRequest={plan=null},title={Text("确认环境变更")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("${server.name} · ${server.endpoint}")
+            CopyButton(previewReport(result),"复制预览结果")
             Text(result.getString("warning"))
             val changes = JobProtocol.rows(result,"services")
             if(changes.isEmpty()) Text("模拟未列出软件包变更；仍会执行所确认的校验/索引动作。")

@@ -52,7 +52,7 @@ import java.util.Date
                 Panel {
                     ResourceHeading(row.getString("name"),row.optString("phase"),row.optString("image"))
                     row.optJSONObject("runtime")?.let {runtime -> Text("实际状态：${runtime.optString("state")} · ${runtime.optString("health")}");Hint("容器ID：${runtime.optString("id")}")}
-                    if(row.has("notice")) Text(row.getString("notice"),color=MaterialTheme.colorScheme.error)
+                    if(row.has("notice")) CopyableOutput(row.getString("notice"),"部署提示",error=true)
                     OutlinedButton(onClick={editor=JSONObject(raw).put("operation","rebuild-container").put("expected",row.getString("revision")).toString()},enabled=!state.busy && row.has("revision")) {ActionLabel("预览重建")}
                     var snapshotsOpen by remember(row.getString("name")) {mutableStateOf(false)}
                     TextButton(onClick={snapshotsOpen=!snapshotsOpen}) {ActionLabel("配置快照 (${JobProtocol.rows(row,"backups").size}) · ${if(snapshotsOpen) "收起" else "展开"}")}
@@ -78,6 +78,7 @@ import java.util.Date
             JobProtocol.rows(JSONObject(p.result),"services").forEach {raw -> val row=JSONObject(raw);Text("镜像：${row.optString("image")} · 挂载：${row.optInt("mounts")} · 发布端口：${row.optInt("ports")}")}
             if(spec.optBoolean("publish")) Text("发布 ${spec.optString("bind")}:${spec.optString("hostPort")} → 容器 ${spec.optString("containerPort")}")
             if(p.action!="pull-image") {Text("镜像ID：${JSONObject(p.result).optString("previousImageID")} → ${JSONObject(p.result).optString("newImageID")}");Text("${JSONObject(p.result).optString("binding")} · 卷路径：${JSONObject(p.result).optString("volumePath")}")}
+            CopyButton(previewReport(JSONObject(p.result)),"复制预览结果")
             Text(JSONObject(p.result).getString("warning"))
             Text("凭据不会进入SSH命令行；环境变量保存在服务器私有配置，Docker管理员仍能查看它们。重建前请单独备份业务数据。")
             OutlinedTextField(confirmation,{confirmation=it},label={Text("输入目标名称确认")},singleLine=true)

@@ -11,6 +11,7 @@ import java.util.UUID
 class ShellSession(val server: Server, private val pool: SshPool, private val scope: CoroutineScope) {
     val id = UUID.randomUUID().toString()
     val state = MutableStateFlow("连接中")
+    val diagnostic = MutableStateFlow("")
     private val writes = Channel<ByteArray>(64)
     private var channel: ChannelShell? = null
     private var job: Job? = null
@@ -57,7 +58,10 @@ class ShellSession(val server: Server, private val pool: SshPool, private val sc
                     withContext(Dispatchers.Main.immediate) { emulator.append(bytes, bytes.size); onChanged?.invoke() }
                 }
                 state.value = "已结束 · exit ${shell.exitStatus}"
-            } catch(e: Exception) { state.value = if(e is CancellationException) "已关闭" else "连接中断；未重放命令" }
+            } catch(e: Exception) {
+                diagnostic.value=if(e is CancellationException) "会话已关闭" else "${e.javaClass.simpleName}: ${e.message.orEmpty().take(4000)}"
+                state.value = if(e is CancellationException) "已关闭" else "连接中断；未重放命令"
+            }
             finally { channel?.disconnect(); writer?.cancel(); writes.close() }
         }
     }
