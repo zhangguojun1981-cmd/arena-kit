@@ -14,14 +14,15 @@ import dev.vpsdeck.ops.*
 
 @Composable fun ManagementPage(vm: DeckViewModel, server: Server, request: (Operation) -> Unit) {
     var legacy by remember(server.id) { mutableStateOf(false) }
-    var websites by remember(server.id) { mutableStateOf(false) }
+    var tab by remember(server.id) { mutableIntStateOf(0) }
     if(!legacy) {
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.padding(horizontal=16.dp), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                FilterChip(!websites,{websites=false},label={Text("服务与容器")})
-                FilterChip(websites,{websites=true},label={Text("网站")})
+            FlowRow(Modifier.padding(horizontal=16.dp), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                FilterChip(tab==0,{tab=0},label={Text("服务与容器")})
+                FilterChip(tab==1,{tab=1},label={Text("网站")})
+                FilterChip(tab==2,{tab=2},label={Text("Compose")})
             }
-            Box(Modifier.weight(1f)) { if(websites) WebsitesPage(vm,server) else ResourcePanel(vm, server, legacy = { legacy = true }) }
+            Box(Modifier.weight(1f)) { when(tab) { 1 -> WebsitesPage(vm,server); 2 -> ProjectsPage(vm,server); else -> ResourcePanel(vm, server, legacy = { legacy = true }) } }
         }
         return
     }

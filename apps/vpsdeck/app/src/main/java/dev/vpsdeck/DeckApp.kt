@@ -11,6 +11,7 @@ class DeckApp : Application() {
     lateinit var vault: SecretStore; private set
     lateinit var ssh: SshPool; private set
     internal val operationLocks = mutableMapOf<String, kotlinx.coroutines.sync.Mutex>()
+    val projects by lazy { dev.vpsdeck.panel.ProjectController(this) }
     val websites by lazy { dev.vpsdeck.panel.WebsiteController(this) }
     val panel by lazy { dev.vpsdeck.panel.PanelController(this) }
     val terminals = linkedMapOf<String, ShellSession>()
