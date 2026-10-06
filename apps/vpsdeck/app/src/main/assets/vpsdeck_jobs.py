@@ -99,6 +99,8 @@ class Engine:
         return command
 
     def plan(self, spec):
+        if spec.get('kind') == 'database':
+            return Databases().plan(spec)
         if spec.get('kind') == 'environment':
             return Environment(self.run).plan(spec)
         require(spec.get('kind', 'compose') == 'compose', '不支持的资源类型')
@@ -134,7 +136,7 @@ class Engine:
                     except Exception:
                         active = 'unknown'
                     if active not in ('active', 'activating'):
-                        row = dict(row, state='unknown', message='执行器不再活动或无法查询；结果未知。禁止自动重试，请核对资源。')
+                        row = dict(row, state='unknown', message='执行器不再活动或无法查询；结果未知。禁止自动重试，请核对资源。' + row.get('checkpoint',''))
                 rows.append(row)
             except (OSError, ValueError, KeyError):
                 rows.append(dict(id=directory.name, state='unknown', message='任务记录不可读，请人工核查'))
@@ -149,7 +151,9 @@ class Engine:
         ident = job_id(request['id'])
         action = request['action']
         is_environment = request['project'].get('kind') == 'environment'
-        require(action == 'install' if is_environment else action in ACTIONS, '不支持的动作')
+        is_database = request['project'].get('kind') == 'database'
+        allowed = (action == 'install') if is_environment else ((action in DB_ACTIONS and action == request['project'].get('operation')) if is_database else action in ACTIONS)
+        require(allowed, '不支持的动作')
         plan = self.plan(request['project'])
         require(plan['revision'] == request['revision'], '配置/环境已变化，请重新预览')
         if not is_environment and action in ('pull', 'up'):
@@ -195,7 +199,13 @@ class Engine:
                     require(plan['revision'] == request['revision'], '启动前配置已变化；未执行动作')
                     state.update(message='正在执行；手机断线不影响该进程')
                     atomic(directory / 'state.json', state)
-                    if request['project'].get('kind') == 'environment':
+                    if request['project'].get('kind') == 'database':
+                        def progress(message):
+                            state.update(message=message, checkpoint=message)
+                            atomic(directory / 'state.json', state)
+                        rows, message = Databases().execute(request['project'], progress)
+                        state.update(state='succeeded', resources=rows, message=message)
+                    elif request['project'].get('kind') == 'environment':
                         rows, message = Environment(self.run).execute(request['project'])
                         state.update(state='succeeded', resources=rows, message=message)
                     else:
@@ -214,7 +224,7 @@ class Engine:
                         state.update(state='succeeded', resources=rows,
                                      message='已核验容器状态；不等于业务健康检查通过' if action != 'pull' else '镜像拉取命令成功；未应用或重启容器')
             except Exception as e:
-                state.update(state='needs_review', message=str(e)[:1200] + '。可能已有部分效果，不自动回滚或重试。')
+                state.update(state='needs_review', message=str(e)[:1200] + '。可能已有部分效果，不自动回滚或重试。' + state.get('checkpoint',''))
             finally:
                 state['finished'] = int(time.time())
                 atomic(directory / 'state.json', state)
@@ -224,6 +234,15 @@ class Engine:
 def api(request, source):
     engine = Engine()
     op = request['op']
+    if op == 'database':
+        return dict(database=Databases().inventory(request['auth']), jobs=engine.states())
+    if op == 'database-containers':
+        try:
+            text = engine.run(['docker','ps','--no-trunc','--format','{{json .}}'])
+            containers = [dict(id=r['ID'], name=r['Names'], image=r['Image']) for r in (json.loads(line) for line in text.splitlines() if line.strip())]
+            return dict(containers=containers)
+        except Exception:
+            return dict(containers=[], notice='Docker不可用或无权限；可使用原生数据库身份连接')
     if op == 'environments':
         return dict(environments=Environment(engine.run).list(), jobs=engine.states())
     if op == 'list':

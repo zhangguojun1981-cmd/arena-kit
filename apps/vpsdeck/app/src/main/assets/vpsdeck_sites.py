@@ -55,6 +55,32 @@ def public_directory(path):
             os.close(fd)
 
 
+def renewal_hook(directory=pathlib.Path('/etc/letsencrypt/renewal-hooks/deploy')):
+    # Certbot invokes deploy hooks only following successful issuance/renewal.
+    # Scope the hook to app-named lineages; never reload for unrelated certificates.
+    body = ("#!/usr/bin/python3\nimport os, re, subprocess\n"
+            "name = os.path.basename(os.environ.get('RENEWED_LINEAGE', ''))\n"
+            "if re.fullmatch(r'vpsdeck-[0-9a-f]{32}', name):\n"
+            "    subprocess.run(['/usr/sbin/nginx', '-t'], check=True)\n"
+            "    subprocess.run(['/usr/bin/systemctl', 'reload', 'nginx'], check=True)\n")
+    no_links(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = directory / 'vpsdeck-nginx'
+    no_links(target)
+    if target.exists():
+        st = target.stat()
+        if not target.is_file() or target.read_text() != body or st.st_uid != os.geteuid() or st.st_mode & 0o077 or not st.st_mode & 0o100:
+            raise ValueError('已有续期hook不是预期内容/权限，拒绝覆盖；请人工核查')
+    else:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+        with os.fdopen(fd, 'w') as f:
+            os.fchmod(f.fileno(), 0o700)
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+    return target
+
+
 def validate(value):
     s = dict(value)
     if not re.fullmatch(r'[a-f0-9]{32}', s.get('id', '')):
@@ -383,12 +409,15 @@ class Engine:
         loaded = self.check(['systemctl', 'show', 'certbot.timer', '-p', 'LoadState', '--value']).strip()
         if loaded != 'loaded':
             raise ValueError('没有可用的系统certbot.timer；不自动创建或修改其他定时任务')
+        if not pathlib.Path('/usr/sbin/nginx').is_file() or not pathlib.Path('/usr/bin/systemctl').is_file():
+            raise ValueError('续期hook当前需要Debian原生nginx/systemctl路径；拒绝猜测其他布局')
+        renewal_hook()
         self.check(['systemctl', 'enable', '--now', 'certbot.timer'])
         active = self.check(['systemctl', 'is-active', 'certbot.timer']).strip()
         enabled = self.check(['systemctl', 'is-enabled', 'certbot.timer']).strip()
         if active != 'active' or enabled != 'enabled':
             raise ValueError('续期timer状态未通过核验')
-        return dict(message='系统已有certbot.timer已启用并验证；公网DNS及80端口须持续可用')
+        return dict(message='系统已有certbot.timer已启用并验证，App证书续期后将先检查配置再重载Nginx；不等于实际续期已验收，公网DNS及80端口须持续可用')
 
     def health(self, id):
         s = self.read(id)

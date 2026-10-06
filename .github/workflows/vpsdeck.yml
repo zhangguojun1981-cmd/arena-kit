@@ -40,6 +40,8 @@ jobs:
         run: sudo env VPSDECK_JOBS_ACCEPTANCE=1 python3 tests/accept_jobs.py
       - name: Disposable Debian 12 environment installation
         run: env VPSDECK_ENVIRONMENT_ACCEPTANCE=1 python3 tests/accept_environment.py
+      - name: Disposable PostgreSQL and MariaDB backup and recovery
+        run: env VPSDECK_DATABASE_ACCEPTANCE=1 python3 tests/accept_databases.py
       - name: Tests, APK and lint
         run: |
           set +e

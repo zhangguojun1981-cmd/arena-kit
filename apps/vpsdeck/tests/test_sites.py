@@ -44,6 +44,32 @@ class SitesTest(unittest.TestCase):
         finally:
             os.umask(old)
 
+    def test_renewal_hook_is_private_and_does_not_overwrite_foreign_file(self):
+        directory = self.root/'hooks'
+        path = sites.renewal_hook(directory)
+        self.assertEqual(0o700, path.stat().st_mode & 0o777)
+        self.assertEqual(path, sites.renewal_hook(directory))
+        path.write_text('foreign hook')
+        with self.assertRaises(ValueError):
+            sites.renewal_hook(directory)
+        self.assertEqual('foreign hook', path.read_text())
+
+    def test_renewal_hook_scopes_lineages_and_tests_before_reload(self):
+        from unittest.mock import patch
+        import subprocess
+        path = sites.renewal_hook(self.root/'hooks')
+        with patch.dict(sites.os.environ, {'RENEWED_LINEAGE':'/etc/letsencrypt/live/foreign'}), patch('subprocess.run') as run:
+            exec(compile(path.read_text(), str(path), 'exec'), {})
+            run.assert_not_called()
+        with patch.dict(sites.os.environ, {'RENEWED_LINEAGE':'/etc/letsencrypt/live/vpsdeck-'+'a'*32}), patch('subprocess.run') as run:
+            exec(compile(path.read_text(), str(path), 'exec'), {})
+            self.assertEqual(['/usr/sbin/nginx', '-t'],run.call_args_list[0].args[0])
+            self.assertEqual(['/usr/bin/systemctl','reload','nginx'],run.call_args_list[1].args[0])
+        with patch.dict(sites.os.environ, {'RENEWED_LINEAGE':'/etc/letsencrypt/live/vpsdeck-'+'a'*32}), patch('subprocess.run', side_effect=subprocess.CalledProcessError(1, 'nginx')) as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                exec(compile(path.read_text(), str(path), 'exec'), {})
+            self.assertEqual(1, run.call_count)
+
     def tearDown(self):
         self.tmp.cleanup()
     def run_command(self, args):

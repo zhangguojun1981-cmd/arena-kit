@@ -10,11 +10,12 @@ import kotlinx.coroutines.sync.Mutex
 import org.json.JSONObject
 import java.util.UUID
 
-data class ProjectState(val projects: List<String> = emptyList(), val environments: List<String> = emptyList(), val jobs: List<String> = emptyList(), val busy: Boolean = false, val error: String? = null)
-data class ProjectPlan(val project: String, val result: String, val action: String)
+data class ProjectState(val projects: List<String> = emptyList(), val environments: List<String> = emptyList(), val database: String? = null, val databaseContainers: List<String> = emptyList(), val jobs: List<String> = emptyList(), val busy: Boolean = false, val error: String? = null)
+data class ProjectPlan(val project: String, val result: String, val action: String, val binding: String)
 
 object JobProtocol {
     // Only this fixed bootstrap is visible in argv; configuration and future secrets use SSH stdin.
+    fun binding(s: Server): String = "${s.host}:${s.port}:${s.username}:${s.fingerprint}"
     fun command(sudo: Boolean): String = (if(sudo) "sudo -n -- " else "") + "python3 -c " + Shell.quote(
         "import json,sys; envelope=json.load(sys.stdin); SOURCE=envelope.pop('adapter'); exec(compile(SOURCE,'vpsdeck-adapter','exec'))")
     fun rows(j: JSONObject, key: String): List<String> = j.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.getJSONObject(it).toString() } } ?: emptyList()
@@ -27,7 +28,7 @@ object JobProtocol {
 class ProjectController(private val app: DeckApp) {
     private val mutable = MutableStateFlow<Map<String, ProjectState>>(emptyMap())
     val states = mutable.asStateFlow()
-    private val script by lazy { listOf("vpsdeck_environment.py", "vpsdeck_jobs.py").joinToString("\n") { file -> app.assets.open(file).bufferedReader().use { it.readText() } } }
+    private val script by lazy { listOf("vpsdeck_environment.py", "vpsdeck_databases.py", "vpsdeck_jobs.py").joinToString("\n") { file -> app.assets.open(file).bufferedReader().use { it.readText() } } }
     private fun update(s: Server, f: (ProjectState) -> ProjectState) { mutable.update { it + (s.id to f(it[s.id] ?: ProjectState())) } }
     private suspend fun call(s: Server, request: JSONObject, sudo: Boolean): JSONObject {
         val bytes = request.put("adapter",script).toString().toByteArray(Charsets.UTF_8)
@@ -68,11 +69,24 @@ class ProjectController(private val app: DeckApp) {
         record(s,rows)
         update(s) { it.copy(environments=JobProtocol.rows(result,"environments"),jobs=rows) }
     }
+    fun loadDatabaseContainers(s: Server, sudo: Boolean) = job(s) {
+        val result = call(s,JSONObject().put("op","database-containers"),sudo)
+        update(s) { it.copy(databaseContainers=JobProtocol.rows(result,"containers"),error=result.optString("notice").ifEmpty { null }) }
+    }
+    fun clearDatabase(s: Server) { update(s) { it.copy(database=null) } }
+    fun loadDatabase(s: Server, auth: String, sudo: Boolean) = job(s) {
+        update(s) { it.copy(database=null) }
+        val result = call(s,JSONObject().put("op","database").put("auth",JSONObject(auth)),sudo)
+        val rows = JobProtocol.rows(result,"jobs")
+        record(s,rows)
+        update(s) { it.copy(database=result.getJSONObject("database").toString(),jobs=rows) }
+    }
     fun preview(s: Server, project: String, action: String, sudo: Boolean, ready: (ProjectPlan) -> Unit) = job(s) {
         val result = call(s,JSONObject().put("op","plan").put("project",JSONObject(project)),sudo)
-        ready(ProjectPlan(project,result.toString(),action))
+        ready(ProjectPlan(project,result.toString(),action,JobProtocol.binding(s)))
     }
     fun submit(s: Server, plan: ProjectPlan, sudo: Boolean) = job(s) {
+        check(plan.binding == JobProtocol.binding(s)) { "服务器身份已变化，请重新预览，不提交旧计划" }
         val id = UUID.randomUUID().toString().replace("-", "")
         val task = TaskRecord(id="remote:${s.id}:$id",serverId=s.id,serverName=s.name,label="远端任务 ${JSONObject(plan.project).getString("name")} · ${plan.action}",state="提交待确认",detail="远端任务ID：$id；断线后只查询，不自动重放。")
         app.database.dao().task(task)

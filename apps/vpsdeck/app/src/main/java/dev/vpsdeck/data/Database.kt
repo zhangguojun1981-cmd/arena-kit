@@ -28,7 +28,7 @@ interface DeckDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun task(task: TaskRecord)
     @Query("UPDATE tasks SET state = '中断', detail = '应用进程已结束；执行结果未知，请核对远端状态。' WHERE state = '运行中'") suspend fun recoverTasks()
     @Query("DELETE FROM tasks WHERE id NOT IN (SELECT id FROM tasks ORDER BY started DESC LIMIT 200)") suspend fun trimTasks()
-    @Query("DELETE FROM tasks WHERE state != '运行中'") suspend fun clearTasks()
+    @Query("DELETE FROM tasks WHERE state NOT IN ('运行中', '远端排队', '远端执行中', '提交待确认')") suspend fun clearTasks()
 }
 
 @Database(entities = [Server::class, TaskRecord::class], version = 1, exportSchema = false)
