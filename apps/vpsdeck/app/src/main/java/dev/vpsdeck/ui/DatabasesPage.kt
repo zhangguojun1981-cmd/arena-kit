@@ -52,7 +52,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
         ManagementHeading("数据库与账号", "独立数据库身份 · 资源列表 · 逻辑备份 · 安全备份后恢复")
         if(!online) { Button(onClick={vm.connect(server)}) { ActionLabel("连接服务器") }; return@Column }
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
-            item { Panel {
+            if(state.busy || state.error!=null) item { Panel {
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { CopyableOutput(it,"错误详情",error=true) }
             } }
@@ -92,53 +92,53 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                 item {Hint("${visible.size} 条资源")}
                 if(visible.isEmpty()) item {Panel {Hint("当前没有匹配资源")}}
                 if(tab==0) {
-                    item { OutlinedButton(onClick={edit("create-database")},enabled=!state.busy) {ActionLabel("创建数据库") } }
+                    item { QuietAction(onClick={edit("create-database")},enabled=!state.busy) {ActionLabel("创建数据库") } }
                     items(visible,key={JSONObject(it).getString("name")}) { value ->
                         val database = JSONObject(value)
-                        Panel {
+                        ResourceDetail(database.getString("name"),"所有者 · ${database.optString("owner").ifBlank {"按账号授权"}}",bytes(database.optLong("bytes"))) {
                             Text(database.getString("name"),style=MaterialTheme.typography.titleMedium)
                             DetailRow("所有者",database.optString("owner").ifEmpty {"按账号授权"})
                             DetailRow("占用空间",bytes(database.optLong("bytes")))
                             Text("字符集：${database.optString("charset").ifEmpty { "未返回" }} · ${database.optString("collation")}")
                             if(database.optBoolean("protected")) Hint("系统库：只读显示")
                             else {
-                                ActionGroup {
-                                    OutlinedButton(onClick={edit("backup",database.getString("name"))},enabled=!state.busy) {ActionLabel("备份该数据库")}
-                                    OutlinedButton(onClick={edit("drop-database",database.getString("name"))},enabled=!state.busy) {ActionLabel("备份后删除数据库",color=MaterialTheme.colorScheme.error)}
-                                }
+                                ResourceActions(listOf(
+                                    ResourceMenuAction("备份数据库",!state.busy) {edit("backup",database.getString("name"))},
+                                    ResourceMenuAction("备份后删除数据库",!state.busy) {edit("drop-database",database.getString("name"))}
+                                ))
                                 Hint("恢复入口在备份列表。PostgreSQL备份不含角色/ACL；MySQL单事务备份对非事务表不保证一致性，操作前安排维护窗口。")
                             }
                         }
                     }
                 } else if(tab==1) {
-                    item { OutlinedButton(onClick={edit("create-user",role="app_")},enabled=!state.busy) {ActionLabel("创建应用账号") } }
+                    item { QuietAction(onClick={edit("create-user",role="app_")},enabled=!state.busy) {ActionLabel("创建应用账号") } }
                     items(visible,key={JSONObject(it).let { r -> r.getString("name")+"@"+r.optString("host") }}) { value ->
                         val role = JSONObject(value)
-                        Panel {
+                        ResourceDetail(role.getString("name"),role.optString("host"),if(role.optBoolean("managed")) "应用账号" else "只读") {
                             Text("${role.getString("name")} ${role.optString("host")}",style=MaterialTheme.typography.titleMedium)
                             if(!role.optBoolean("managed")) Hint("系统/管理员/非app_或非localhost账号：只读，避免误改既有身份")
-                            else ActionGroup {
-                                listOf("grant","revoke","password","drop-user").forEach { action -> OutlinedButton(onClick={edit(action,role=role.getString("name"))},enabled=!state.busy) {ActionLabel(databaseActions.getValue(action))} }
-                            }
+                            else ResourceActions(listOf("grant","revoke","password","drop-user").map {action ->
+                                ResourceMenuAction(databaseActions.getValue(action),!state.busy) {edit(action,role=role.getString("name"))}
+                            })
                         }
                     }
                 } else {
                     items(visible,key={JSONObject(it).getString("id")}) { value ->
                         val backup = JSONObject(value)
-                        Panel {
+                        ResourceDetail(backup.getString("database"),DateFormat.getDateTimeInstance().format(Date(backup.getLong("created")*1000)),bytes(backup.getLong("bytes"))) {
                             Text(backup.getString("database"),style=MaterialTheme.typography.titleMedium)
                             Text("${DateFormat.getDateTimeInstance().format(Date(backup.getLong("created")*1000))} · ${backup.getLong("bytes")} 字节")
                             if(!backup.isNull("recoveryOf")) Text("高风险操作前安全备份（请保留）")
                             Text("备份源：${backup.optString("container").ifEmpty { "原生服务" }}")
                             CopyableOutput("ID：${backup.getString("id")}\nSHA256：${backup.getString("sha256")}","备份校验信息")
                             Hint("查看或下载远端私有备份需要对应SSH权限。")
-                            OutlinedButton(onClick={edit("restore",backup.getString("database"),backup=backup.getString("id"))},enabled=!state.busy) {ActionLabel("预览恢复到原数据库")}
+                            QuietAction(onClick={edit("restore",backup.getString("database"),backup=backup.getString("id"))},enabled=!state.busy) {ActionLabel("预览恢复到原数据库")}
                             TextButton(onClick={vm.page=2;vm.browse("/var/lib/vpsdeck-private/backups/${backup.getString("id")}")}) {ActionLabel("查看备份文件")}
                         }
                     }
                 }
             }
-            item { SectionTitle("该主机远端任务"); OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {ActionLabel("查询最新进度")} }
+            item { SectionTitle("该主机远端任务"); QuietAction(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {ActionLabel("查询最新进度")} }
             items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }

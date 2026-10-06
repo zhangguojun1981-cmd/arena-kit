@@ -90,10 +90,8 @@ import java.util.Locale
                 PrivilegeControl(sudo,enabled=!busy) {sudo=it}
                 val actions = ResourceProtocol.actions(state.kind, row)
                 if(actions.isEmpty()) Hint("当前状态不支持动作，或属于受保护的连接/核心服务。模板服务需先创建具体实例。")
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    actions.forEach { action -> OutlinedButton(onClick = { follow = false; pending = row to action }, enabled = !busy && online) { ActionLabel(action.title) } }
-                }
-                OutlinedButton(onClick = { controller.open(server, row) }, enabled = !busy && online) { ActionLabel("重新读取详情") }
+                ResourceActions(listOf(ResourceMenuAction("读取日志",!busy && online) {showLogs=true;controller.logs(server)}) + actions.map { action -> ResourceMenuAction(action.title,!busy && online) {follow=false;pending=row to action} })
+                QuietAction(onClick = { controller.open(server, row) }, enabled = !busy && online) { ActionLabel("重新读取详情") }
                 HorizontalDivider()
                 SectionTitle("日志", "最近200行，仅保留在当前进程；日志可能含敏感信息")
                 ActionGroup {
@@ -127,14 +125,5 @@ import java.util.Locale
 
 /** Stateless resource row: clicking selects an object, never executes an operation. */
 @Composable fun ResourceCard(row: Resource, enabled: Boolean, onOpen: () -> Unit) {
-    Panel(Modifier.clickable(enabled=enabled,onClick=onOpen)) {
-        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            Text(row.name,Modifier.weight(1f),style=MaterialTheme.typography.titleSmall,maxLines=2,overflow=TextOverflow.Ellipsis)
-            StatusBadge(row.state,positive=row.state in setOf("active","running"),danger=row.state in setOf("failed","dead","unhealthy"))
-            Icon(Icons.Outlined.ChevronRight,null,Modifier.size(18.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if(row.summary.isNotBlank()) Text(row.summary,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,overflow=TextOverflow.Ellipsis)
-        if(row.enabled.isNotBlank()) Hint("开机自启 · ${row.enabled}")
-        row.facts["镜像"]?.let {Text(it,style=MaterialTheme.typography.labelSmall,maxLines=1,overflow=TextOverflow.Ellipsis)}
-    }
+    ResourceIndexRow(row.name,row.summary.ifBlank {row.enabled},row.state,enabled) {onOpen()}
 }

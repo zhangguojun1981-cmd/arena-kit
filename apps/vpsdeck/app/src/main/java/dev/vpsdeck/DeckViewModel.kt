@@ -74,19 +74,29 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
     fun connect(server: Server? = selected) {
         if(server == null) return
         if(busy) return
+        if(server.id in app.connecting.value) return
         busy = true
-        viewModelScope.launch {
+        app.connecting.value = app.connecting.value + server.id
+        // Start while the user's connect gesture is still foreground, before slow SSH authentication.
+        try { ContextCompat.startForegroundService(app, Intent(app, ConnectionService::class.java)) }
+        catch(e: Exception) {app.connecting.value=app.connecting.value-server.id;busy=false;error="无法启动后台连接服务：${e.message}";return}
+        app.connectionAttempts[server.id]=app.appScope.launch {
             try {
                 app.ssh.connect(server)
-                try { ContextCompat.startForegroundService(app, Intent(app, ConnectionService::class.java)) }
-                catch(e: Exception) { app.closeServer(server.id); throw IllegalStateException("无法启动连接通知服务，请返回应用再连接", e) }
                 if(selected?.id == server.id) selected = server
                 refresh(server)
             } catch(c: HostChallenge) { challenge = c }
+            catch(e: CancellationException) {throw e}
             catch(e: Exception) { error = "连接失败：${e.message ?: e.javaClass.simpleName}" }
-            finally { busy = false }
+            finally {
+                if(app.connectionAttempts[server.id]===currentCoroutineContext()[Job]) {
+                    app.connectionAttempts.remove(server.id);app.connecting.value=app.connecting.value-server.id
+                }
+                busy = false
+            }
         }
     }
+
     fun trust() {
         val c = challenge ?: return
         if(c.changed) { error = "已固定指纹发生变化，不能在连接窗口直接接受；请先独立核对服务器。"; return }
@@ -186,6 +196,67 @@ class DeckViewModel(application: Application) : AndroidViewModel(application) {
                 s.chmod(wanted,path)
                 val after = s.lstat(path)
                 check(!after.isLink && after.permissions and 511 == wanted) { "权限核验失败，请刷新检查" }
+            }
+        }
+    }
+    var fileBatchBusy by mutableStateOf(false); private set
+    var fileBatchReport by mutableStateOf(""); private set
+    private var fileBatchJob: Job? = null
+    fun cancelFileBatch() { fileBatchJob?.cancel() }
+    fun runFileBatch(server: Server, entries: List<RemoteFile>, destination: Uri? = null) {
+        if(fileBatchBusy || transfer!=null) {error="请先等待当前文件任务完成";return}
+        if(entries.isEmpty() || entries.size>1000) {error="请选择1–1000个条目";return}
+        if(destination!=null && entries.any {it.directory || it.link}) {error="批量下载仅支持普通文件，不跟随符号链接或递归目录";return}
+        val snapshot=entries.distinctBy {it.path}.toList()
+        val action=if(destination==null) "批量删除" else "批量下载"
+        fileBatchBusy=true;fileBatchReport="${server.name} · ${server.endpoint}\n$action · ${snapshot.size} 项\n"
+        fileBatchJob=app.appScope.launch {
+            val record=TaskRecord(serverId=server.id,serverName=server.name,label=action)
+            var completed=0
+            try {
+                dao.task(record)
+                val folder=destination?.let {androidx.documentfile.provider.DocumentFile.fromTreeUri(app,it)}
+                if(destination!=null) require(folder!=null && folder.canWrite()) {"目标目录不可写"}
+                for(file in snapshot) {
+                    ensureActive()
+                    fileBatchReport+="处理中：${file.path}\n"
+                    val batchContext=currentCoroutineContext()
+                    app.ssh.sftp(server) {s ->
+                        val path=supportedPath(file.path);val now=s.lstat(path)
+                        check(dev.vpsdeck.ui.matchesFileSnapshot(file,now.isDir,now.isLink,now.size,(now.mTime.toLong() and 0xffffffffL)*1000,now.permissions)) {"文件属性已变化，请刷新后重新选择"}
+                        if(folder==null) {
+                            if(file.directory && !file.link) s.rmdir(path) else s.rm(path)
+                            try {s.lstat(path);error("删除后路径仍存在，请核查")}
+                            catch(e:SftpException) {if(e.id!=ChannelSftp.SSH_FX_NO_SUCH_FILE) throw e}
+                        } else {
+                            check(folder.findFile(file.name)==null) {"本地同名文件已存在，不覆盖"}
+                            val doc=requireNotNull(folder.createFile("application/octet-stream",file.name)) {"无法创建本地文件"}
+                            val active=batchContext
+                            try {
+                                app.contentResolver.openOutputStream(doc.uri,"wt").use {out ->
+                                    requireNotNull(out)
+                                    s.get(path,out,object:SftpProgressMonitor {
+                                        override fun init(op:Int,src:String?,dest:String?,max:Long)=Unit
+                                        override fun count(count:Long)=active.isActive
+                                        override fun end()=Unit
+                                    })
+                                }
+                                check(active.isActive) {"下载已取消"}
+                                check(doc.length()==file.size) {"下载大小核验失败"}
+                            } catch(e:Exception) {runCatching {doc.delete()};throw e}
+                        }
+                    }
+                    completed++;fileBatchReport+="已核验：${file.path}\n"
+                }
+                fileBatchReport+="完成 $completed / ${snapshot.size}\n"
+                dao.task(record.copy(state="成功",exitCode=0,detail="已完成 $completed 项；详细路径仅保留于当前进程"))
+            } catch(e:Exception) {
+                fileBatchReport+="已停止：${e.message ?: "取消"}\n已核验 $completed 项；当前项可能未完成或结果未知，其余未执行。已完成部分不回滚、不重试；下载失败时请检查本地是否残留不完整文件。"
+                withContext(NonCancellable) {dao.task(record.copy(state="中断",detail="已核验 $completed 项，其余需核查；未自动重放"))}
+            } finally {
+                fileBatchBusy=false
+                withContext(NonCancellable) {dao.trimTasks()}
+                if(selected?.id==server.id) browse()
             }
         }
     }

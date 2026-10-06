@@ -42,6 +42,7 @@ import java.util.Locale
         val servers by vm.servers.collectAsStateWithLifecycle()
         val tasks by vm.tasks.collectAsStateWithLifecycle()
         val connected by vm.connected.collectAsStateWithLifecycle()
+        val connecting by vm.app.connecting.collectAsStateWithLifecycle()
         val server = vm.selected
         BackHandler(enabled=server!=null) {if(vm.page!=0) vm.page=0 else vm.home()}
         Scaffold(containerColor = MaterialTheme.colorScheme.background,
@@ -50,7 +51,7 @@ import java.util.Locale
             }, navigationIcon = { if(server != null) IconButton(onClick = { vm.home() }) { Icon(Icons.Outlined.ArrowBack, "返回服务器") } },
                 actions = {
                     if(server != null) { IconButton(onClick = { edit = server }) { Icon(Icons.Outlined.Edit, "编辑服务器") }; IconButton(onClick = { if(server.id in connected) vm.disconnect(server) else vm.connect(server) }, enabled = !vm.busy) { Icon(if(server.id in connected) Icons.Outlined.LinkOff else Icons.Outlined.Link, "连接或断开") } }
-                    else if(rootTab == 0) IconButton(onClick = { adding = true }) { Icon(Icons.Outlined.Add, "添加服务器") }
+                    else if(rootTab == 0) IconButton(onClick = { adding = true }, connecting) { Icon(Icons.Outlined.Add, "添加服务器") }
                 }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)) },
             bottomBar = {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
@@ -88,7 +89,7 @@ import java.util.Locale
     }
 }
 
-@Composable private fun ServerList(servers: List<Server>, connected: Set<String>, onSelect: (Server) -> Unit, onEdit: (Server) -> Unit, onDelete: (Server) -> Unit, onAdd: () -> Unit) {
+@Composable private fun ServerList(servers: List<Server>, connected: Set<String>, onSelect: (Server) -> Unit, onEdit: (Server) -> Unit, onDelete: (Server) -> Unit, onAdd: () -> Unit, connecting: Set<String> = emptySet()) {
     var query by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SectionTitle("服务器资产", "SSH 直连 · 本机加密 · 无需远端面板") }
@@ -115,7 +116,7 @@ import java.util.Locale
                             Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(s.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium); Text(s.endpoint, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             var menu by remember { mutableStateOf(false) }; Box { IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, "服务器操作") }; DropdownMenu(menu, { menu = false }) { DropdownMenuItem(text = { Text("编辑连接") }, onClick = { menu = false; onEdit(s) }); DropdownMenuItem(text = { Text("移除本机资料") }, onClick = { menu = false; onDelete(s) }) } }
                         }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("${s.group} · ${if(s.production) "生产" else "常规"}", style = MaterialTheme.typography.labelMedium, color = if(s.production) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant); Text(if(s.id in connected) "● 已连接" else "○ 未连接", style = MaterialTheme.typography.labelMedium, color = if(s.id in connected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("${s.group} · ${if(s.production) "生产" else "常规"}", style = MaterialTheme.typography.labelMedium, color = if(s.production) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant); ConnectionBadge(s.id in connected,s.id in connecting) }
                     }
                 }
             }
@@ -134,7 +135,7 @@ import java.util.Locale
     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically) {
             SectionTitle("运行概览",s?.let {"最近采样 ${time(it.sampled)}"} ?: "尚未采样")
-            StatusBadge(if(connected) "SSH 已连接" else "未连接",connected)
+            ConnectionBadge(connected)
         }}
         if(!connected) item {Panel {
             Text("连接后查看实时资源",style=MaterialTheme.typography.titleMedium)
@@ -197,6 +198,7 @@ import java.util.Locale
                 OutlinedButton(onClick={manage(3)}) {ActionLabel("打开环境面板")}
             }
         }}
+        item {BackgroundConnectionSettings(vm)}
         item {Hint("仅前台每15秒读取 · 当前进程最多40次采样 · 断线不重放操作")}
     }
 }
@@ -230,7 +232,7 @@ import java.util.Locale
     Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Panel { SectionTitle("外观"); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(vm.dark == null, { vm.dark = null }, label = { ActionLabel("系统") }); FilterChip(vm.dark == true, { vm.dark = true }, label = { ActionLabel("深色") }); FilterChip(vm.dark == false, { vm.dark = false }, label = { ActionLabel("浅色") }) } }
         Panel { SectionTitle("安全与隐私"); Text("凭据使用 Android Keystore 加密，仅存于本机私有目录。系统备份与截图已禁用。首次 SSH 连接核对指纹，后续变化拒绝连接。"); Hint("不采集遥测，不使用中央服务器。任务记录不保存完整输出。复制输出或粘贴内容由你主动决定。") }
-        Panel { SectionTitle("连接与后台"); Text("活动 SSH 连接通过前台通知保持。安卓系统仍可能终止后台运行；长任务请在 VPS 中使用 tmux。应用不会自动重放断线前的命令。"); OutlinedButton(onClick = { vm.app.closeAll(); vm.app.stopService(Intent(vm.app, dev.vpsdeck.ssh.ConnectionService::class.java)) }) { ActionLabel("断开全部 SSH 连接") } }
+        BackgroundConnectionSettings(vm)
         Panel { SectionTitle("VPS Deck ${BuildConfig.VERSION_NAME}"); Text("原生 Android · SSH / SFTP · Linux 运维"); Hint("终端使用 Termux v0.118.0 仿真器与渲染器。SSH 使用 mwiede JSch。源码按 GPL-3.0 提供，完整许可和依赖说明随源码交付。"); TextButton(onClick = { vm.app.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.gnu.org/licenses/gpl-3.0.html")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }) { ActionLabel("查看 GPL-3.0 许可") } }
     }
 }

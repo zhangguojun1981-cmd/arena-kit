@@ -36,13 +36,9 @@ import org.json.JSONArray
         if(!online) { Button(onClick={vm.connect(server)}) { ActionLabel("连接服务器") }; return@Column }
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
             item { Panel {
-                PrivilegeControl(sudo,enabled=!state.busy && plan==null && selected==null) {sudo=it}
-                ActionGroup {
-                    ActionGroup {
-                        OutlinedButton(onClick={registration=true},enabled=!state.busy) {ActionLabel("登记已有目录")}
-                        OutlinedButton(onClick={controller.load(server,sudo)},enabled=!state.busy) { ActionLabel("刷新项目") }
-                        OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { ActionLabel("查询远端任务") }
-                    }
+                CollectionToolbar(state.projects.size,"登记",{registration=true},{controller.load(server,sudo)},!state.busy) {
+                    PrivilegeControl(sudo,enabled=!state.busy && plan==null && selected==null) {sudo=it}
+                    QuietAction({controller.load(server,sudo,true)},!state.busy) {ActionLabel("查询远端任务")}
                 }
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { CopyableOutput(it,"错误详情",error=true) }
@@ -51,11 +47,7 @@ import org.json.JSONArray
             if(state.projects.isEmpty() && !state.busy) item { Hint("暂无项目。可登记已有Compose目录，或通过容器标签发现；不猜测路径，不自动重写配置。") }
             items(state.projects.filter { JSONObject(it).getString("name").contains(query,true) },key={JSONObject(it).getString("name")}) { raw ->
                 val row = JSONObject(raw)
-                Panel(Modifier.clickable(enabled=!state.busy) { selected=raw }) {
-                    ResourceHeading(row.getString("name"),row.optString("status"),row.getString("directory"))
-                    OutlinedButton(onClick={selected=raw},enabled=!state.busy) {ActionLabel("管理项目")}
-                    Hint("查看服务、镜像与风险，再单独确认操作")
-                }
+                ResourceIndexRow(row.getString("name"),row.getString("directory"),row.optString("status")) {if(!state.busy) selected=raw}
             }
             item { SectionTitle("远端持久任务", "任务文件仅执行身份可访问；App退出后不自动重放。点查询刷新进度。") }
             items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
@@ -87,14 +79,14 @@ import org.json.JSONArray
                     for(i in 0 until files.length()) {
                         val path=files.getString(i)
                         Hint(path.substringAfterLast('/'))
-                        OutlinedButton(onClick={selected=null;vm.page=2;vm.browse(path.substringBeforeLast('/').ifEmpty { "/" })},enabled=!state.busy && !controller.hasActive(server)) {ActionLabel("编辑配置文件")}
+                        QuietAction(onClick={selected=null;vm.page=2;vm.browse(path.substringBeforeLast('/').ifEmpty { "/" })},enabled=!state.busy && !controller.hasActive(server)) {ActionLabel("编辑配置文件")}
                     }
                     Hint("文件编辑会备份并检查原内容是否变化；保存后返回此项目预览，Compose配置校验通过后再单独确认应用。不会保存即部署。")
                 }
                 Hint("先验证原配置并显示服务风险；不会覆盖Compose文件，不删除卷。应用可能重新创建容器，停止会中断业务。仅支持已有镜像，不隐式执行build。")
-                listOf("pull" to "预览拉取", "up" to "预览应用", "stop" to "预览停止").forEach { (action,label) ->
-                    OutlinedButton(onClick={controller.preview(server,raw,action,sudo) { plan=it }},enabled=!state.busy && online && !(action=="pull" && row.optBoolean("managed"))) { ActionLabel(label) }
-                }
+                ResourceActions(listOf("up" to "预览应用","pull" to "预览拉取","stop" to "预览停止").map { (action,label) ->
+                    ResourceMenuAction(label,!state.busy && online && !(action=="pull" && row.optBoolean("managed"))) {controller.preview(server,raw,action,sudo) {plan=it}}
+                })
                 if(row.optBoolean("managed")) Hint("此项目固定本机镜像。更换/拉取镜像请用创建/重建面板；不要手改托管配置。")
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { CopyableOutput(it,"错误详情",error=true) }

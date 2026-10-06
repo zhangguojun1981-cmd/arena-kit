@@ -30,10 +30,9 @@ import org.json.JSONObject
         if(!online) { Button(onClick={vm.connect(server)}) { ActionLabel("连接服务器") }; return@Column }
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
             item { Panel {
-                PrivilegeControl(sudo,enabled=!state.busy && plan==null) {sudo=it}
-                ActionGroup {
-                    OutlinedButton(onClick={controller.loadEnvironments(server,sudo)},enabled=!state.busy) { ActionLabel("重新检测") }
-                    OutlinedButton(onClick={controller.preview(server,JSONObject().put("kind","environment").put("name","apt-index").toString(),"install",sudo) {plan=it}},enabled=!state.busy) { ActionLabel("预览刷新索引") }
+                CollectionToolbar(state.environments.size,onRefresh={controller.loadEnvironments(server,sudo)},enabled=!state.busy) {
+                    PrivilegeControl(sudo,enabled=!state.busy && plan==null) {sudo=it}
+                    QuietAction({controller.preview(server,JSONObject().put("kind","environment").put("name","apt-index").toString(),"install",sudo) {plan=it}},!state.busy) {ActionLabel("预览刷新索引")}
                 }
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { CopyableOutput(it,"错误详情",error=true) }
@@ -42,7 +41,7 @@ import org.json.JSONObject
             if(state.environments.isEmpty() && !state.busy) item {Panel {Hint("暂无环境检测结果，请使用上方操作获取或创建资源")}}
             items(state.environments.sortedBy {listOf("docker-prerequisites","docker-repository","docker").indexOf(JSONObject(it).getString("name")).let { i -> if(i<0) 10 else i }},key={JSONObject(it).getString("name")}) { raw ->
                 val row = JSONObject(raw)
-                Panel {
+                ResourceDetail(row.getString("title"),row.optString("platform"),if(JobProtocol.rows(row,"packages").any {JSONObject(it).optString("installed").isNotBlank()}) "已检测" else "待配置") {
                     Text(row.getString("title"),style=MaterialTheme.typography.titleMedium)
                     val packages=JobProtocol.rows(row,"packages")
                     val installed=packages.count {JSONObject(it).optString("installed").isNotBlank()}
@@ -55,10 +54,10 @@ import org.json.JSONObject
                         Text("${item.getString("name")}：${item.optString("installed").ifEmpty { "未检测到已配置版本" }}")
                         Hint("候选版本：${item.optString("candidate").ifEmpty { "现有索引中无候选" }}")
                     }
-                    OutlinedButton(onClick={controller.preview(server,raw,"install",sudo) { plan=it }},enabled=!state.busy && row.optBoolean("supported")) { ActionLabel(if(row.optString("name")=="docker-repository") "预览源配置" else "预览安装 / 升级") }
+                    QuietAction(onClick={controller.preview(server,raw,"install",sudo) { plan=it }},enabled=!state.busy && row.optBoolean("supported")) { ActionLabel(if(row.optString("name")=="docker-repository") "预览源配置" else "预览安装 / 升级") }
                 }
             }
-            item { SectionTitle("该主机远端任务"); OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { ActionLabel("查询最新进度") } }
+            item { SectionTitle("该主机远端任务"); QuietAction(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { ActionLabel("查询最新进度") } }
             items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }

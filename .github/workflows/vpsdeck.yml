@@ -54,8 +54,8 @@ jobs:
       - name: Prepare delivery
         run: |
           mkdir -p releases
-          cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.3.1-interaction-preview-debug.apk
-          cp app/build/outputs/apk/release/app-release-unsigned.apk releases/VPSDeck-0.3.1-interaction-preview-unsigned.apk
+          cp app/build/outputs/apk/debug/app-debug.apk releases/VPSDeck-0.4.0-resource-preview-debug.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk releases/VPSDeck-0.4.0-resource-preview-unsigned.apk
           git -C ../.. archive --format=zip HEAD:apps/vpsdeck > releases/VPSDeck-source.zip
           python3 - <<'PYZIP'
           import zipfile

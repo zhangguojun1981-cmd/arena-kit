@@ -4,7 +4,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
@@ -60,8 +60,47 @@ class InteractionDeviceTest {
         ui.runOnIdle {assertEquals(listOf("echo 中文\r"),sent)}
         ui.onNodeWithText("输入命令").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.EditableText,androidx.compose.ui.text.AnnotatedString("")))
         ui.onNodeWithText("输入命令").performTextInput("pwd")
-        ui.onNodeWithText("输入命令").performImeAction()
-        ui.runOnIdle {assertEquals("pwd\r",sent.last())}
+        ui.onNodeWithText("输入命令").performTextInput("\nid")
+        ui.runOnIdle {assertEquals(1,sent.size)}
+        ui.onNodeWithText("执行").performClick()
+        ui.onNodeWithText("发送多行命令？").assertIsDisplayed()
+        ui.runOnIdle {assertEquals(1,sent.size)}
+        ui.onNodeWithText("确认发送").performClick()
+        ui.runOnIdle {assertEquals("pwd\rid\r",sent.last())}
+    }
+    @Test fun multilineComposerGrowsAndCancelRetainsDraft() {
+        ui.setContent {MaterialTheme {TerminalCommandBar(true) {error("must confirm first")}}}
+        val before=ui.onNodeWithText("输入命令").fetchSemanticsNode().boundsInRoot.height
+        ui.onNodeWithText("输入命令").performTextInput("one\ntwo\nthree")
+        val after=ui.onNodeWithText("输入命令").fetchSemanticsNode().boundsInRoot.height
+        assertTrue(after>before)
+        ui.onNodeWithText("执行").performClick()
+        ui.onNodeWithText("继续编辑").performClick()
+        ui.onNodeWithText("输入命令").assertTextContains("one\ntwo\nthree")
+    }
+    @Test fun resourceActionsAreNotShownBeforeOpeningDetails() {
+        var performed=false
+        ui.setContent {MaterialTheme(typography=DeckTypography) {ResourceDetail("示例网站","HTTPS · :443","启用") {
+            ResourceActions(listOf(ResourceMenuAction("编辑网站") {performed=true},ResourceMenuAction("停用网站") {performed=true}))
+        }}}
+        ui.onNodeWithText("编辑网站").assertDoesNotExist()
+        ui.onNodeWithText("示例网站").performClick()
+        ui.onNodeWithText("编辑网站").assertIsDisplayed()
+        ui.onNodeWithText("停用网站").assertDoesNotExist()
+        ui.onNodeWithContentDescription("更多操作").performClick()
+        ui.onNodeWithText("停用网站").assertIsDisplayed()
+        ui.runOnIdle {assertFalse(performed)}
+    }
+    @Test fun fileLongPressEntersSelectionWithoutOpeningFile() {
+        var opened=false
+        ui.setContent {MaterialTheme {
+            var selected by remember {mutableStateOf(false)}
+            SelectableFileRow(RemoteFile("example.txt","/example.txt",false,false,10,"-rw-------"),selected,selected,true,
+                {selected=!selected},{opened=true},{opened=true})
+        }}
+        ui.onNodeWithText("example.txt").performTouchInput {longClick()}
+        ui.onNode(isToggleable()).assertIsOn()
+        ui.runOnIdle {assertFalse(opened)}
     }
     @Test fun terminalCopyReadsLatestOutputAtClickTime() {
         var transcript="old output"

@@ -36,10 +36,8 @@ import java.util.Date
         if(!online) {Button(onClick={vm.connect(server)}) {ActionLabel("连接服务器")};return@Column}
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
             item { Panel {
-                PrivilegeControl(sudo,enabled=!state.busy && editor==null && plan==null) {sudo=it}
-                ActionGroup {
-                    Button(onClick={editor=JSONObject().put("operation","create-container").put("id",UUID.randomUUID().toString().replace("-","")).toString()},enabled=!state.busy) {ActionLabel("新建部署")}
-                    OutlinedButton(onClick={controller.loadDeployments(server,sudo)},enabled=!state.busy) {ActionLabel("刷新")}
+                CollectionToolbar(state.deployments.size,"新建",{editor=JSONObject().put("operation","create-container").put("id",UUID.randomUUID().toString().replace("-","")).toString()},{controller.loadDeployments(server,sudo)},!state.busy) {
+                    PrivilegeControl(sudo,enabled=!state.busy && editor==null && plan==null) {sudo=it}
                 }
                 if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 state.error?.let { CopyableOutput(it,"错误详情",error=true) }
@@ -49,11 +47,11 @@ import java.util.Date
             if(state.deployments.isEmpty() && !state.busy) item {Panel {Hint("暂无托管部署，请使用上方操作获取或创建资源")}}
             items(state.deployments.filter {JSONObject(it).getString("name").contains(query,true)},key={JSONObject(it).getString("name")}) {raw ->
                 val row=JSONObject(raw)
-                Panel {
+                ResourceDetail(row.getString("name"),row.optString("image"),row.optString("phase")) {
                     ResourceHeading(row.getString("name"),row.optString("phase"),row.optString("image"))
                     row.optJSONObject("runtime")?.let {runtime -> Text("实际状态：${runtime.optString("state")} · ${runtime.optString("health")}");Hint("容器ID：${runtime.optString("id")}")}
                     if(row.has("notice")) CopyableOutput(row.getString("notice"),"部署提示",error=true)
-                    OutlinedButton(onClick={editor=JSONObject(raw).put("operation","rebuild-container").put("expected",row.getString("revision")).toString()},enabled=!state.busy && row.has("revision")) {ActionLabel("预览重建")}
+                    QuietAction(onClick={editor=JSONObject(raw).put("operation","rebuild-container").put("expected",row.getString("revision")).toString()},enabled=!state.busy && row.has("revision")) {ActionLabel("预览重建")}
                     var snapshotsOpen by remember(row.getString("name")) {mutableStateOf(false)}
                     TextButton(onClick={snapshotsOpen=!snapshotsOpen}) {ActionLabel("配置快照 (${JobProtocol.rows(row,"backups").size}) · ${if(snapshotsOpen) "收起" else "展开"}")}
                     if(snapshotsOpen) Hint("仅恢复配置，不回滚数据；每次恢复需预览和确认。")
@@ -64,7 +62,7 @@ import java.util.Date
                     }
                 }
             }
-            item {SectionTitle("远端任务");OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {ActionLabel("查询最新进度")}}
+            item {SectionTitle("远端任务");QuietAction(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {ActionLabel("查询最新进度")}}
             items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }
@@ -106,7 +104,7 @@ import java.util.Date
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(name,{name=it},Modifier.fillMaxWidth(),label={Text("容器名称（小写）")},singleLine=true,enabled=create && !busy)
             OutlinedTextField(image,{image=it},Modifier.fillMaxWidth(),label={Text("镜像引用")},singleLine=true,enabled=!busy)
-            OutlinedButton(onClick={preview(JSONObject().put("kind","deployment").put("name",image).put("operation","pull-image").put("image",image).toString())},enabled=!busy) {ActionLabel("预览拉取镜像")}
+            QuietAction(onClick={preview(JSONObject().put("kind","deployment").put("name",image).put("operation","pull-image").put("image",image).toString())},enabled=!busy) {ActionLabel("预览拉取镜像")}
             if(create) {
                 OutlinedTextField(memory,{memory=it},Modifier.fillMaxWidth(),label={Text("内存上限MiB（128–32768）")},singleLine=true,enabled=!busy)
                 OutlinedTextField(cpus,{cpus=it},Modifier.fillMaxWidth(),label={Text("CPU上限（0.1–16）")},singleLine=true,enabled=!busy)

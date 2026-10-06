@@ -18,6 +18,7 @@ data class ExecResult(val code: Int, val output: String, val truncated: Boolean 
 
 class SshPool(private val vault: CredentialReader) {
     private val sessions = ConcurrentHashMap<String, Session>()
+    private val generations = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val _connected = MutableStateFlow<Set<String>>(emptySet())
     val connected = _connected.asStateFlow()
@@ -25,6 +26,8 @@ class SshPool(private val vault: CredentialReader) {
     suspend fun connect(server: Server): Session = withContext(Dispatchers.IO) {
         locks.computeIfAbsent(server.id) { Mutex() }.withLock {
             sessions[server.id]?.takeIf { it.isConnected }?.let { return@withLock it }
+            val generation=generations.computeIfAbsent(server.id) {java.util.concurrent.atomic.AtomicLong()}
+            val epoch=generation.get()
             val credentials = vault.get(server.id)
             val jsch = JSch()
             var observed: HostChallenge? = null
@@ -55,13 +58,21 @@ class SshPool(private val vault: CredentialReader) {
             if(server.auth != "key") session.setPassword(credentials.password)
             session.serverAliveInterval = 20_000; session.serverAliveCountMax = 3
             session.timeout = 30_000
-            try { session.connect(15_000); sessions[server.id] = session; publish(); session }
+            try { session.connect(15_000)
+                val context=currentCoroutineContext()
+                synchronized(this@SshPool) {
+                    context.ensureActive()
+                    check(generation.get()==epoch) {"连接请求已取消"}
+                    sessions[server.id] = session; publish()
+                }
+                session
+            }
             catch(e: Exception) { session.disconnect(); publish(); throw observed ?: e }
             finally { jsch.removeAllIdentity() }
         }
     }
-    fun disconnect(id: String) { sessions.remove(id)?.disconnect(); publish() }
-    fun disconnectAll() { sessions.keys.toList().forEach(::disconnect) }
+    @Synchronized fun disconnect(id: String) { generations.computeIfAbsent(id) {java.util.concurrent.atomic.AtomicLong()}.incrementAndGet(); sessions.remove(id)?.disconnect(); publish() }
+    fun disconnectAll() { (sessions.keys+generations.keys).toSet().forEach(::disconnect) }
     fun isConnected(id: String): Boolean { publish(); return sessions[id]?.isConnected == true }
     /** Privileged/action requests never reconnect implicitly. */
     fun requireSession(id: String): Session = sessions[id]?.takeIf { it.isConnected } ?: throw IllegalStateException("连接已断开，请手动重连；操作未自动重放")

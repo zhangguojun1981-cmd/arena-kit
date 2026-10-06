@@ -41,12 +41,8 @@ import org.json.JSONObject
         if(!online) { Text("请先连接服务器"); Button(onClick={vm.connect(server)}) { ActionLabel("连接") }; return@Column }
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)) {
             item { Panel {
-                PrivilegeControl(sudo,enabled=!busy && editor==null && plan==null) {sudo=it}
-                ActionGroup {
-                    ActionGroup {
-                        Button(onClick={editor=WebsiteProtocol.fresh() to ""},enabled=!busy) { ActionLabel("新建网站") }
-                        OutlinedButton(onClick={controller.load(server,sudo)},enabled=!busy) { ActionLabel("刷新") }
-                    }
+                CollectionToolbar(state.rows.size,"新建",{editor=WebsiteProtocol.fresh() to ""},{controller.load(server,sudo)},!busy) {
+                    PrivilegeControl(sudo,enabled=!busy && editor==null && plan==null) {sudo=it}
                 }
                 OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),singleLine=true,label={Text("搜索域名")})
                 if(busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(state.busy.orEmpty()) }
@@ -56,17 +52,14 @@ import org.json.JSONObject
             if(state.loaded && state.rows.isEmpty()) item { Panel { Text("暂无App管理的网站"); Hint("已有Nginx配置在下方单列，不自动接管或重写。") } }
             if(state.loaded && state.rows.isNotEmpty() && state.rows.none {it.domain.contains(query,true)}) item {Panel {Hint("没有匹配的网站")}}
             items(state.rows.filter { it.domain.contains(query,true) },key={it.id}) { site ->
-                Panel(Modifier.clickable(enabled=!busy) { selected=site.id; controller.clearBackups(server) }) {
-                    ResourceHeading(site.domain,if(site.enabled) "启用" else "停用","${site.json.getString("kind")} · 端口 ${site.json.getInt("port")}")
-                    Text(if(site.json.optBoolean("tls")) "HTTPS（已有证书）" else "HTTP")
-                    if(site.drift) Text("外部配置发生变化，禁止覆盖",color=MaterialTheme.colorScheme.error)
-                    if(site.pending) Text("上次变更未完成，需恢复/核查",color=MaterialTheme.colorScheme.error)
-                    OutlinedButton(onClick={selected=site.id;controller.clearBackups(server)},enabled=!busy) {ActionLabel("管理网站")}
+                ResourceIndexRow(site.domain,"${site.json.getString("kind")} · ${if(site.json.optBoolean("tls")) "HTTPS" else "HTTP"} · :${site.json.getInt("port")}",
+                    if(site.drift || site.pending) "需核查" else if(site.enabled) "启用" else "停用") {
+                    if(!busy) {selected=site.id;controller.clearBackups(server)}
                 }
             }
             item { SectionTitle("现有非托管配置", "只读发现；复杂include与自定义规则不会转成表单或被覆盖") }
             items(state.unmanaged) { path ->
-                Panel {Hint(path);OutlinedButton(onClick={vm.page=2;vm.browse(path.substringBeforeLast('/'))},enabled=!busy) {ActionLabel("打开配置目录")}}
+                Panel {Hint(path);QuietAction(onClick={vm.page=2;vm.browse(path.substringBeforeLast('/'))},enabled=!busy) {ActionLabel("打开配置目录")}}
             }
             item { Hint("需要原生Nginx与Python3。未安装时明确失败，不自动安装。签发需要已有certbot、正确公网DNS与80端口；启用续期timer另行确认。") }
         }
@@ -81,23 +74,22 @@ import org.json.JSONObject
             if(site.drift) Text("检测到配置被外部修改，先在文件管理中核查；不允许表单覆盖。",color=MaterialTheme.colorScheme.error)
             state.error?.let { CopyableOutput(it,"错误详情",error=true) }; state.notice?.let { CopyableOutput(it,"操作结果") }
             if(busy) { LinearProgressIndicator(Modifier.fillMaxWidth()); Text(state.busy.orEmpty()) }
-            ActionGroup {
-                Button(onClick={editor=site.spec to site.revision},enabled=!busy && !site.drift && !site.pending && online) { ActionLabel("编辑网站") }
-                OutlinedButton(onClick={controller.preview(server,site.json.put("enabled",!site.enabled).toString(),site.revision,false,sudo) {plan=it}},enabled=!busy && !site.drift && !site.pending && online) { ActionLabel(if(site.enabled) "停用网站" else "启用网站") }
-            }
-            if(site.pending) OutlinedButton(onClick={recover=site},enabled=!busy && online) { ActionLabel("恢复上次未完成操作") }
-            ActionGroup {
-                OutlinedButton(onClick={selected=null; vm.page=2; vm.browse(site.json.getString("root"))},enabled=!busy) { ActionLabel("管理网站文件") }
-                OutlinedButton(onClick={controller.health(server,site,sudo)},enabled=!busy && online && site.enabled) { ActionLabel("检查 HTTP 响应") }
-            }
+            ResourceActions(listOf(
+                ResourceMenuAction("编辑网站",!busy && !site.drift && !site.pending && online) {editor=site.spec to site.revision},
+                ResourceMenuAction("管理网站文件",!busy) {selected=null;vm.page=2;vm.browse(site.json.getString("root"))},
+                ResourceMenuAction("检查 HTTP 响应",!busy && online && site.enabled) {controller.health(server,site,sudo)},
+                ResourceMenuAction(if(site.enabled) "停用网站" else "启用网站",!busy && !site.drift && !site.pending && online) {controller.preview(server,site.json.put("enabled",!site.enabled).toString(),site.revision,false,sudo) {plan=it}}
+            ))
+            if(site.pending) QuietAction({recover=site},!busy && online) {ActionLabel("恢复上次未完成操作")}
             HorizontalDivider(); SectionTitle("HTTPS与证书", "自动签发使用Let's Encrypt HTTP80验证；需已有certbot，不自动安装或修改DNS/防火墙。")
-            ActionGroup {
-                OutlinedButton(onClick={certRequest=site},enabled=!busy && online && site.enabled) {ActionLabel("申请 / 更新证书")}
-                OutlinedButton(onClick={controller.certificate(server,site,sudo) {editor=it to site.revision}},enabled=!busy && online) {ActionLabel("配置 HTTPS")}
-                OutlinedButton(onClick={renewal=site},enabled=!busy && online && site.enabled) {ActionLabel("启用自动续期")}
-            }
+            DetailRow("HTTPS",if(site.json.optBoolean("tls")) "已配置证书" else "尚未配置")
+            ResourceActions(listOf(
+                ResourceMenuAction("配置 HTTPS",!busy && online) {controller.certificate(server,site,sudo) {editor=it to site.revision}},
+                ResourceMenuAction("申请 / 更新证书",!busy && online && site.enabled) {certRequest=site},
+                ResourceMenuAction("启用自动续期",!busy && online && site.enabled) {renewal=site}
+            ))
             HorizontalDivider(); SectionTitle("配置备份", "只恢复Nginx配置，不回滚网站文件或数据库。首次创建前的空备份不可用此入口恢复。")
-            OutlinedButton(onClick={controller.backups(server,site,sudo)},enabled=!busy && online) { ActionLabel("读取配置备份") }
+            QuietAction(onClick={controller.backups(server,site,sudo)},enabled=!busy && online) { ActionLabel("读取配置备份") }
             state.backups.forEach { backup -> Panel {Hint(backup);TextButton(onClick={restore=site to backup},enabled=!busy && !site.pending && !site.drift && online) {ActionLabel("恢复此备份")}} }
         }
     } }

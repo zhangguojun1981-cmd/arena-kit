@@ -52,7 +52,7 @@ import dev.vpsdeck.ssh.ShellSession
                 if(!ready) CopyButton("$state\n$diagnostic","复制状态")
                 TextButton(onClick = { close = shell }) { ActionLabel("关闭此会话") }
             }
-            if(!keyboardVisible) Hint("命令栏输入后点执行；密码、vim、top 等交互请点键盘或终端区域。")
+            if(!keyboardVisible) Hint("命令栏回车换行，点执行发送；密码、vim、top 请使用直接键盘输入。")
             key(shell.id) {
                 AndroidView(factory = { ctx -> TerminalCanvas(ctx).apply {
                     attach(shell.emulator, object : TerminalCanvas.Client {
