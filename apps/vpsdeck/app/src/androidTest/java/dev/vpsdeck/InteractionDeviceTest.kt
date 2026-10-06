@@ -96,10 +96,10 @@ class InteractionDeviceTest {
         val root=ui.onRoot().fetchSemanticsNode().boundsInRoot
         val primary=ui.onNodeWithText("编辑网站").fetchSemanticsNode().boundsInRoot
         val more=ui.onNodeWithContentDescription("更多操作").fetchSemanticsNode().boundsInRoot
-        assertTrue("primary action must sit at the row end", primary.right >= root.right - 12)
-        assertTrue("action row must not be anchored left", primary.left > root.width/2)
-        assertTrue(primary.right >= more.right)
-        assertTrue(primary.height * 2f < root.height)
+        assertTrue("overflow button must sit at the row end", more.right >= root.right - 12)
+        assertTrue("action group must not be anchored left", primary.left > root.width/2)
+        assertTrue("primary sits next to the overflow button", primary.right <= more.left && more.left - primary.right < 8)
+        assertTrue("buttons stay compact", primary.height * 2f < root.height)
         ui.onNodeWithContentDescription("更多操作").performClick()
         ui.onNodeWithText("停用网站").assertIsDisplayed()
         ui.runOnIdle {assertFalse(performed)}
