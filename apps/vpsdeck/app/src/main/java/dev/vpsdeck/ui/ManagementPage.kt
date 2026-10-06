@@ -13,11 +13,14 @@ import dev.vpsdeck.data.Server
 import dev.vpsdeck.ops.*
 
 @Composable fun ManagementPage(vm: DeckViewModel, server: Server, request: (Operation) -> Unit) {
+    var legacy by remember(server.id) { mutableStateOf(false) }
+    if(!legacy) { ResourcePanel(vm, server, legacy = { legacy = true }); return }
     var section by remember { mutableIntStateOf(0) }; var sudo by remember { mutableStateOf(false) }
     val connected by vm.connected.collectAsState()
     fun run(block: () -> Operation) { runCatching { block().privileged(sudo) }.onSuccess(request).onFailure { vm.error = it.message } }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        SectionTitle("服务器管理", "每次操作先展示计划；缺少工具时显示真实失败，不自动安装")
+        TextButton(onClick = { legacy = false }) { Text("← 返回资源管理面板") }
+        SectionTitle("旧版高级工具（后续阶段重写）", "每次操作先展示计划；缺少工具时显示真实失败，不自动安装")
         if(server.id !in connected) { Panel { Text("请先连接服务器"); Button(onClick = { vm.connect(server) }, enabled = !vm.busy) { Text("连接") } }; return@Column }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("服务", "Docker", "网站", "数据库").forEachIndexed { i, name -> FilterChip(section == i, { section = i }, label = { Text(name) }) } }
         Row { Switch(sudo, { sudo = it }); Spacer(Modifier.width(12.dp)); Column { Text("sudo -n 提权"); Hint("仅使用远端现有免密授权；不自动提交密码") } }

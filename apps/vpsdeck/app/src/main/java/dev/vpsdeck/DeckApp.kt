@@ -10,6 +10,7 @@ class DeckApp : Application() {
     lateinit var database: DeckDatabase; private set
     lateinit var vault: SecretStore; private set
     lateinit var ssh: SshPool; private set
+    val panel by lazy { dev.vpsdeck.panel.PanelController(this) }
     val terminals = linkedMapOf<String, ShellSession>()
     override fun onCreate() {
         super.onCreate(); database = DeckDatabase.open(this); vault = SecretStore(this); ssh = SshPool(vault)

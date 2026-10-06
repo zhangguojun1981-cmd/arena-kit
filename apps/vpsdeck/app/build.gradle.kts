@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "dev.vpsdeck"
     compileSdk = 34
-    defaultConfig { applicationId = "dev.vpsdeck"; minSdk = 26; targetSdk = 34; versionCode = 2; versionName = "0.1.1"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "dev.vpsdeck"; minSdk = 26; targetSdk = 34; versionCode = 3; versionName = "0.2.0-stageA"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -33,6 +33,7 @@ dependencies {
     androidTestImplementation("androidx.test:rules:1.6.1")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     testImplementation("org.apache.sshd:sshd-core:2.13.2")
     testImplementation("org.apache.sshd:sshd-sftp:2.13.2")
     testImplementation("org.slf4j:slf4j-simple:2.0.13")
