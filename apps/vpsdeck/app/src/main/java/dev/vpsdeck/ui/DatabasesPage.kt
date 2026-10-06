@@ -73,7 +73,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             }
             state.database?.let { raw ->
                 val inventory = JSONObject(raw)
-                item { FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) { listOf("数据库","账号","备份").forEachIndexed { i,label -> FilterChip(tab==i,{tab=i},label={Text(label)}) } }
+                item { FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) { listOf("数据库","账号","备份").forEachIndexed { i,label -> FilterChip(tab==i,{tab=i},label={Text(label)}) } } }
                 if(tab==0) {
                     item { OutlinedButton(onClick={edit("create-database")},enabled=!state.busy) {Text("创建数据库") } }
                     items(JobProtocol.rows(inventory,"databases"),key={JSONObject(it).getString("name")}) { value ->
