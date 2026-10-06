@@ -63,14 +63,7 @@ import java.util.Locale
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
             if(state.loaded && rows.isEmpty()) item { Panel { Text(if(state.rows.isEmpty()) "没有发现资源" else "没有符合筛选的资源") } }
             items(rows, key = { it.id }) { row ->
-                Panel(Modifier.clickable(enabled = !busy) { controller.open(server, row) }) {
-                    Text(row.name, style = MaterialTheme.typography.titleMedium)
-                    Text("${row.state}${if(row.enabled.isNotBlank()) " · 自启：${row.enabled}" else ""}")
-                    if(row.summary.isNotBlank()) Hint(row.summary)
-                    row.facts["镜像"]?.let { Hint(it) }
-                    row.facts["端口"]?.takeIf { it.isNotBlank() }?.let { Hint(it) }
-                    Text("查看详情与操作 →", color = MaterialTheme.colorScheme.primary)
-                }
+                ResourceCard(row, !busy) { controller.open(server, row) }
             }
         }
         TextButton(onClick = legacy, enabled = !busy) { Text("网站 / Compose / 数据库（旧版工具，待重写）") }
@@ -121,5 +114,17 @@ import java.util.Locale
                 Text("提交前重新核对资源状态；执行后读取真实状态，未通过核验不报成功。")
             }
         }, confirmButton = { Button(onClick = { pending = null; controller.act(server, row, action, sudo) }, enabled = !busy && online) { Text("确认${action.title}") } }, dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
+    }
+}
+
+/** Stateless resource row: clicking selects an object, never executes an operation. */
+@Composable fun ResourceCard(row: Resource, enabled: Boolean, onOpen: () -> Unit) {
+    Panel(Modifier.clickable(enabled = enabled, onClick = onOpen)) {
+        Text(row.name, style = MaterialTheme.typography.titleMedium)
+        Text("${row.state}${if(row.enabled.isNotBlank()) " · 自启：${row.enabled}" else ""}")
+        if(row.summary.isNotBlank()) Hint(row.summary)
+        row.facts["镜像"]?.let { Hint(it) }
+        row.facts["端口"]?.takeIf { it.isNotBlank() }?.let { Hint(it) }
+        Text("查看详情与操作 →", color = MaterialTheme.colorScheme.primary)
     }
 }
