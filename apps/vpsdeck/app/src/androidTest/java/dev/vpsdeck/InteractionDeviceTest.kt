@@ -96,8 +96,8 @@ class InteractionDeviceTest {
         val root=ui.onRoot().fetchSemanticsNode().boundsInRoot
         val primary=ui.onNodeWithText("编辑网站").fetchSemanticsNode().boundsInRoot
         val more=ui.onNodeWithContentDescription("更多操作").fetchSemanticsNode().boundsInRoot
-        assertTrue(primary.right >= root.right - 12, "primary action must sit at the row end")
-        assertTrue(primary.left > root.width/2, "action row must not be anchored left")
+        assertTrue("primary action must sit at the row end", primary.right >= root.right - 12)
+        assertTrue("action row must not be anchored left", primary.left > root.width/2)
         assertTrue(primary.right >= more.right)
         assertTrue(primary.height * 2f < root.height)
         ui.onNodeWithContentDescription("更多操作").performClick()
