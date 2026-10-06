@@ -92,6 +92,6 @@ class SshPool(private val vault: CredentialReader) {
     }
     suspend fun <T> sftp(server: Server, action: (ChannelSftp) -> T): T = withContext(Dispatchers.IO) {
         val channel = requireSession(server.id).openChannel("sftp") as ChannelSftp
-        try { channel.connect(10_000); action(channel) } finally { channel.disconnect(); requestBytes?.fill(0); publish() }
+        try { channel.connect(10_000); action(channel) } finally { channel.disconnect(); publish() }
     }
 }
