@@ -88,7 +88,7 @@ import java.util.Locale
 
 @Composable private fun ServerList(servers: List<Server>, connected: Set<String>, onSelect: (Server) -> Unit, onEdit: (Server) -> Unit, onDelete: (Server) -> Unit, onAdd: () -> Unit) {
     var query by remember { mutableStateOf("") }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { SectionTitle("服务器资产", "SSH 直连 · 本机加密 · 无需远端面板") }
         item { Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Panel(Modifier.weight(1f)) { Text("${servers.size}", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Hint("已添加服务器") }
@@ -103,7 +103,9 @@ import java.util.Locale
             item { OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("搜索名称、主机或分组") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, singleLine = true, shape = RoundedCornerShape(16.dp)) }
             val filtered = servers.filter { query.isBlank() || "${it.name} ${it.host} ${it.group}".contains(query, true) }
             if(filtered.isEmpty()) item { Hint("没有匹配的服务器") }
-            items(filtered, key = { it.id }) { s ->
+            filtered.groupBy {it.group}.forEach { (group, members) ->
+            item(key="group:$group") {SectionTitle(group,"${members.size} 台服务器")}
+            items(members, key = { it.id }) { s ->
                 Surface(onClick = { onSelect(s) }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -115,6 +117,7 @@ import java.util.Locale
                     }
                 }
             }
+            }
         }
         item { Hint("主机是否在线以实际连接为准。未连接不等于 VPS 离线。") }
     }
@@ -122,7 +125,7 @@ import java.util.Locale
 
 @Composable private fun Overview(vm: DeckViewModel, server: Server, connected: Boolean) {
     val owner=LocalLifecycleOwner.current
-    LaunchedEffect(server.id,connected) {if(connected) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {while(true) {vm.refresh(server);delay(15_000)}}}
+    LaunchedEffect(server,connected) {if(connected) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {while(true) {vm.refresh(server);delay(15_000)}}}
     val s=vm.snapshot
     val history=vm.metricHistory[server.id].orEmpty()
     fun manage(section: Int) {vm.managementSection=section;vm.page=3}

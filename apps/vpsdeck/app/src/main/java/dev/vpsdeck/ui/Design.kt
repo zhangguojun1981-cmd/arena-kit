@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -71,3 +73,24 @@ fun bytes(value: Long?): String {
     return if(i == 0) "$value B" else String.format(Locale.ROOT, "%.1f %s", size, labels[i])
 }
 fun time(value: Long) = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(value))
+
+@Composable fun HelpDisclosure(text: String, title: String = "说明与边界") {
+    var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    Column {
+        TextButton(onClick={open=!open}) { Text(if(open) "$title · 收起" else "$title · 展开") }
+        if(open) Hint(text)
+    }
+}
+@Composable fun PrivilegeControl(value: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    var open by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    Column {
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+            StatusBadge(if(value) "sudo -n 已启用" else "当前 SSH 身份",positive=false)
+            TextButton(onClick={open=!open},enabled=enabled) {Text("执行权限")}
+        }
+        if(open) Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+            Switch(value,onChange,enabled=enabled)
+            Column(Modifier.weight(1f)) {Text("明确使用 sudo -n");Hint("只使用已有免密授权，不提交密码")}
+        }
+    }
+}

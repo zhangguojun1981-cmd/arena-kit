@@ -29,6 +29,8 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
     val state = all[server.id] ?: ProjectState()
     val connected by vm.connected.collectAsStateWithLifecycle()
     val online = server.id in connected
+    var identityExpanded by remember(server.id) {mutableStateOf(true)}
+    LaunchedEffect(state.database!=null) {if(state.database!=null) identityExpanded=false}
     var sudo by remember(server.id) { mutableStateOf(false) }
     var engine by remember(server.id) { mutableStateOf("postgresql") }
     var user by remember(server.id) { mutableStateOf("postgres") }
@@ -53,6 +55,11 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
             item {
                 Panel {
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
+                        SectionTitle("数据库连接",if(state.database!=null) "$engine · $user" else "数据库身份独立于 SSH")
+                        TextButton(onClick={identityExpanded=!identityExpanded},enabled=!state.busy) {Text(if(identityExpanded) "收起" else "编辑身份")}
+                    }
+                    if(identityExpanded || state.database==null) Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
                     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         listOf("postgresql" to "PostgreSQL", "mysql" to "MySQL / MariaDB").forEach { (value,label) ->
                             FilterChip(engine==value,{engine=value;user=if(value=="postgresql") "postgres" else "root";password="";asPostgres=false},enabled=!state.busy,label={Text(label)})
@@ -70,6 +77,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                     }
                     Hint("不启用密码登录、不改pg_hba或MySQL主机规则。容器内需要已有数据库客户端。管理账号需有列库/账号及相应管理权限；不自动猜测或提取容器密码。")
                     Button(onClick={controller.loadDatabase(server,auth().toString(),sudo)},enabled=!state.busy) {Text("验证数据库身份并发现资源")}
+                    }
                 }
             }
             state.database?.let { raw ->
@@ -119,14 +127,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
                 }
             }
             item { SectionTitle("该主机远端任务"); OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {Text("查询最新进度")} }
-            items(state.jobs,key={JSONObject(it).getString("id")}) { raw ->
-                val task=JSONObject(raw)
-                Panel {
-                    Text("${task.optString("project")} · ${JobProtocol.action(task.optString("action"))} · ${JobProtocol.state(task.optString("state"))}")
-                    Text(task.optString("message"));Hint("ID：${task.getString("id")}")
-                    JobProtocol.rows(task,"resources").forEach { resource -> val r=JSONObject(resource);Text("${r.optString("service")}：${r.optString("state")} ${r.optString("health")}") }
-                }
-            }
+            items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }
     if(containersOpen) AlertDialog(onDismissRequest={containersOpen=false},title={Text("选择数据库所在容器")},text={Column(Modifier.verticalScroll(rememberScrollState())) {

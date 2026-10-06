@@ -39,7 +39,7 @@ import org.json.JSONObject
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("网站管理", "表单建站 · 配置差异 · 校验发布 · 备份恢复")
         if(!online) { Text("请先连接服务器"); Button(onClick={vm.connect(server)}) { Text("连接") }; return@Column }
-        Row { Switch(sudo,{sudo=it},enabled=!busy && editor==null && plan==null); Text("显式 sudo -n；普通用户需已有免密权限") }
+        PrivilegeControl(sudo,enabled=!busy && editor==null && plan==null) {sudo=it}
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(onClick={editor=WebsiteProtocol.fresh() to ""},enabled=!busy) { Text("新建网站") }
             OutlinedButton(onClick={controller.load(server,sudo)},enabled=!busy) { Text("刷新") }

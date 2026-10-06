@@ -34,7 +34,7 @@ import java.util.Date
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("创建与重建", "表单创建容器和Compose项目 · 固定镜像ID · 配置快照 · 保留命名卷")
         if(!online) {Button(onClick={vm.connect(server)}) {Text("连接服务器")};return@Column}
-        Row {Switch(sudo,{sudo=it},enabled=!state.busy && editor==null && plan==null);Text("明确使用已有 sudo -n 授权")}
+        PrivilegeControl(sudo,enabled=!state.busy && editor==null && plan==null) {sudo=it}
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(onClick={editor=JSONObject().put("operation","create-container").put("id",UUID.randomUUID().toString().replace("-","")).toString()},enabled=!state.busy) {Text("新建容器 / 项目")}
             OutlinedButton(onClick={controller.loadDeployments(server,sudo)},enabled=!state.busy) {Text("刷新")}
@@ -43,7 +43,7 @@ import java.util.Date
         state.error?.let {Text(it,color=MaterialTheme.colorScheme.error)}
         OutlinedTextField(query,{query=it},Modifier.fillMaxWidth(),label={Text("筛选App托管部署")},singleLine=true)
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
-            item {Hint("仅重建本面板创建的单服务项目。既有容器仍在服务与容器页管理；不无损反推复杂容器，不覆盖外部改动。镜像拉取与应用分开确认，不删除卷。")}
+            item {HelpDisclosure("仅重建本面板创建的单服务项目。既有容器仍在服务与容器页管理；不无损反推复杂容器，不覆盖外部改动。镜像拉取与应用分开确认，不删除卷。")}
             items(state.deployments.filter {JSONObject(it).getString("name").contains(query,true)},key={JSONObject(it).getString("name")}) {raw ->
                 val row=JSONObject(raw)
                 Panel {
@@ -52,7 +52,9 @@ import java.util.Date
                     row.optJSONObject("runtime")?.let {runtime -> Text("实际状态：${runtime.optString("state")} · ${runtime.optString("health")}");Hint("容器ID：${runtime.optString("id")}")}
                     if(row.has("notice")) Text(row.getString("notice"),color=MaterialTheme.colorScheme.error)
                     OutlinedButton(onClick={editor=JSONObject(raw).put("operation","rebuild-container").put("expected",row.getString("revision")).toString()},enabled=!state.busy && row.has("revision")) {Text("选择镜像 / 重建")}
-                    JobProtocol.rows(row,"backups").sortedByDescending {JSONObject(it).optLong("created")}.forEach {value ->
+                    var snapshotsOpen by remember(row.getString("name")) {mutableStateOf(false)}
+                    TextButton(onClick={snapshotsOpen=!snapshotsOpen}) {Text("配置快照 (${JobProtocol.rows(row,"backups").size}) · ${if(snapshotsOpen) "收起" else "展开"}")}
+                    if(snapshotsOpen) JobProtocol.rows(row,"backups").sortedByDescending {JSONObject(it).optLong("created")}.forEach {value ->
                         val backup=JSONObject(value)
                         Text("配置快照：${DateFormat.getDateTimeInstance().format(Date(backup.getLong("created")*1000))}\n${backup.getString("image")} · ${backup.getString("phase")}")
                         TextButton(onClick={val spec=JSONObject().put("kind","deployment").put("operation","restore-container").put("name",row.getString("name")).put("expected",row.getString("revision")).put("backup",backup.getString("id"));controller.preview(server,spec.toString(),"restore-container",sudo) {plan=it}},enabled=!state.busy) {Text("预览恢复该配置（不回滚数据）")}
@@ -60,13 +62,7 @@ import java.util.Date
                 }
             }
             item {SectionTitle("远端任务");OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) {Text("查询最新进度")}}
-            items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> val task=JSONObject(raw)
-                Panel {
-                    Text("${task.optString("project")} · ${JobProtocol.action(task.optString("action"))} · ${JobProtocol.state(task.optString("state"))}")
-                    Text(task.optString("message"));Hint("ID：${task.getString("id")}")
-                    JobProtocol.rows(task,"resources").forEach {v -> val r=JSONObject(v);Text("${r.optString("service")}：${r.optString("state")} ${r.optString("health")}")}
-                }
-            }
+            items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }
     editor?.let {seed -> DeploymentEditor(seed,state.busy,state.error,{editor=null}) {spec -> controller.preview(server,spec,JSONObject(spec).getString("operation"),sudo) {plan=it}}}

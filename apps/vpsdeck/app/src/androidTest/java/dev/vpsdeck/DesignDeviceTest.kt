@@ -26,6 +26,11 @@ class DesignDeviceTest {
         val file=File(app.getExternalFilesDir(null),"ui-preview/$name.png")
         file.parentFile!!.mkdirs()
         file.outputStream().use {ui.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)}
+        // AGP uninstalls the target after connected tests; export before its app storage is removed.
+        val command="mkdir -p /data/local/tmp/vpsdeck-ui-preview && cp '${file.absolutePath}' /data/local/tmp/vpsdeck-ui-preview/$name.png && echo EXPORTED"
+        val descriptor=androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        val output=android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use {it.readText()}
+        assertTrue(output.contains("EXPORTED"))
     }
     @Test fun managementCardsOnlySelectACategory() {
         var selected=-1

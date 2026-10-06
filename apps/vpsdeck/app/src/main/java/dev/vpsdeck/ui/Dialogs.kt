@@ -106,7 +106,7 @@ import java.io.ByteArrayOutputStream
 
 @Composable fun OutputDialog(title: String, output: ExecResult, onClose: () -> Unit) {
     FullDialog(title, onClose) { padding -> Column(Modifier.padding(padding).padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("exit ${output.code} · ${if(output.code == 0) "执行完成" else "未成功，请检查输出"}", color = if(output.code == 0) DeckGreen else MaterialTheme.colorScheme.error)
+        Text("exit ${output.code} · ${if(output.code == 0) "执行完成" else "未成功，请检查输出"}", color = if(output.code == 0) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
         Hint("输出仅在当前页面保留，可能包含敏感信息。${if(output.truncated) "输出已截断。" else ""}")
         SelectionContainer(Modifier.weight(1f).verticalScroll(rememberScrollState())) { Text(output.output.ifBlank { "（没有输出）" }, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
     } }

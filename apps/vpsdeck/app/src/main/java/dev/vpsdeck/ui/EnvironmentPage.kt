@@ -28,7 +28,7 @@ import org.json.JSONObject
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("环境与安装", "Debian 12 · 先预览再确认 · Docker分步安装向导")
         if(!online) { Button(onClick={vm.connect(server)}) { Text("连接服务器") }; return@Column }
-        Row { Switch(sudo,{sudo=it},enabled=!state.busy && plan==null); Text("明确使用已有 sudo -n 授权") }
+        PrivilegeControl(sudo,enabled=!state.busy && plan==null) {sudo=it}
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick={controller.loadEnvironments(server,sudo)},enabled=!state.busy) { Text("重新检测") }
             OutlinedButton(onClick={controller.preview(server,JSONObject().put("kind","environment").put("name","apt-index").toString(),"install",sudo) {plan=it}},enabled=!state.busy) { Text("预览刷新索引") }
@@ -36,13 +36,18 @@ import org.json.JSONObject
         if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
         LazyColumn(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(vertical=12.dp)) {
-            item { Hint("此面板需要服务器已有Python3。安装可能自动启动服务或监听端口，不会自动放行防火墙。其他发行版不执行安装。Docker向导：1安装前置组件 → 2配置并校验官方源 → 3上方刷新索引 → 4预览安装。每一步独立确认，不运行curl安装脚本、不自动迁移发行版Docker。Docker可能改变网络规则，发布端口可能绕过ufw；不自动开放公网端口。") }
-            items(state.environments,key={JSONObject(it).getString("name")}) { raw ->
+            item { HelpDisclosure("此面板需要服务器已有Python3。安装可能自动启动服务或监听端口，不会自动放行防火墙。其他发行版不执行安装。Docker向导：1安装前置组件 → 2配置并校验官方源 → 3上方刷新索引 → 4预览安装。每一步独立确认，不运行curl安装脚本、不自动迁移发行版Docker。Docker可能改变网络规则，发布端口可能绕过ufw；不自动开放公网端口。") }
+            items(state.environments.sortedBy {listOf("docker-prerequisites","docker-repository","docker").indexOf(JSONObject(it).getString("name")).let { i -> if(i<0) 10 else i }},key={JSONObject(it).getString("name")}) { raw ->
                 val row = JSONObject(raw)
                 Panel {
                     Text(row.getString("title"),style=MaterialTheme.typography.titleMedium)
-                    Hint(row.optString("platform"))
-                    JobProtocol.rows(row,"packages").forEach { p ->
+                    val packages=JobProtocol.rows(row,"packages")
+                    val installed=packages.count {JSONObject(it).optString("installed").isNotBlank()}
+                    StatusBadge(if(packages.isEmpty()) "源配置入口" else "$installed / ${packages.size} 软件包已配置",positive=packages.isNotEmpty() && installed==packages.size)
+                    var expanded by remember(raw) {mutableStateOf(false)}
+                    TextButton(onClick={expanded=!expanded}) {Text(if(expanded) "收起包详情" else "查看包详情")}
+                    if(expanded) Hint(row.optString("platform"))
+                    if(expanded) packages.forEach { p ->
                         val item = JSONObject(p)
                         Text("${item.getString("name")}：${item.optString("installed").ifEmpty { "未检测到已配置版本" }}")
                         Hint("候选版本：${item.optString("candidate").ifEmpty { "现有索引中无候选" }}")
@@ -51,17 +56,7 @@ import org.json.JSONObject
                 }
             }
             item { SectionTitle("该主机远端任务"); OutlinedButton(onClick={controller.load(server,sudo,true)},enabled=!state.busy) { Text("查询最新进度") } }
-            items(state.jobs,key={JSONObject(it).getString("id")}) { raw ->
-                val job = JSONObject(raw)
-                Panel {
-                    Text("${job.optString("project")} · ${JobProtocol.state(job.optString("state"))}")
-                    Text(job.optString("message")); Hint("ID：${job.getString("id")}")
-                    JobProtocol.rows(job,"resources").forEach { value ->
-                        val resource = JSONObject(value)
-                        Text("${resource.optString("service")}：${resource.optString("state")} ${resource.optString("health")}")
-                    }
-                }
-            }
+            items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }
     plan?.let { p ->

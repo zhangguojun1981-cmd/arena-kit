@@ -41,7 +41,7 @@ import dev.vpsdeck.ssh.ShellSession
         } else {
             val state by shell.state.collectAsState()
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(state, style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") DeckGreen else MaterialTheme.colorScheme.error)
+                Text(state, style = MaterialTheme.typography.labelMedium, color = if(state == "已连接") MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error)
                 TextButton(onClick = { close = shell }) { Text("关闭此会话") }
             }
             key(shell.id) {

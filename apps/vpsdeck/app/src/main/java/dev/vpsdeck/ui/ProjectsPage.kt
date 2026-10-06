@@ -34,7 +34,7 @@ import org.json.JSONArray
     Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
         SectionTitle("Compose 项目", "发现原始项目 · 风险预览 · 独立远端任务 · 断线后查状态")
         if(!online) { Button(onClick={vm.connect(server)}) { Text("连接服务器") }; return@Column }
-        Row { Switch(sudo,{sudo=it},enabled=!state.busy && plan==null && selected==null); Text("明确使用已有 sudo -n 授权") }
+        PrivilegeControl(sudo,enabled=!state.busy && plan==null && selected==null) {sudo=it}
         FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick={registration=true},enabled=!state.busy) {Text("登记已有目录")}
             OutlinedButton(onClick={controller.load(server,sudo)},enabled=!state.busy) { Text("刷新项目") }
@@ -54,17 +54,7 @@ import org.json.JSONArray
                 }
             }
             item { SectionTitle("远端持久任务", "任务文件仅执行身份可访问；App退出后不自动重放。点查询刷新进度。") }
-            items(state.jobs,key={JSONObject(it).getString("id")}) { raw ->
-                val row = JSONObject(raw)
-                Panel {
-                    Text("${row.optString("project")} · ${JobProtocol.action(row.optString("action"))} · ${JobProtocol.state(row.optString("state"))}")
-                    Text(row.optString("message")); Hint("任务ID：${row.getString("id")}")
-                    JobProtocol.rows(row,"resources").forEach { value ->
-                        val resource = JSONObject(value)
-                        Text("${resource.optString("service")}：${resource.optString("state")} ${resource.optString("health")}")
-                    }
-                }
-            }
+            items(state.jobs,key={JSONObject(it).getString("id")}) {raw -> RemoteJobCard(raw)}
         }
     }
     if(registration) {
