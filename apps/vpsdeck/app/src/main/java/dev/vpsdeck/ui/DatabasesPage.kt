@@ -129,7 +129,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
     if(containersOpen) AlertDialog(onDismissRequest={containersOpen=false},title={Text("选择数据库所在容器")},text={Column(Modifier.verticalScroll(rememberScrollState())) {
         if(state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.databaseContainers.forEach { raw -> val row=JSONObject(raw); TextButton(onClick={container=row.getString("id");containersOpen=false},enabled=!state.busy) {Text("${row.getString("name")} · ${row.getString("image")}")} }
-    },confirmButton={TextButton(onClick={containersOpen=false}) {Text("关闭")}})
+    }},confirmButton={TextButton(onClick={containersOpen=false}) {Text("关闭")}})
     editor?.let { seed -> DatabaseEditor(seed,state.database ?: "{}",state.busy,state.error,{editor=null}) { spec ->
         controller.preview(server,spec,JSONObject(spec).getString("operation"),sudo) {plan=it}
     } }

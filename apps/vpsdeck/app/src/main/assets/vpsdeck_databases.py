@@ -43,8 +43,25 @@ class Databases:
             raise ValueError('容器必须从资源发现中选择ID')
         return result
 
+    def mysql_tool(self, auth, dump=False):
+        import shutil
+        candidates = ('mysqldump', 'mariadb-dump') if dump else ('mysql', 'mariadb')
+        if auth.get('container'):
+            script = 'if command -v '+candidates[0]+' >/dev/null 2>&1; then printf '+candidates[0]+'; elif command -v '+candidates[1]+' >/dev/null 2>&1; then printf '+candidates[1]+'; else exit 1; fi'
+            result = subprocess.run(['docker','exec',auth['container'],'sh','-c',script],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+            selected = result.stdout.decode().strip()
+            if result.returncode == 0 and selected in candidates:
+                return selected
+        else:
+            for candidate in candidates:
+                if shutil.which(candidate):
+                    return candidate
+        raise ValueError('未发现兼容的MySQL/MariaDB客户端；不会自动安装')
+
     def command(self, auth, tool, args):
         auth = self.auth(auth)
+        if tool in ('mysql','mysqldump'):
+            tool = self.mysql_tool(auth, tool=='mysqldump')
         variable = 'PGPASSWORD' if auth['engine'] == 'postgresql' else 'MYSQL_PWD'
         env = dict(os.environ, LC_ALL='C', LANG='C')
         # Never inherit an unrelated caller's database identity/password settings.

@@ -36,6 +36,16 @@ class DatabasesTest(unittest.TestCase):
         self.assertEqual(['docker','exec','-i','--env','PGPASSWORD','--user','postgres','a'*64,'psql'],command)
         self.assertNotIn(env['PGPASSWORD'],command)
 
+    def test_mariadb_images_without_mysql_alias_are_discovered_before_writes(self):
+        from types import SimpleNamespace
+        import subprocess
+        auth=dict(self.auth,engine='mysql',container='a'*64)
+        with patch.object(subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=b'mariadb')) as discover:
+            command,env=self.engine.command(auth,'mysql',['--user=root'])
+        self.assertEqual('mariadb',command[-2])
+        self.assertEqual(self.auth['password'],env['MYSQL_PWD'])
+        self.assertNotIn(self.auth['password'],' '.join(discover.call_args.args[0]))
+
     def test_invalid_identifiers_and_container_cannot_inject(self):
         for value in ['db;DROP DATABASE postgres','../db','db"','--dbname=foo']:
             with self.assertRaises(ValueError): module['db_name'](value)
