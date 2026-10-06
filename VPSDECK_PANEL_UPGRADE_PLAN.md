@@ -197,3 +197,5 @@
 
 ### 状态补记：UI重写
 阶段C安装现已由用户确认。依用户要求重写原生界面（11–14sp、扁平卡片/列表/图表、深浅主题），冻结候选`b94d549`已通过构建及设备测试。Android离线阻止最终候选交付；较早UI源码快照fc1a2c8已到Download/VPSDeck/stages。手机仍未安装UI候选，详细证据见VPSDECK_UI_REDESIGN.md。
+
+后续交付补记：用户恢复Android前台后，最终UI候选b94d549 APK、96文件源码、两张组件截图已全部校验送达。因顶层project与C基线存在本地差异，保留旧目录并以stages/ui-preview-b94d549/project作为完整新工程。已发出系统安装请求，安装成功及真机界面验收尚待确认。

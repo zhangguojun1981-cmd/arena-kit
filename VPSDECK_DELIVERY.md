@@ -124,3 +124,8 @@ f7ad243ac633980138c483db24bf2909833ea95bc8fef2259097f8f951405be6
 用户已确认阶段C新版安装。新的UI候选为`b94d549`（0.3.0-ui-preview/code6），构建37457010717、设备测试37457010723均通过，签名证书不变。具体内容及SHA256见`VPSDECK_UI_REDESIGN.md`。
 
 手机已收到较早的`fc1a2c8` UI源码独立快照，但最终候选交付时Android agent已离线。因此**b94d549 APK/源码/截图尚未交付手机，也未安装**；不要把CI成功或Mac签名完成等同于手机验收。旧版本、顶层阶段C源码、A/B/C快照均保留。
+
+### 最新：UI最终候选已交付手机
+`b94d549`源码96文件、两张原生预览图、13,856,433字节同签名APK全部校验交付完成。APK在`Download/VPSDeck/releases/VPSDeck-0.3.0-ui-preview-b94d549.apk`；完整工程在`stages/ui-preview-b94d549/project`。旧顶层project有本地差异，未覆盖。中文入口与交付JSON已更新。
+
+安装请求返回0，但尚未确认安装窗口或code6安装成功，继续标记**已交付、待安装确认**。详见`VPSDECK_UI_REDESIGN.md`最新记录。

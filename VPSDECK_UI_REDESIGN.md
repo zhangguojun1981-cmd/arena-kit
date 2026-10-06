@@ -32,3 +32,13 @@
 - 源码ZIP：`VPSDeck-source-ui-b94d549.zip`，96文件，289,361 bytes，SHA256 `72fe868372bbf1ec3155a809343377ff03132b4123039fc69a1849f1f4187227`。
 - 手机此前已收到`fc1a2c8`的96文件UI源码独立快照（`stages/ui-preview-fc1a2c8/project`）；顶层`project`与已安装阶段C未被覆盖。
 - **最终b94d549交付尝试被明确拒绝：Android agent离线，在线设备仅host/mac。最终源码、截图和APK尚未传入手机；UI未安装，不能宣称手机验收通过。** 待agent恢复后传输、校验、冲突检查，再更新顶层源码及中文入口说明；保留A/B/C历史快照。
+
+## 最新交付状态（用户恢复Android前台后）
+- 最终`b94d549`已送达手机：96文件独立源码快照、源码ZIP、两张原生组件截图均逐文件/整包校验通过。
+- 最新完整工程：`Download/VPSDeck/stages/ui-preview-b94d549/project/`；截图：`previews/ui-b94d549/`。
+- 顶层`project`与已知阶段C基线存在差异，**没有覆盖**。差异路径：LICENSE-GPL-3.0.txt、LICENSE.md、PANEL_GUIDE.md、README.md、THIRD_PARTY.md、build.gradle.kts、gradle.properties、gradlew、gradlew.bat、settings.gradle.kts。保留已有内容及A/B/C历史快照；不要把旧project当作最新完整源码。
+- APK通过27分段续传完成（Android进程17775退出0）；手机公有副本与Termux私有副本均再次确认SHA256 `35fd2acef6fa454461187042ddd60828f0e4a2f68f256476673e6a5d128b2f33`，13,856,433 bytes。
+- APK路径：`Download/VPSDeck/releases/VPSDeck-0.3.0-ui-preview-b94d549.apk`。私有副本`~/.arena-device/VPSDeck-ui-b94d549.apk`权限0600。
+- 中文入口`00-先看这里.txt`、`docs/UI-PREVIEW-b94d549.txt`、`docs/UI-DELIVERY-b94d549.json`已更新；旧入口备份到`docs/entry-guide-before-UI.txt`，不覆盖已有备份。
+- 已调用`termux-open --view --content-type application/vnd.android.package-archive`，返回0；**这仅证明安装请求发出，不证明安装窗口显示或安装成功**。等待用户确认；未卸载、未清数据、未重置SSH身份。
+- 只读版本查询的rish通道超时，未获得新安装版本证据；这与普通Agent在线及文件传输无关。Mac候选交付清单已更新phone_delivered=true、phone_installed=false。
