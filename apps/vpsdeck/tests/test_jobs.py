@@ -65,6 +65,19 @@ class JobsTest(unittest.TestCase):
         self.assertEqual(0, folder.stat().st_mode & 0o077)
         self.assertEqual(0, (folder/'request.json').stat().st_mode & 0o077)
 
+    def test_credentials_are_separate_from_task_record_and_consumed(self):
+        request=self.request()
+        request['project']=dict(request['project'],auth={'password':'private-database-password'},environment='TOKEN=secret-value',command='private-argument')
+        self.engine.submit(request,'# fixture')
+        directory=self.base/'jobs'/('a'*32)
+        self.assertNotIn('private-database-password',(directory/'request.json').read_text())
+        self.assertNotIn('secret-value',(directory/'request.json').read_text())
+        self.assertNotIn('private-argument',(directory/'request.json').read_text())
+        self.assertEqual(0,(directory/'input.private').stat().st_mode & 0o077)
+        self.engine.work('a'*32)
+        self.assertFalse((directory/'input.private').exists())
+        self.assertEqual('succeeded',self.engine.states()[0]['state'])
+
     def test_duplicate_id_cannot_relaunch(self):
         request = self.submit()
         with self.assertRaises(FileExistsError):

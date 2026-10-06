@@ -171,7 +171,18 @@ class Engine:
         directory.mkdir(mode=0o700)
         state = dict(id=ident, state='queued', created=int(time.time()), project=request['project']['name'], action=action,
                      message='已记录，正在提交独立systemd任务；断线后请刷新查询，不要重复提交')
-        atomic(directory / 'request.json', request)
+        stored=json.loads(json.dumps(request))
+        secrets={}
+        project=stored['project']
+        for key in ('newPassword','environment','command'):
+            if key in project:
+                secrets[key]=project.pop(key)
+        if 'password' in project.get('auth',{}):
+            secrets['authPassword']=project['auth'].pop('password')
+        if secrets:
+            stored['privateInput']=True
+            atomic(directory / 'input.private',secrets)
+        atomic(directory / 'request.json', stored)
         atomic(directory / 'state.json', state)
         with open(directory / 'worker.py', 'x', opener=lambda p, f: os.open(p, f, 0o600)) as f:
             f.write(source)
@@ -201,6 +212,13 @@ class Engine:
                 with open(self.root / '.mutation-lock', 'a') as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     request = json.loads((directory / 'request.json').read_text())
+                    if request.get('privateInput'):
+                        secrets=json.loads((directory / 'input.private').read_text())
+                        (directory / 'input.private').unlink()
+                        for key in ('newPassword','environment','command'):
+                            if key in secrets: request['project'][key]=secrets.pop(key)
+                        if 'authPassword' in secrets:
+                            request['project']['auth']['password']=secrets.pop('authPassword')
                     plan = self.plan(request['project'])
                     require(plan['revision'] == request['revision'], '启动前配置已变化；未执行动作')
                     state.update(message='正在执行；手机断线不影响该进程')
@@ -236,6 +254,7 @@ class Engine:
                 state['finished'] = int(time.time())
                 atomic(directory / 'state.json', state)
                 (directory / 'request.json').unlink(missing_ok=True)
+                (directory / 'input.private').unlink(missing_ok=True)
 
 
 def api(request, source):

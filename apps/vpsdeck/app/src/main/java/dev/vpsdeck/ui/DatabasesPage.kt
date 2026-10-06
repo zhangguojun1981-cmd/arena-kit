@@ -147,7 +147,7 @@ private val databaseActions = mapOf("create-database" to "创建数据库", "cre
             if(p.action=="create-database") Text("数据库所有者：${spec.optString("owner")}")
             Text(JSONObject(p.result).getString("warning"))
             if(p.action=="restore") Text("恢复会修改现有数据！先保留独立可核查的安全备份，不能保证自动回滚；整个任务最长2小时。")
-            Text("请求与数据库凭据通过SSH stdin传送，远端任务请求文件仅执行身份可读，完成后删除；被强制中断时可能保留私有请求，需管理员核查。")
+            Text("请求与数据库凭据通过SSH stdin传送，远端敏感输入与任务记录分离，仅执行身份可读，执行器读取后删除；启动前中断可能保留私有输入，需管理员核查。")
             OutlinedTextField(confirmation,{confirmation=it},label={Text("输入目标名称确认：$target")},singleLine=true)
         }},confirmButton={Button(onClick={plan=null;editor=null;controller.submit(server,p,sudo)},enabled=online && !state.busy && confirmation==target) {Text("确认执行")}},dismissButton={TextButton(onClick={plan=null}) {Text("取消")}})
     }
