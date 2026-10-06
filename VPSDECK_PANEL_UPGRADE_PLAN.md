@@ -194,3 +194,6 @@
 - stageC-source125先确认当前project仍与B快照70文件完全一致、无用户修改，再更新为冻结C源码并逐文件验证92文件。A/B历史快照保留，C快照不变；中文指南同步到docs/PANEL_GUIDE-stageC.md。
 - Shizuku/rish预检仍返回Request timeout，不能自动执行安装/ADB实机验收。stageC-install127在再次验哈希后把APK复制到Termux私有~/.arena-device/VPSDeck-stageC.apk（0600），调用termux-open系统安装器，启动请求返回0。**这不是安装成功证明**，还需要用户点击更新/安装并确认结果。
 - 00-先看这里.txt已追加中文C交付说明，明确安装尚待确认；原入口文件备份到docs/entry-guide-before-stageC.txt。01-stageC-status.txt也标记安装未确认。没有卸载、清除App数据、重置SSH密钥/固定指纹或执行生产业务变更。
+
+### 状态补记：UI重写
+阶段C安装现已由用户确认。依用户要求重写原生界面（11–14sp、扁平卡片/列表/图表、深浅主题），冻结候选`b94d549`已通过构建及设备测试。Android离线阻止最终候选交付；较早UI源码快照fc1a2c8已到Download/VPSDeck/stages。手机仍未安装UI候选，详细证据见VPSDECK_UI_REDESIGN.md。
