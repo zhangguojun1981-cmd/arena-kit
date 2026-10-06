@@ -186,3 +186,11 @@
 - 完整APK下载受413限制。Mac已拆27个512KiB分片，Android下载缓存位于~/.arena-device/vpsdeck-parts，后台进程12759，日志~/.arena-device/vpsdeck-transfer.log。最后可读日志至分片16，完整APK当时不存在。并发尝试遇到404，缓存可续用，不能把部分下载当完整包。
 - 随后ADB调用返回device connection replaced during call，再次查询明确安卓离线且仅host在线（Mac亦不在线）。stageC-recheck89仍离线。后台下载的最终结果未知，恢复后必须先查日志/文件并验证完整APK SHA256，不能盲目重复启动下载或安装。
 - 本轮没有执行pm install、卸载、清数据、重置密钥/主机指纹，或生产服务器状态变更。手机继续按最后验证的B状态处理；源码已交付，APK安装和实机C面板验收尚未完成。
+
+### 安卓阶段 C 完整交付，系统安装待确认（2026-10-06）
+- 用户将代理放在前台后，安卓实际命令调用恢复。执行权限此时也已解锁。此前通过服务器只读日志确认安卓确有反复上下线，Telegram离线并非已证明的缓存问题；不把Shizuku与代理上线混为一谈。
+- stageC-transfer120通过android__start_process启动断点续传（PID27600），保留原17分片；stageC-progress126确认进程exit0、APK_VERIFIED 13831857。APK完整SHA256为3dd2c000526886704ef0ddf04fda083ee065e791e8f031a15d46d7e4fa8efbbd，与Mac同签名产物一致。
+- APK已经位于Download/VPSDeck/releases/VPSDeck-0.2.0-stageC-dev-b8dc460.apk。源码ZIP完整SHA256再次验证为ba78736e0821947a0be33d98797fdf5e241697c490ad945cf9e08feb069d61d5。
+- stageC-source125先确认当前project仍与B快照70文件完全一致、无用户修改，再更新为冻结C源码并逐文件验证92文件。A/B历史快照保留，C快照不变；中文指南同步到docs/PANEL_GUIDE-stageC.md。
+- Shizuku/rish预检仍返回Request timeout，不能自动执行安装/ADB实机验收。stageC-install127在再次验哈希后把APK复制到Termux私有~/.arena-device/VPSDeck-stageC.apk（0600），调用termux-open系统安装器，启动请求返回0。**这不是安装成功证明**，还需要用户点击更新/安装并确认结果。
+- 00-先看这里.txt已追加中文C交付说明，明确安装尚待确认；原入口文件备份到docs/entry-guide-before-stageC.txt。01-stageC-status.txt也标记安装未确认。没有卸载、清除App数据、重置SSH密钥/固定指纹或执行生产业务变更。
